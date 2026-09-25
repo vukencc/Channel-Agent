@@ -1,0 +1,32 @@
+[project]
+name = "ai-agent-startup"
+version = "0.1.0"
+description = "一个带工具调用（function calling）的最小流式对话 Agent"
+requires-python = ">=3.12"
+dependencies = [
+    "chromadb>=1.5.9",
+    "llama-index-core>=0.14.0,<0.15",
+    "llama-index-embeddings-fastembed>=0.7.0,<0.8",
+    "llama-index-llms-openai-like>=0.8.0,<0.9",
+    "llama-index-vector-stores-chroma>=0.6.0,<0.7",
+    "openai>=2.15.0,<3",
+    "pandas>=3.0.6",
+    "pydantic>=2.13.0,<3",
+    "python-dotenv>=1.2.0,<2",
+    "scikit-learn>=1.9.0,<2",
+    "tavily-python>=0.8.0,<0.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+# 这是一个应用（脚本），不是要发布的库，不需要被打包安装
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
