@@ -36,6 +36,9 @@ def get_client() -> AsyncOpenAI:
 # 从工具注册表派生，新增工具后这里不用改
 TOOL_SCHEMAS = all_schemas()
 
+# 评估调用的超时：评估要模型输出结构化评分，实测比普通对话慢得多
+_ASSESS_TIMEOUT = 120.0
+
 # 连接类/限流/服务端错误，属于瞬时故障，可以重试
 _RETRYABLE = (
     openai.APIConnectionError,
@@ -59,21 +62,13 @@ def _is_transient(exc: Exception) -> bool:
     return False
 
 
-async def _open_stream(history: list[dict]):
-    """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
-    attempts = max(1, config.MAX_RETRIES)
+async def _retry(operation, what: str, attempts: int | None = None):
+    """执行一次「瞬时错误可重试」的调用，按指数退避重试。"""
+    attempts = max(1, attempts if attempts is not None else config.MAX_RETRIES)
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return await get_client().with_options(
-                timeout=config.SESSION_TIMEOUT
-            ).chat.completions.create(
-                model=config.MODEL,
-                messages=history,
-                stream=True,
-                tools=TOOL_SCHEMAS,
-                tool_choice="auto",
-            )
+            return await operation()
         except Exception as exc:
             if not _is_transient(exc):
                 raise
@@ -81,13 +76,29 @@ async def _open_stream(history: list[dict]):
             if attempt < attempts:
                 delay = min(2 ** (attempt - 1), 8)
                 logger.warning(
-                    "模型调用失败（第 %d/%d 次），%.0fs 后重试：%s",
-                    attempt, attempts, delay, exc,
+                    "%s失败（第 %d/%d 次），%.0fs 后重试：%s",
+                    what, attempt, attempts, delay, exc,
                 )
                 await asyncio.sleep(delay)
 
     assert last_exc is not None
     raise last_exc
+
+
+async def _open_stream(history: list[dict]):
+    """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
+    async def operation():
+        return await get_client().with_options(
+            timeout=config.SESSION_TIMEOUT
+        ).chat.completions.create(
+            model=config.MODEL,
+            messages=history,
+            stream=True,
+            tools=TOOL_SCHEMAS,
+            tool_choice="auto",
+        )
+
+    return await _retry(operation, "模型调用")
 
 
 async def call_model(history: list[dict]) -> dict:
@@ -136,3 +147,24 @@ async def call_model(history: list[dict]) -> dict:
             for c in tool_calls.values()
         ]
     return message
+
+
+async def complete(prompt: str) -> str:
+    """
+    非流式调用一次，返回完整文本。
+
+    供评估（LLM 当裁判）等内部用途使用：不打印、不参与会话历史。
+    评估要模型输出结构化评分，耗时明显长于对话（实测 10~30s），
+    所以用更宽的超时、并且只重试一次，避免慢调用反复重试。
+    """
+    async def operation():
+        return await get_client().with_options(
+            timeout=_ASSESS_TIMEOUT
+        ).chat.completions.create(
+            model=config.MODEL,
+            messages=[PackMessage("user", prompt)],
+            stream=False,
+        )
+
+    response = await _retry(operation, "评估调用", attempts=2)
+    return response.choices[0].message.content or ""

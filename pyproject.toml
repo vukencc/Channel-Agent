@@ -5,15 +5,20 @@ description = "一个带工具调用（function calling）的最小流式对话 
 requires-python = ">=3.12"
 dependencies = [
     "chromadb>=1.5.9",
+    "langchain>=1.4.2",
+    "langchain-openai>=1.6.6",
     "llama-index-core>=0.14.0,<0.15",
     "llama-index-embeddings-fastembed>=0.7.0,<0.8",
     "llama-index-llms-openai-like>=0.8.0,<0.9",
     "llama-index-vector-stores-chroma>=0.6.0,<0.7",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
     "openai>=2.15.0,<3",
     "pandas>=3.0.6",
     "pydantic>=2.13.0,<3",
     "python-dotenv>=1.2.0,<2",
     "scikit-learn>=1.9.0,<2",
+    "sentence-transformers>=6.1.0",
     "tavily-python>=0.8.0,<0.9",
 ]
 

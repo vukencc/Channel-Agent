@@ -5,7 +5,7 @@
 from tools.base import Tool, TOOL_REGISTRY, register_tool
 
 # 导入即注册
-from tools import debug, rag_search, web_search  # noqa: F401  (仅为了触发注册)
+from tools import command, debug, file_crud, rag_search, web_search  # noqa: F401  (仅为了触发注册)
 
 __all__ = ["Tool", "TOOL_REGISTRY", "register_tool", "all_schemas"]
 

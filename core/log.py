@@ -13,7 +13,7 @@ _FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _DATEFMT = "%H:%M:%S"
 
 # 本项目自己的包前缀
-_APP_PREFIXES = ("core", "tools")
+_APP_PREFIXES = ("core", "tools", "rag")
 
 # 这些库日志极啰嗦，即使调试也不放行
 _NOISY = ("httpx", "httpcore", "openai", "asyncio", "urllib3", "hpack")
