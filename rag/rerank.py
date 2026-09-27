@@ -1,5 +1,6 @@
 """Real local cross-encoder inference; load/inference errors are never hidden."""
 from functools import lru_cache
+from rag.cancellation import check_cancelled
 import json
 
 import numpy as np
@@ -33,14 +34,19 @@ class Reranker:
         window = 512 - len(query_ids) - tokenizer.num_special_tokens_to_add(pair=True)
         pairs, owners = [], []
         for index, passage in enumerate(passages):
+            check_cancelled()
             tokens = tokenizer.encode(passage, add_special_tokens=False)
             for start in range(0, max(1, len(tokens)), window):
                 pairs.append((bounded_query, tokenizer.decode(tokens[start:start + window], skip_special_tokens=True)))
                 owners.append(index)
-        scores = np.asarray(self.model.predict(
-            pairs, batch_size=config.RAG_BATCH_SIZE,
-            activation_fn=torch.nn.Identity(), show_progress_bar=False,
-        )).reshape(-1)
+        batches = []
+        for start in range(0, len(pairs), config.RAG_BATCH_SIZE):
+            check_cancelled()
+            batches.append(np.asarray(self.model.predict(
+                pairs[start:start + config.RAG_BATCH_SIZE], batch_size=config.RAG_BATCH_SIZE,
+                activation_fn=torch.nn.Identity(), show_progress_bar=False,
+            )).reshape(-1))
+        scores = np.concatenate(batches)
         if len(scores) != len(pairs) or not np.isfinite(scores).all():
             raise ValueError('Reranker returned invalid scores')
         output = np.full(len(passages), -np.inf)

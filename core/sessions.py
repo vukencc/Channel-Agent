@@ -18,7 +18,7 @@ from core.storage import SessionStore, finish_pending_tools
 from core.log import get_logger
 from rag.assess import assess_rag
 from tools import TOOL_REGISTRY
-from tools.sandbox import ToolContext, tool_context
+from tools.sandbox import ToolContext, tool_context, CancellationFlag
 
 logger = get_logger(__name__)
 
@@ -142,6 +142,7 @@ class SessionManager:
             session.cancelled.set()
             self.decide(session, False)
             session.record['status'] = 'stopping'
+            session.phase = '停止中：等待当前网络调用或推理批次退出；不会重放工具'
             session.task.cancel()
             self.notify()
 
@@ -179,10 +180,11 @@ class SessionManager:
             return f'未知工具: {name}'
         loop = asyncio.get_running_loop()
         directory = self.store.directory(session.id)
+        tool_cancelled = CancellationFlag(session.cancelled)
         def execute():
             context = ToolContext(self.store.workspace(session.id), directory / 'audit.jsonl',
                                   lambda prompt, timeout: self._confirm(session, loop, prompt, timeout),
-                                  session.cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
+                                  tool_cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
                                   tool_call_id=call['id'])
             with tool_context(context):
                 if session.cancelled.is_set():
@@ -202,6 +204,7 @@ class SessionManager:
         try:
             return await asyncio.wait_for(asyncio.shield(worker), tool.timeout_s or config.TOOL_TIMEOUT)
         except TimeoutError:
+            tool_cancelled.set()
             if tool.concurrency != 'read':
                 # 写操作不能遗留后台线程；等待确认/原子写结束后再开放下一轮。
                 session.cancelled.set()

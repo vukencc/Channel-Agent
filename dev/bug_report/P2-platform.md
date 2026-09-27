@@ -34,7 +34,7 @@
 
 ## BUG-18 在途网络/重排/向量调用不可取消
 
-**级别** P2　**状态** 待修复　**文件** `tools/web_search.py`、`rag/rerank.py`、`rag/embedding.py`、`core/sessions.py`
+**级别** P2　**状态** 部分修复（协作取消；进程隔离仅设计）　**文件** `tools/web_search.py`、`rag/rerank.py`、`rag/embedding.py`、`core/sessions.py`
 
 **症状**
 - 停止会话后，已进入的 web/检索/推理调用仍可能继续占用线程与资源。
@@ -53,6 +53,8 @@
 - 取消后会话在有限时间内回到可继续状态；不可取消路径有明确提示。
 
 ---
+
+**修复说明** 按 P2 低风险范围实现：rag/cancellation.py 提供协作取消，rag/tool.py 阶段、embedding/rerank 批次间检查；工具超时独立取消标志；CLI 明确等待当前调用退出。已有 web 超时和独立评估池复用。不能强杀在途 native 线程，进程隔离方案与验收见 docs/platform-design.md，未承诺硬截止。test_bug18_cancel.py 验证停止后不进入昂贵索引。无新配置。 验证：`uv run pytest dev/tests/test_bug18_cancel.py dev/tests/test_hybrid_rag.py dev/tests/test_sessions.py dev/tests/test_command.py -q（60 passed）`。
 
 ## BUG-19 接口与生态缺口：无 headless/API/MCP/多模态
 

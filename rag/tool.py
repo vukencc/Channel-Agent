@@ -2,6 +2,7 @@
 from time import perf_counter
 
 import config
+from rag.cancellation import check_cancelled
 from rag.fusion import reciprocal_rank_fusion
 from rag.index import DocLoader, RetrievalIndex, get_index
 from rag.rerank import get_reranker
@@ -37,22 +38,27 @@ def rag_search(query: str, top_k: int | None = None, strictness: str = 'normal',
         limit = top_k
     if min(config.RAG_CANDIDATES, config.RAG_RERANK_TOP_N, config.RAG_RRF_K) < 1:
         raise ValueError('Candidate budgets and RRF k must be positive')
+    check_cancelled()
     started = perf_counter()
     index = get_index() if index is None else index
     times = {'index': perf_counter() - started}
     stages = {'vector': [], 'bm25': [], 'rrf': [], 'rerank': []}
     scores = {}
     if index.parents:
+        check_cancelled()
         then = perf_counter()
         stages['vector'] = index.dense(query, max(config.RAG_CANDIDATES, limit))
         times['vector'] = perf_counter() - then
+        check_cancelled()
         then = perf_counter()
         stages['bm25'] = index.bm25(query, max(config.RAG_CANDIDATES, limit))
         times['bm25'] = perf_counter() - then
+        check_cancelled()
         then = perf_counter()
         stages['rrf'] = reciprocal_rank_fusion([stages['vector'], stages['bm25']], config.RAG_RRF_K)
         times['rrf'] = perf_counter() - then
         candidates = stages['rrf'][:max(config.RAG_RERANK_TOP_N, limit)]
+        check_cancelled()
         then = perf_counter()
         values = get_reranker().score(query, [index.by_id[row['id']]['document'] for row in candidates])
         stages['rerank'] = sorted(

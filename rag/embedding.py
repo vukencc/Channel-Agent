@@ -1,5 +1,6 @@
 """Batched document/query embeddings with validated, normalized vectors."""
 from functools import lru_cache
+from rag.cancellation import check_cancelled
 import hashlib
 from pathlib import Path
 
@@ -95,6 +96,7 @@ class EmbeddingModel:
         texts = [texts[i] for i in order]
         batches = []
         for start in range(0, len(texts), self.batch_size):
+            check_cancelled()
             batch = texts[start:start + self.batch_size]
             if self.source == 'LOCAL':
                 vectors = list(self._model.embed(batch, batch_size=self.batch_size))

@@ -19,7 +19,7 @@
 - [x] BUG-15
 - [x] BUG-16
 - [x] BUG-17（P2：低风险实现或设计）
-- [ ] BUG-18（P2：低风险实现或设计）
+- [x] BUG-18（P2：低风险实现或设计）
 - [ ] BUG-19（P2：低风险实现或设计）
 - [ ] BUG-20（P2：低风险实现或设计）
 
@@ -124,3 +124,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 低风险实现：core/sessions.py 保存最近 RUN_HISTORY_LIMIT=20 轮指标，分配 turn_id 并关联工具调用 ID；tools/sandbox.py 审计包含 session/turn/tool_call_id；JSON 结构化 turn_finished 诊断事件。不引入 OpenTelemetry 或成本面板。test_bug17_runs.py 验证三轮运行保留两轮及独立追踪 ID。
 
 验证：`uv run pytest dev/tests/test_bug17_runs.py dev/tests/test_sessions.py dev/tests/test_cli_performance.py -q（22 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-18
+
+按 P2 低风险范围实现：rag/cancellation.py 提供协作取消，rag/tool.py 阶段、embedding/rerank 批次间检查；工具超时独立取消标志；CLI 明确等待当前调用退出。已有 web 超时和独立评估池复用。不能强杀在途 native 线程，进程隔离方案与验收见 docs/platform-design.md，未承诺硬截止。test_bug18_cancel.py 验证停止后不进入昂贵索引。无新配置。
+
+验证：`uv run pytest dev/tests/test_bug18_cancel.py dev/tests/test_hybrid_rag.py dev/tests/test_sessions.py dev/tests/test_command.py -q（60 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

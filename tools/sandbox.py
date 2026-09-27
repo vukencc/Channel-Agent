@@ -24,6 +24,19 @@ logger = get_logger(__name__)
 confirmer: Callable[[str, float], bool] | None = None
 
 
+class CancellationFlag:
+    """同时观察会话停止和本次工具超时，不取消同批其他工具。"""
+    def __init__(self, parent):
+        self.parent = parent
+        self.local = Event()
+
+    def is_set(self):
+        return self.local.is_set() or self.parent.is_set()
+
+    def set(self):
+        self.local.set()
+
+
 @dataclass
 class ToolContext:
     root: Path
