@@ -167,7 +167,7 @@
 
 ## BUG-07 工程卫生：死代码、文档路径、AUDIT_LOG 语义
 
-**级别** P0　**状态** 待修复　**文件** `core/agent.py`、`core/sessions.py`、`AGENTS.md`、`config.py`
+**级别** P0　**状态** 已修复（说明见下）　**文件** `core/agent.py`、`core/sessions.py`、`AGENTS.md`、`config.py`
 
 **症状**
 - 存在两套 Agent 循环：`core/agent.py:50-105` 的旧 `input()/print()` 循环不可达，但 `core/sessions.py:11` 仍从该模块导入常量，增加维护与误用风险。
@@ -189,3 +189,5 @@
 - 全仓 `rg 'session_loop|create_session|assess_turn'` 无生产引用。
 - 文档与 `pyproject.toml` 一致。
 - 现有测试全绿。
+
+**修复说明** core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除第二套循环；已有 CRUD 调度测试迁到 SessionManager，保留成功、拒绝、工具配对和文件内容断言。按本条要求修正 AGENTS.md 的测试路径；明确 AUDIT_LOG 仅无上下文时使用。无新配置。 验证：`uv run pytest dev/tests/test_bug07_hygiene.py dev/tests/test_agent_tools.py dev/tests/test_sessions.py -q（18 passed）`。

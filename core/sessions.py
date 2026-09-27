@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import config
-from core.agent import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE
+from core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE
 from core.llm import call_model, complete, ModelResponseError, TOOL_SCHEMAS
 from core.context import build_model_history, ContextBudgetError
 from core.storage import SessionStore, finish_pending_tools
