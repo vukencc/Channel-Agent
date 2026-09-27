@@ -90,7 +90,7 @@
 
 ## BUG-11 工具串行执行、单轮调用无上限、无工具级超时
 
-**级别** P1　**状态** 待修复　**文件** `core/sessions.py`、`tools/base.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `core/sessions.py`、`tools/base.py`
 
 **症状**
 - 模型返回的并行 `tool_calls` 被逐个同步执行，多文件/多检索任务耗时线性叠加。
@@ -113,6 +113,8 @@
 - 取消、确认、审计语义不变。
 
 ---
+
+**修复说明** 工具循环串行且无调用总数边界。tools/base.py 增加 concurrency/timeout_s 元数据；core/sessions.py 有界并发连续只读批次、按原顺序回填结果、写操作串行、超额调用明确拒绝并配对，取消等待旧写线程。新增 MAX_TOOL_CALLS_PER_ROUND=8、TOOL_CONCURRENCY=4、TOOL_TIMEOUT=120。test_bug11_tools.py 验证慢读取并行和超额不执行；线程级取消边界见 CLI 文档。 验证：`uv run pytest dev/tests/test_bug11_tools.py dev/tests/test_sessions.py dev/tests/test_cli_performance.py -q（22 passed）`。
 
 ## BUG-12 RAG 每次搜索全量重读语料、仅支持 txt/md
 

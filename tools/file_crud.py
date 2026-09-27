@@ -105,7 +105,7 @@ def create_file(path: str, content: str = "", reason: str = "") -> str:
     return f"[完成] 已创建 {path}（{len(content)} 字符）"
 
 
-@register_tool(ReadFileArgs, name="read_file")
+@register_tool(ReadFileArgs, name="read_file", concurrency="read")
 def read_file(path: str, offset: int = 0, limit: int = 6000, search: str = "") -> str:
     """
     读取沙箱内文件的内容。
@@ -265,7 +265,7 @@ def delete_file(path: str, reason: str = "") -> str:
     return f"[完成] 已删除 {path}"
 
 
-@register_tool(ListFilesArgs, name="list_files")
+@register_tool(ListFilesArgs, name="list_files", concurrency="read")
 def list_files(path: str = ".") -> str:
     """
     列出沙箱内某个目录下的条目。

@@ -49,6 +49,8 @@ class SessionManager:
         self.store, self.notify, self.model = store, notify, model
         self.sessions = {r['id']: Session(r) for r in store.load_all()}
         self.pending_saves = set()
+        self.tool_workers = set()
+        self.read_slots = asyncio.Semaphore(config.TOOL_CONCURRENCY)
         self.slots = asyncio.Semaphore(config.MAX_CONCURRENT_AGENTS)
         self.assessment_slots = asyncio.Semaphore(config.ASSESS_CONCURRENCY)
 
@@ -179,9 +181,26 @@ class SessionManager:
                 if session.cancelled.is_set():
                     return '[已取消] 工具尚未执行。'
                 return tool.run(call['function']['arguments'])
+        if tool.concurrency == 'read':
+            await self.read_slots.acquire()
         worker = asyncio.create_task(asyncio.to_thread(execute))
+        self.tool_workers.add(worker)
+        def finished(done):
+            self.tool_workers.discard(done)
+            if tool.concurrency == 'read':
+                self.read_slots.release()
+            if not done.cancelled():
+                done.exception()
+        worker.add_done_callback(finished)
         try:
-            return await asyncio.shield(worker)
+            return await asyncio.wait_for(asyncio.shield(worker), tool.timeout_s or config.TOOL_TIMEOUT)
+        except TimeoutError:
+            if tool.concurrency != 'read':
+                # 写操作不能遗留后台线程；等待确认/原子写结束后再开放下一轮。
+                session.cancelled.set()
+                self.decide(session, False)
+                await worker
+            return '[超时] 工具超过时限；只读后台计算可能仍在退出，未重放操作。'
         except asyncio.CancelledError:
             session.cancelled.set()
             # Do not allow another turn while an old thread could still write files.
@@ -278,26 +297,51 @@ class SessionManager:
                             next(m['content'] for m in reversed(history) if m['role'] == 'user'),
                             contexts, reply.get('content', ''))
                     break
-                for call in calls:
+                async def execute_call(call, index):
                     name = call['function']['name']
-                    session.phase = '执行工具：' + name
-                    self.notify()
-                    tool_started = time.monotonic()
-                    if session.cancelled.is_set():
+                    started = time.monotonic()
+                    if index >= config.MAX_TOOL_CALLS_PER_ROUND:
+                        result = '[已拒绝] 单轮工具调用超过 MAX_TOOL_CALLS_PER_ROUND 上限，尚未执行。'
+                    elif session.cancelled.is_set():
                         result = '[已取消] 工具尚未执行。'
                     else:
                         try:
                             result = await self._tool(session, call)
                         except Exception as exc:
                             result = f'工具执行失败: {type(exc).__name__}: {exc}'
-                    metrics = {'name': name, 'wall_s_including_confirmation': round(time.monotonic() - tool_started, 3),
-                               'output_chars': len(result)}
-                    session.record['last_run']['tools'].append(metrics)
-                    logger.info('tool_metrics session=%s %s', session.id, metrics)
-                    session.record['messages'].append({'role': 'tool', 'tool_call_id': call['id'], 'content': result})
-                    if name == 'rag_search':
-                        contexts.append(result)
+                    return result, {'name': name, 'wall_s_including_confirmation': round(time.monotonic() - started, 3),
+                                    'output_chars': len(result)}
+
+                index = 0
+                while index < len(calls):
+                    batch = [calls[index]]
+                    tool = TOOL_REGISTRY.get(calls[index]['function']['name'])
+                    if tool and tool.concurrency == 'read':
+                        while index + len(batch) < min(len(calls), config.MAX_TOOL_CALLS_PER_ROUND):
+                            candidate = calls[index + len(batch)]
+                            next_tool = TOOL_REGISTRY.get(candidate['function']['name'])
+                            if not next_tool or next_tool.concurrency != 'read':
+                                break
+                            batch.append(candidate)
+                    session.phase = '执行工具：' + ', '.join(c['function']['name'] for c in batch)
+                    self.notify()
+                    pending = asyncio.gather(*(execute_call(call, index + offset) for offset, call in enumerate(batch)))
+                    try:
+                        results = await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        session.cancelled.set()
+                        self.decide(session, False)
+                        # 等待批次收尾，禁止在旧写线程仍活动时开放下一轮。
+                        await pending
+                        raise
+                    for call, (result, metrics) in zip(batch, results):
+                        session.record['last_run']['tools'].append(metrics)
+                        logger.info('tool_metrics session=%s %s', session.id, metrics)
+                        session.record['messages'].append({'role': 'tool', 'tool_call_id': call['id'], 'content': result})
+                        if call['function']['name'] == 'rag_search':
+                            contexts.append(result)
                     await self.save(session)
+                    index += len(batch)
             else:
                 session.record['status'] = 'checkpoint'
                 session.record['last_run']['stop_reason'] = 'tool_budget'
@@ -341,4 +385,6 @@ class SessionManager:
                 session.assessment_task.cancel()
         await asyncio.gather(*(s.task for s in self.sessions.values() if s.task), return_exceptions=True)
         await asyncio.gather(*(s.assessment_task for s in self.sessions.values() if s.assessment_task), return_exceptions=True)
+        if self.tool_workers:
+            await asyncio.gather(*list(self.tool_workers), return_exceptions=True)
         await self.flush()

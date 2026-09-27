@@ -34,7 +34,7 @@ class RagSearchArgs(BaseModel):
     )
 
 
-@register_tool(RagSearchArgs, name="rag_search")
+@register_tool(RagSearchArgs, name="rag_search", concurrency="read")
 def rag_search(query: str, strictness: str = "normal", breadth: str = "normal") -> str:
     """
     从本地知识库中检索与问题最相关的文本片段。
