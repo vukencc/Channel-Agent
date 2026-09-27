@@ -38,3 +38,13 @@ Web 搜索由 WEB_SEARCH_TIMEOUT 限制网络等待；评估池与前台分开�
 文本加载器扩展不等于多模态。图片/PDF 图像需先确定模型能力、上传确认、大小/页数限制和敏感内容处理；OCR 结果标记来源与置信度。
 网页抓取/浏览器必须沿用出网审批，并限制重定向、目标地址和下载大小；浏览器放入独立进程沙箱，不暴露宿主凭据。
 分别提交输入格式、能力探测、失败降级和端到端隔离测试。本轮不添加图片上传、HTTP 服务、MCP 客户端或浏览器依赖。
+
+## BUG-20：持续集成
+
+`.github/workflows/tests.yml` 在 PR/main push 上运行 uv sync --locked 和离线 pytest；使用 Ubuntu 22.04，安装 Bubblewrap/util-linux。
+先执行 `dev/ci_sandbox_probe.py` 的真实命名空间与资源限制探测，不支持时非零失败并说明环境限制，不静默跳过命令测试。
+workflow_dispatch 可显式开启真实模型集成任务；缓存公开模型和语料，以准备脚本及固定清单哈希更新缓存键。
+默认 PR 不下载模型、不调用付费 API；手动集成包含原有完整链路、strictness 配对过滤和固定公开 qrels 回归。
+本轮只在本机验证脚本及工作流静态契约，未触发远端 GitHub Actions，不把配置完成当成远端运行成功。
+
+工作流在运行器步骤中写 GITHUB_ENV，避免在 job.env 中使用不可用的 runner 上下文；依据 [GitHub 上下文可用性规则](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability)。

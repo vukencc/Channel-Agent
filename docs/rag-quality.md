@@ -122,4 +122,3 @@ RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run pytest dev/tests/test_bug13_qu
 | bm25 | 95254:22.15119; 95254:19.12202; 686567:12.08676 |
 | rrf | 686567:0.03200; 95254:0.03200; 13269:0.03178 |
 | rerank | 95254:9.83635; 686567:9.74470; 95254:8.28729 |
-

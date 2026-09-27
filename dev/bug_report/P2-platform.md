@@ -82,7 +82,7 @@
 
 ## BUG-20 无 CI、集成测试依赖本地模型与网络
 
-**级别** P2　**状态** 待修复　**文件** `.github/`（不存在）、`pyproject.toml`、`dev/tests/`
+**级别** P2　**状态** 已修复（说明见下）　**文件** `.github/`（不存在）、`pyproject.toml`、`dev/tests/`
 
 **症状**
 - 没有持续集成；回归依赖手工命令。
@@ -101,3 +101,5 @@
 
 **验收**
 - 默认 PR 流程自动跑离线测试；集成任务可手动触发并有缓存策略。
+
+**修复说明** 新增 .github/workflows/tests.yml：默认 PR/main push 锁定安装与离线测试，手动 integration 作业缓存公开模型/语料并跑真实链路和质量回归。dev/ci_sandbox_probe.py 实际验证 Bubblewrap/prlimit，不支持则报错退出，不跳过或退回宿主。test_bug20_ci.py 先复现缺工作流，再验证入口/命令/非静默失败契约。无新应用配置。远端 Actions 尚未触发。 验证：`uv run pytest dev/tests/test_bug20_ci.py -q（1 passed）；uv run python dev/ci_sandbox_probe.py（真实隔离通过）；uv run pytest -m "not integration" -q（185 passed，最终增补回归见交付报告）`。

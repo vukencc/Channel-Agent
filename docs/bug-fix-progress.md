@@ -1,6 +1,55 @@
-# 缺陷修复清单与验证记录
+# 缺陷修复交付报告
 
-每项先失败测试，再最小修复和独立提交；所有运行数据使用临时目录。
+每项代码修复先失败测试，再最小修复和独立提交；BUG-19 按要求仅设计；所有运行数据使用临时目录。
+
+## 交付范围与最终结果
+
+基线 `93a7fed`。BUG-01–07 全部修复；BUG-08–16 按序实现可验证版本。
+BUG-17/20 完成低风险工程改进，BUG-18 为协作取消（硬截止进程隔离仅设计），BUG-19 为 headless/API/MCP/多模态设计，未新增运行入口。
+共 20 个独立 BUG 提交；验证中发现的同时间戳缓存、v2 诊断重放、配置模板完整性、预算计量复杂度问题已归入对应提交。
+
+- 最终离线：`uv run pytest -m 'not integration' -q`，**192 passed, 3 deselected，6.15 秒**。
+- 含真实模型及公开 qrels 的整套运行：**193 passed，102.22 秒**；此后补充两个离线断言并复跑上述离线集，三个真实集成项均已实际通过。
+- 原有真实 RAG 完整链路与 strictness 后置过滤：单独运行 **2 passed，12.05 秒**；没有删除或弱化既有测试。
+- `uv lock` / `uv sync --locked` 成功；默认环境 92 个包，可选 documents extra 新增 pypdf 6.19.0、python-docx 1.2.0、lxml 6.1.3。没有引入新模型。
+- `uv run python dev/ci_sandbox_probe.py` 真实 Bubblewrap/prlimit 探测通过；受控 fork、大文件限制、失败关闭路径均有测试。远端 GitHub Actions 未触发。
+- `.agent/`、`crud_tests/`、`data/raw/`、`logs/`、`.cache/` 的文件清单、大小和 mtime_ns 与工作开始时一致；测试工作区、状态、日志和索引写入临时目录。
+- 用户原有 `dev/bug_report/task-prompt.md` 保留原样且未纳入提交；报告问题描述原文保留，仅变更状态及追加说明。
+
+测试通过注入 fake model/流/故障复现控制流，实际执行 CRUD、命令隔离与持久化；60k 文件端到端用 fake model 驱动真实工具，并未把预设回答加入生产代码。
+RAG 质量测试使用真实 BGE-small-zh-v1.5 INT8 与 mmarco-mMiniLMv2-L12-H384-v1、公开 T2Retrieval 原始 qrels，无自编相关性标注。
+343 文档、10 查询（5 校准/5 留出）的结果：默认阈值留出 hit@10=0.8、MRR=0.8；建议阈值没有改善质量，因此未更改默认阈值。
+四阶段真实 Top 3、指标、输入校验值与限制见 [RAG 质量报告](rag-quality.md)。平台边界见 [设计说明](platform-design.md)。
+
+复现测试时先把 SANDBOX_DIR、AGENT_STATE_DIR、AUDIT_LOG、RAG_CACHE_DIR 指向新临时目录，避免使用真实用户目录。
+真实集成另设置 RUN_RAG_INTEGRATION=1、EMBEDDING_LOCAL_PATH、RERANK_LOCAL_PATH、RAG_QUALITY_CORPUS 为已有模型和公开语料绝对路径。
+
+## 提交索引
+
+| BUG | 提交 |
+|---|---|
+| BUG-01 | `bb16336` |
+| BUG-02 | `fbb6187` |
+| BUG-03 | `74acbcc` |
+| BUG-04 | `02731d9` |
+| BUG-05 | `e7d8c90` |
+| BUG-06 | `70b06ce` |
+| BUG-07 | `a3f817e` |
+| BUG-08 | `2461c28` |
+| BUG-09 | `a68266a` |
+| BUG-10 | `72ded53` |
+| BUG-11 | `71cfd9e` |
+| BUG-12 | `1305d38` |
+| BUG-13 | `e064ba5` |
+| BUG-14 | `43dd9b0` |
+| BUG-15 | `928e069` |
+| BUG-16 | `0228adc` |
+| BUG-17 | `0c212a4` |
+| BUG-18 | `f70e640` |
+| BUG-19 | `c3938e1` |
+| BUG-20 | 本报告所在的 BUG-20 提交（见 git log） |
+
+## 任务清单
 
 - [x] BUG-01
 - [x] BUG-02
@@ -21,7 +70,7 @@
 - [x] BUG-17（P2：低风险实现或设计）
 - [x] BUG-18（P2：低风险实现或设计）
 - [x] BUG-19（P2：低风险实现或设计）
-- [ ] BUG-20（P2：低风险实现或设计）
+- [x] BUG-20（P2：低风险实现或设计）
 
 ## BUG-01
 
@@ -51,7 +100,7 @@ tools/web_search.py 移除导入时客户端，改用有超时及 2 MB 响应上
 
 config.py 增加集中启动校验并让数字解析错误携带变量名；core/cli.py 在创建状态目录前验证，main.py 捕获导入期配置错误并以退出码 2 输出中文提示。--list 无需模型密钥。新增 test_bug05_config.py 覆盖缺 key、非法范围、正确配置静默。无新配置。
 
-验证：`uv run pytest dev/tests/test_bug05_config.py dev/tests/test_config.py dev/tests/test_cli.py -q（见提交验证）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+验证：`uv run pytest dev/tests/test_bug05_config.py dev/tests/test_config.py dev/tests/test_cli.py -q（11 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
 
 ## BUG-06
 
@@ -117,7 +166,7 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 
 评估将全部 query/context/answer 拼接，可能超窗。rag/assess.py 分配总预算、单片段上限，保留总命中数与纳入数说明，极小预算或 token 超限明确降级且不调用裁判。新增 ASSESS_INPUT_CHARS=12000、ASSESS_CONTEXT_CHARS=2000。test_bug16_assess.py 把超过 200 万字符的输入压到 2000 字符内并完成 fake judge。
 
-验证：`uv run pytest dev/tests/test_bug16_assess.py dev/tests/test_assess.py dev/tests/test_sessions.py -q（见提交验证）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+验证：`uv run pytest dev/tests/test_bug16_assess.py dev/tests/test_assess.py dev/tests/test_sessions.py -q（20 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
 
 ## BUG-17
 
@@ -135,4 +184,57 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 
 按用户范围仅完成设计：docs/platform-design.md 明确 headless 参数、JSON/JSONL 契约、退出码、默认拒绝审批、配对和持久化验收；API/SSE 的状态锁、幂等/审批，MCP 权限与 schema 预算，多模态上传及网页出网边界。未实现新入口/监听服务、未新增配置/依赖；没有声称通过不存在的运行功能测试。
 
-验证：`设计核对：CLI 默认入口、沙箱确认、会话锁与工具配对契约；无运行代码变更`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+验证：`设计核对：CLI 默认入口、沙箱确认、会话锁与工具配对契约；无运行代码变更`。纯设计未新增运行功能测试。
+
+## BUG-20
+
+新增 .github/workflows/tests.yml：默认 PR/main push 锁定安装与离线测试，手动 integration 作业缓存公开模型/语料并跑真实链路和质量回归。dev/ci_sandbox_probe.py 实际验证 Bubblewrap/prlimit，不支持则报错退出，不跳过或退回宿主。test_bug20_ci.py 先复现缺工作流，再验证入口/命令/非静默失败契约。无新应用配置。远端 Actions 尚未触发。
+
+验证：`uv run pytest dev/tests/test_bug20_ci.py -q（1 passed）；uv run python dev/ci_sandbox_probe.py（真实隔离通过）；uv run pytest -m "not integration" -q（185 passed，最终增补回归见交付报告）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## 新增配置项
+
+| 名称 | 默认值 | 含义 |
+|---|---|---|
+| MEMORY_MAX_CHARS | 4000 | 持久记忆正文总上限；旧文件完整内容仍可导出 |
+| ASSESS_CONCURRENCY | 1 | 独立后台评估池 |
+| WEB_SEARCH_CONFIRM | always | 出网逐次确认；仅显式 off 关闭 |
+| WEB_SEARCH_TIMEOUT | 15 | 搜索网络及检查总时限，秒 |
+| WORKSPACE_LIMIT_MB | 512 | 命令工作区用量检查上限，MiB；非硬卷配额 |
+| COMMAND_MEMORY_MB | 512 | 单进程地址空间上限，MiB |
+| COMMAND_CPU_SECONDS | 5 | 单进程 CPU 秒数上限 |
+| COMMAND_FILE_MB | 32 | 单文件尺寸上限，MiB |
+| COMMAND_PROCESSES | 128 | rlimit 同 UID 进程数限制，root 等边界见沙箱文档 |
+| ENABLE_DEBUG_TOOL | False | 显式向模型注册调试工具 |
+| MODEL_INPUT_TOKENS | 16000 | 与字符预算同时生效的近似 token 上限 |
+| CONTEXT_SUMMARY | True | 淘汰旧轮次时尝试有界摘要 |
+| SUMMARY_INPUT_CHARS | 12000 | 摘要输入正文上限 |
+| SUMMARY_CHARS | 1000 | 摘要输出上限 |
+| SUMMARY_TIMEOUT | 10 | 摘要调用时限，秒 |
+| SESSION_MAX_MB | 64 | 新轮次准入体积上限；在途结果不丢弃 |
+| MAX_TOOL_CALLS_PER_ROUND | 8 | 每轮实际执行工具数，超额回填拒绝结果 |
+| TOOL_CONCURRENCY | 4 | 只读工具线程槽位 |
+| TOOL_TIMEOUT | 120 | 通用工具等待时限，秒；写线程必须收尾 |
+| MEMORY_TOP_K | 4 | 相关记忆最大条数 |
+| MEMORY_INJECT_CHARS | 1200 | 注入记忆字符上限 |
+| MEMORY_AUTO_EXTRACT | False | 后台生成待采纳候选，不自动注入 |
+| MEMORY_SHARED | False | 显式使用 shared-memory.md，默认保持会话隔离 |
+| MODEL_FALLBACKS | [] | 同协议备用模型 JSON 数组，跨服务指定 api_key_env |
+| MODEL_STREAM_USAGE | False | 请求服务商流式 usage；否则估算 |
+| INPUT_COST_PER_MILLION | 0 | 输入每百万 token 美元价；未配成本为 null |
+| OUTPUT_COST_PER_MILLION | 0 | 输出每百万 token 美元价；未配成本为 null |
+| ASSESS_INPUT_CHARS | 12000 | 评估总输入字符预算 |
+| ASSESS_CONTEXT_CHARS | 2000 | 评估单片段字符上限 |
+| RUN_HISTORY_LIMIT | 20 | 最近完成轮次指标保留数 |
+
+既有行为变化：配置模板 DEBUG 从 True 改为 False；MAX_CONCURRENT_AGENTS 现在只限制前台模型请求。
+append_file 固定每段最多 4000 字符；记忆最多 64 条；存储 v2 增加 messages.jsonl，迁移保留 session.v1.bak。
+RAG_QUALITY_CORPUS 是可选集成测试入口参数，默认不设置，不影响应用启动。
+
+## 可验证最小版本与保留边界
+
+- 沙箱增加资源兜底，但轮询不是硬磁盘配额，rlimit 是单进程/UID 语义；不宣称可安全托管不可信多租户。
+- 存储采用增量日志和原子提交索引，完整对话仍加载到内存；体积上限控制新轮次准入，归档由用户显式导出，不自动清理。
+- RAG 复用未变文件/分块/分词，但变化请求仍同步更新全局 BM25 IDF 和矩阵；没有后台陈旧索引。文件事件不可用时保守重读。
+- 小候选池质量报告不能推导全库准确率。备用模型只在流开始前切换；成本为提供的 usage/估算和配置价格，不是账单。
+- 在途原生推理线程无法强制安全终止，BUG-18 不承诺硬截止；API、MCP、多模态与 headless 的运行实现按本轮要求保留设计。

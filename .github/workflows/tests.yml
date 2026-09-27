@@ -1,0 +1,69 @@
+name: Regression tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      integration:
+        description: 下载公开模型并执行真实检索与质量回归
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  offline:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '4'
+    steps:
+      - name: 在运行器上设置隔离测试目录
+        run: |
+          cat >> "$GITHUB_ENV" <<EOF
+          SANDBOX_DIR=$RUNNER_TEMP/agent-work
+          AGENT_STATE_DIR=$RUNNER_TEMP/agent-state
+          AUDIT_LOG=$RUNNER_TEMP/audit.log
+          RAG_CACHE_DIR=$RUNNER_TEMP/rag-cache
+          EOF
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux
+      - run: uv sync --locked
+      - name: 验证真实隔离能力，不静默跳过
+        run: uv run python dev/ci_sandbox_probe.py
+      - run: uv run pytest -m 'not integration' -q
+  integration:
+    if: github.event_name == 'workflow_dispatch' && inputs.integration
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      RUN_RAG_INTEGRATION: '1'
+      EMBEDDING_MODEL_SOURCE: LOCAL
+      RAG_QUALITY_CORPUS: .cache/rag/benchmark/corpus/corpus-00000-of-00001-8afe7b7a7eca49e3.parquet
+      RERANK_LOCAL_PATH: .cache/rag/reranker
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: actions/cache@v4
+        with:
+          path: .cache/rag
+          key: rag-models-v1-${{ hashFiles('dev/rag/prepare_assets.py', 'dev/rag/inputs/quality.json') }}
+      - run: |
+          uv run python dev/rag/prepare_assets.py --only embedding
+          uv run python dev/rag/prepare_assets.py --only reranker
+          uv run python dev/rag/prepare_assets.py --only corpus
+      - run: uv run pytest -m integration -q
