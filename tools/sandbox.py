@@ -1,4 +1,4 @@
-"""工具沙箱：路径约束、风险确认、危险命令判定、审计日志。
+"""工具沙箱：路径约束、风险确认、命令隔离、审计日志。
 
 安全原则（fail-closed）：任何异常、无法确认、用户拒绝、确认超时，一律按「不允许」处理。
 """
@@ -133,41 +133,39 @@ def ask_permission(action: str, detail: str, reason: str = "") -> bool:
     return allowed
 
 
-# 危险命令（按可执行文件名匹配）：直接拦截，不给确认机会
-DANGEROUS_COMMANDS = {
-    "rm", "rmdir", "dd", "mkfs", "mkfs.ext4", "shutdown", "reboot", "halt", "poweroff",
-    "sudo", "su", "chmod", "chown", "chgrp", "kill", "pkill", "killall",
-    "mount", "umount", "systemctl", "service", "iptables", "useradd", "userdel", "passwd",
-    "crontab", "at", "nc", "ncat", "netcat", "telnet", "ssh", "scp", "sftp",
-    "curl", "wget",
-    # 解释器可以绕过沙箱（能读写沙箱外的文件），一律拦掉
-    "sh", "bash", "zsh", "dash", "fish", "python", "python3", "perl", "ruby", "node", "php",
-}
-
-
 def check_command(command: str) -> list[str]:
-    """
-    校验命令并返回 argv。
-
-    用 shlex 拆分，配合 shell=False，管道/重定向等元字符不会被解释；
-    命中危险命令或使用绝对路径调用程序，直接抛 SandboxError。
-    """
+    """Parse argv without a host shell; execution must use isolated_command."""
     if not command or not command.strip():
         raise SandboxError("命令不能为空")
-
     try:
         argv = shlex.split(command)
     except ValueError as exc:
         raise SandboxError(f"命令无法解析：{exc}") from exc
-
-    if not argv:
-        raise SandboxError("命令不能为空")
-
-    if Path(argv[0]).is_absolute():
-        raise SandboxError(f"不允许用绝对路径调用外部程序：{argv[0]}")
-
-    program = Path(argv[0]).name
-    if program in DANGEROUS_COMMANDS:
-        raise SandboxError(f"命令「{program}」在禁止清单内，已拦截")
-
+    if not argv or any("\x00" in part for part in argv):
+        raise SandboxError("命令不能为空或包含 NUL 字符")
     return argv
+
+
+def isolated_command(argv: list[str]) -> list[str]:
+    """Minimal Linux filesystem, private processes/network, writable workspace only.
+
+    Never fall back to executing on the host if isolation is unavailable.
+    """
+    import shutil
+    executable = shutil.which("bwrap", path="/usr/bin:/bin")
+    if not executable:
+        raise SandboxError("需要安装 bubblewrap 才能执行命令；文件操作仍可使用 CRUD 工具")
+    command = [executable, "--unshare-all", "--die-with-parent", "--new-session",
+               "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr"]
+    for name in ("bin", "sbin", "lib", "lib64"):
+        path = Path("/") / name
+        if path.is_symlink():
+            command += ["--symlink", os.readlink(path), str(path)]
+        elif path.is_dir():
+            command += ["--ro-bind", str(path), str(path)]
+    command += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+                "--bind", str(sandbox_root()), "/workspace", "--chdir", "/workspace",
+                "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
+                "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
+                "--setenv", "LANG", "C.UTF-8", "--", *argv]
+    return command

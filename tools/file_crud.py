@@ -21,7 +21,7 @@ from tools.sandbox import (
 
 class CreateFileArgs(BaseModel):
     """
-    在沙箱内新建文件。若文件已存在则拒绝，不会覆盖。需要用户确认。
+    用户要求新建、保存内容到文件时主动调用。自动创建父目录，不覆盖已有文件。工具自动处理写入确认。
     """
     path: str = Field(description="相对沙箱根目录的路径，例如 notes/todo.txt")
     content: str = Field(default="", description="要写入的内容")
@@ -30,14 +30,14 @@ class CreateFileArgs(BaseModel):
 
 class ReadFileArgs(BaseModel):
     """
-    读取沙箱内某个文件的内容。
+    用户要求查看文件或修改已有文件前调用；无需确认。路径相对沙箱根目录。
     """
     path: str = Field(description="相对沙箱根目录的路径，例如 notes/todo.txt")
 
 
 class UpdateFileArgs(BaseModel):
     """
-    覆盖写入沙箱内已存在的文件。需要用户确认。
+    用户要求修改已有文件时调用：先 read_file，再传入修改后的完整内容。工具自动处理确认。
     """
     path: str = Field(description="相对沙箱根目录的路径，例如 notes/todo.txt")
     content: str = Field(default="", description="新的完整内容（会覆盖原内容）")
@@ -46,7 +46,7 @@ class UpdateFileArgs(BaseModel):
 
 class DeleteFileArgs(BaseModel):
     """
-    删除沙箱内的一个文件（不支持删除目录）。需要用户确认。
+    用户明确要求删除文件时调用（不支持目录）。工具自动处理确认，拒绝后不要换工具重试。
     """
     path: str = Field(description="相对沙箱根目录的路径，例如 notes/todo.txt")
     reason: str = Field(default="", description="说明删除原因，会显示在确认提示里")
@@ -54,7 +54,7 @@ class DeleteFileArgs(BaseModel):
 
 class ListFilesArgs(BaseModel):
     """
-    列出沙箱内某个目录下的条目（文件/子目录/软链）。
+    用户要求查看目录，或操作前需要确认文件位置时调用。无需确认，默认列出沙箱根目录。
     """
     path: str = Field(default=".", description="相对沙箱根目录的目录路径，默认列根目录")
 

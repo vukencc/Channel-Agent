@@ -45,3 +45,5 @@ uv run python -m dev.rag.run_engineering
 `pyproject.toml` 只声明当前功能使用的依赖，`uv.lock` 由 `uv lock` 生成并提交，保留跨平台锁定和完整性校验。
 移除了未使用的 LangChain、LlamaIndex、绘图和数据分析依赖；归档基线专用的 ChromaDB 仅在显式运行旧代码时安装，见归档说明。
 更改依赖后运行 `uv lock` 和 `uv sync --locked`，不要手动截断锁文件。
+
+命令执行需要 Linux 系统的 Bubblewrap；文件工具及主动执行规则见 [沙箱说明](docs/sandbox.md)。

@@ -1,9 +1,11 @@
 """沙箱内的命令执行工具。
 
-安全约束：shell=False（管道/重定向不生效）、工作目录固定在沙箱内、
-限制超时与输出长度、危险命令直接拦截、执行前需用户确认。
+Bubblewrap 隔离主机文件与网络，工作目录 /workspace 映射沙箱目录；
+执行前确认，限制超时与输出长度。隔离不可用时不退回主机执行。
 """
 import subprocess
+import os
+import signal
 
 import config
 from pydantic import BaseModel, Field
@@ -14,6 +16,7 @@ from tools.sandbox import (
     ask_permission,
     audit,
     check_command,
+    isolated_command,
     sandbox_root,
     truncate,
 )
@@ -21,12 +24,13 @@ from tools.sandbox import (
 
 class RunCommandArgs(BaseModel):
     """
-    在沙箱目录内执行一条命令。需要用户确认；危险命令会被直接拒绝。
-
-    命令按空格拆分为参数后直接执行（shell=False），因此不支持管道、重定向、通配符。
+    在隔离工作区执行命令，支持 Python、Shell、mkdir/cp/mv/rm 等系统工具。
+    主机仅沙箱目录映射为 /workspace 并可写；网络关闭，主机密钥和虚拟环境不可见。
+    简单文件增删改查优先用 CRUD 工具。命令自动发起执行确认，无需先口头询问。
+    普通命令不解释管道/重定向；需要时显式使用 sh -c '...'。
     """
     command: str = Field(
-        description="要执行的命令，例如 'ls -la' 或 'cat notes/todo.txt'"
+        description="要执行的命令，例如 ls -la、python3 -c 'print(1+1)' 或 sh -c 'ls | head'"
     )
     reason: str = Field(default="", description="说明执行目的，会显示在确认提示里")
 
@@ -38,6 +42,7 @@ def run_command(command: str, reason: str = "") -> str:
     """
     try:
         argv = check_command(command)
+        isolated = isolated_command(argv)
     except SandboxError as exc:
         audit("blocked", action="run_command", command=command, reason=str(exc))
         return f"[已拦截] {exc}"
@@ -46,14 +51,23 @@ def run_command(command: str, reason: str = "") -> str:
         return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
 
     try:
-        proc = subprocess.run(
-            argv,
+        proc = subprocess.Popen(
+            isolated,
             shell=False,
             cwd=sandbox_root(),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=config.COMMAND_TIMEOUT,
+            start_new_session=True,
+            encoding="utf-8",
+            errors="replace",
         )
+        try:
+            stdout, stderr = proc.communicate(timeout=config.COMMAND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise
     except subprocess.TimeoutExpired:
         audit("timeout", action="run_command", command=command,
               timeout=config.COMMAND_TIMEOUT)
@@ -68,8 +82,8 @@ def run_command(command: str, reason: str = "") -> str:
     audit("executed", action="run_command", command=command,
           exit_code=proc.returncode, reason=reason)
 
-    stdout = truncate(proc.stdout)
-    stderr = truncate(proc.stderr)
+    stdout = truncate(stdout)
+    stderr = truncate(stderr)
 
     parts = [f"[退出码] {proc.returncode}"]
     parts.append(f"[stdout]\n{stdout}" if stdout else "[stdout] （空）")
