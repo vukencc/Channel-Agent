@@ -1,0 +1,16 @@
+{
+  "documents": 300,
+  "parents": 551,
+  "children": 1336,
+  "queries_passed": 5,
+  "index_build_seconds": 14.794778556999972,
+  "query_seconds": [
+    12.037550837999902,
+    6.286609991999967,
+    6.747544568999956,
+    5.521198665000043,
+    5.70518111399997
+  ],
+  "threshold_evaluation": "not performed",
+  "quality_evaluation": "not performed"
+}

@@ -1,0 +1,8 @@
+{
+  "command": "RUN_RAG_INTEGRATION=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 .venv/bin/python -m pytest -q -k 'not strictness and not baseline_adapter'",
+  "passed": 89,
+  "deselected": 3,
+  "skipped": 0,
+  "seconds": 18.29,
+  "excluded_scope": "Two strictness tests and the frozen baseline adapter test; no threshold calibration or quality evaluation."
+}

@@ -20,13 +20,6 @@ class TextSplitter:
         子块（句子）—— 把父块再按句末标点切分，用于精确匹配。
     """
 
-    parent_chars: int = 600
-    child_chars: int = 240
-
-    def __post_init__(self):
-        if self.parent_chars < 1 or self.child_chars < 1:
-            raise ValueError("分块长度必须为正数")
-
     @staticmethod
     def _append(chunks: List[tuple[str, int, int]], text: str, start: int, end: int) -> None:
         """收集 text[start:end] 去掉首尾空白后的内容，并记录它在原文中的真实范围。"""
@@ -49,7 +42,7 @@ class TextSplitter:
             start = match.end()
 
         self._append(chunks, text, start, len(text))
-        return self._bounded(chunks, self.parent_chars)
+        return chunks
 
     def split_children(self, text: str) -> List[tuple[str, int, int]]:
         """
@@ -69,29 +62,4 @@ class TextSplitter:
                 start = i + 1
 
         self._append(chunks, text, start, len(text))
-        return self._bounded(chunks, self.child_chars)
-
-    def _bounded(self, chunks, limit):
-        """Bound long spans without discarding text; preserve original offsets."""
-        result = []
-        for text, start, _ in chunks:
-            for offset in range(0, len(text), limit):
-                pieces = []
-                self._append(pieces, text, offset, min(offset + limit, len(text)))
-                result.extend((piece, start + a, start + b) for piece, a, b in pieces)
-        return result
-
-    def pack_children(self, text: str) -> List[tuple[str, int, int]]:
-        """Pack adjacent sentences into bounded contextual spans without omission."""
-        result = []
-        start = end = None
-        for _, a, b in self.split_children(text):
-            if start is not None and b - start > self.child_chars:
-                result.append((text[start:end], start, end))
-                start = None
-            if start is None:
-                start = a
-            end = b
-        if start is not None:
-            result.append((text[start:end], start, end))
-        return result
+        return chunks

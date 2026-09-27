@@ -1,0 +1,7 @@
+{
+  "model": "BAAI/bge-small-zh-v1.5",
+  "source": "/home/elaine_vuken/projects/ai-agent-startup/.cache/rag/models/models--Qdrant--bge-small-zh-v1.5/snapshots/46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59",
+  "source_onnx_sha256": "1294ea4b6331115a353d81f96b85e8c8d7fdcc284453d5b2fab5b016230aad38",
+  "int8_onnx_sha256": "4c8e1986e619f9ca58d612d83b9414f49f02d51d3595d7f4d45c66faea481ce8",
+  "method": "onnxruntime dynamic QInt8 per-channel MatMul/Attention; no calibration or relevance labels"
+}

@@ -47,6 +47,7 @@ EMBEDDING_MODEL_SOURCE = (os.getenv("EMBEDDING_MODEL_SOURCE") or "LOCAL").upper(
 EMBEDDING_MODEL_URL = os.getenv("EMBEDDING_MODEL_URL")
 EMBEDDING_MODEL_API_KEY = os.getenv("EMBEDDING_MODEL_API_KEY")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small")
+EMBEDDING_LOCAL_PATH = env_path("EMBEDDING_LOCAL_PATH")
 
 TIMEOUT = env_float("TIMEOUT", 30.0)
 SESSION_TIMEOUT = env_float("SESSION_TIMEOUT", 15.0)
@@ -60,3 +61,20 @@ TOOL_MAX_OUTPUT = env_int("TOOL_MAX_OUTPUT", 20000)   # 工具输出（命令/�
 AUDIT_LOG = env_path("AUDIT_LOG", "logs/audit.log")   # 确认与执行审计日志
 
 DEBUG = env_bool("DEBUG")
+
+# RAG models and indexes are cached locally; secrets are never cache identifiers.
+RAG_CACHE_DIR = env_path("RAG_CACHE_DIR", ".cache/rag")
+RAG_CANDIDATES = env_int("RAG_CANDIDATES", 50)
+RAG_RERANK_TOP_N = env_int("RAG_RERANK_TOP_N", 50)
+RAG_RRF_K = env_int("RAG_RRF_K", 60)
+RAG_PARENT_CHARS = env_int("RAG_PARENT_CHARS", 600)
+RAG_CHILD_CHARS = env_int("RAG_CHILD_CHARS", 240)
+RAG_BATCH_SIZE = env_int("RAG_BATCH_SIZE", 32)
+RAG_THREADS = env_int("RAG_THREADS", 4)
+RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+RERANK_REVISION = os.getenv("RERANK_REVISION")
+RERANK_LOCAL_PATH = env_path("RERANK_LOCAL_PATH")
+# Cross-encoder raw logits, not probabilities; configurable, model-specific gates.
+RAG_THRESHOLD_STRICT = env_float("RAG_THRESHOLD_STRICT", 0.0)
+RAG_THRESHOLD_NORMAL = env_float("RAG_THRESHOLD_NORMAL", -2.0)
+RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)

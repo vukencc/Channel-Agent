@@ -92,3 +92,7 @@ Thumbs.db
 #   pyproject.toml       依赖与项目配置的唯一来源，必须上传
 #   .env.example         配置模板（不含真实密钥），方便他人起步
 # ==================================================================
+AGENTS.md
+
+# Local RAG indexes, downloaded models and benchmark corpora
+.cache/

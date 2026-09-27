@@ -1,0 +1,10 @@
+{
+  "calibration": {
+    "queries": 50,
+    "without_positive_qrels": []
+  },
+  "evaluation": {
+    "queries": 100,
+    "without_positive_qrels": []
+  }
+}
