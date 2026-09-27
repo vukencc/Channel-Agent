@@ -1,4 +1,6 @@
 """Concurrent agent sessions; blocking tools run in context-isolated worker threads."""
+import copy
+import uuid
 import json
 import asyncio
 import concurrent.futures
@@ -102,7 +104,7 @@ class SessionManager:
         if session.memory_task and not session.memory_task.done():
             session.memory_task.cancel()
         session.record.pop('assessment', None)
-        session.record['last_run'] = {'model_calls': [], 'tools': []}
+        session.record['last_run'] = {'turn_id': uuid.uuid4().hex, 'model_calls': [], 'tools': []}
         session.record.update(status='queued', error='')
         session.record['messages'].append({'role': 'user', 'content': text})
         self.save(session)
@@ -180,7 +182,8 @@ class SessionManager:
         def execute():
             context = ToolContext(self.store.workspace(session.id), directory / 'audit.jsonl',
                                   lambda prompt, timeout: self._confirm(session, loop, prompt, timeout),
-                                  session.cancelled)
+                                  session.cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
+                                  tool_call_id=call['id'])
             with tool_context(context):
                 if session.cancelled.is_set():
                     return '[已取消] 工具尚未执行。'
@@ -338,7 +341,7 @@ class SessionManager:
                             result = await self._tool(session, call)
                         except Exception as exc:
                             result = f'工具执行失败: {type(exc).__name__}: {exc}'
-                    return result, {'name': name, 'wall_s_including_confirmation': round(time.monotonic() - started, 3),
+                    return result, {'name': name, 'tool_call_id': call['id'], 'turn_id': session.record['last_run']['turn_id'], 'wall_s_including_confirmation': round(time.monotonic() - started, 3),
                                     'output_chars': len(result)}
 
                 index = 0
@@ -405,6 +408,10 @@ class SessionManager:
             session.partial_reasoning = ''
             session.phase = ''
             session.record['last_run']['total_s'] = round(time.monotonic() - session.started_at, 3)
+            session.record['last_run']['status'] = session.record['status']
+            session.record.setdefault('run_history', []).append(copy.deepcopy(session.record['last_run']))
+            session.record['run_history'] = session.record['run_history'][-config.RUN_HISTORY_LIMIT:]
+            logger.info('turn_finished session=%s %s', session.id, json.dumps(session.record['last_run'], ensure_ascii=False))
             await self.save(session)
 
     async def shutdown(self):

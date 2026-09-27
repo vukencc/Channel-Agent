@@ -30,6 +30,8 @@ class ToolContext:
     audit_path: Path
     confirm: Callable[[str, float], bool]
     cancelled: Event
+    turn_id: str = ""
+    tool_call_id: str = ""
 
 
 _context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)
@@ -101,7 +103,11 @@ def _audit_path() -> Path:
 
 def audit(event: str, **fields) -> None:
     """写一条审计记录（文件 + 日志）。审计写入失败不影响主流程。"""
+    context = _context.get()
     record = {
+        "session_id": context.root.name if context else None,
+        "turn_id": context.turn_id if context else None,
+        "tool_call_id": context.tool_call_id if context else None,
         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
         "event": event,
         **fields,

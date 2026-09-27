@@ -18,7 +18,7 @@
 - [x] BUG-14
 - [x] BUG-15
 - [x] BUG-16
-- [ ] BUG-17（P2：低风险实现或设计）
+- [x] BUG-17（P2：低风险实现或设计）
 - [ ] BUG-18（P2：低风险实现或设计）
 - [ ] BUG-19（P2：低风险实现或设计）
 - [ ] BUG-20（P2：低风险实现或设计）
@@ -118,3 +118,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 评估将全部 query/context/answer 拼接，可能超窗。rag/assess.py 分配总预算、单片段上限，保留总命中数与纳入数说明，极小预算或 token 超限明确降级且不调用裁判。新增 ASSESS_INPUT_CHARS=12000、ASSESS_CONTEXT_CHARS=2000。test_bug16_assess.py 把超过 200 万字符的输入压到 2000 字符内并完成 fake judge。
 
 验证：`uv run pytest dev/tests/test_bug16_assess.py dev/tests/test_assess.py dev/tests/test_sessions.py -q（见提交验证）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-17
+
+低风险实现：core/sessions.py 保存最近 RUN_HISTORY_LIMIT=20 轮指标，分配 turn_id 并关联工具调用 ID；tools/sandbox.py 审计包含 session/turn/tool_call_id；JSON 结构化 turn_finished 诊断事件。不引入 OpenTelemetry 或成本面板。test_bug17_runs.py 验证三轮运行保留两轮及独立追踪 ID。
+
+验证：`uv run pytest dev/tests/test_bug17_runs.py dev/tests/test_sessions.py dev/tests/test_cli_performance.py -q（22 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
