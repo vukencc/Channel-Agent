@@ -1,4 +1,11 @@
 """Atomic, human-readable session files. One CLI owns a state directory at a time."""
+import asyncio
+import copy
+import concurrent.futures
+import shutil
+import threading
+
+import config
 import fcntl
 import json
 import os
@@ -13,8 +20,21 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def finish_pending_tools(messages: list[dict]):
+    """Keep API tool-call protocol valid after cancellation/crash, without replay."""
+    pending = {}
+    for message in messages:
+        for call in message.get('tool_calls', []):
+            pending[call['id']] = call
+        if message['role'] == 'tool':
+            pending.pop(message['tool_call_id'], None)
+    for identifier in pending:
+        messages.append({'role': 'tool', 'tool_call_id': identifier,
+                         'content': '[中断] 执行结果未知，请先检查文件状态，勿自动重放操作。'})
+
+
 class SessionStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, workspace_root: Path | None = None):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = (self.root / '.lock').open('a')
@@ -24,8 +44,12 @@ class SessionStore:
             self.lock.close()
             raise RuntimeError('该状态目录已有 CLI 在运行；请使用不同的 --state-dir') from None
         self.errors: list[str] = []
+        self.workspace_root = Path(workspace_root or config.SANDBOX_DIR).resolve()
+        self.writer = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-save")
+        self._workspace_lock = threading.Lock()
 
     def close(self):
+        self.writer.shutdown(wait=True)
         if not self.lock.closed:
             fcntl.flock(self.lock, fcntl.LOCK_UN)
             self.lock.close()
@@ -38,10 +62,45 @@ class SessionStore:
             raise ValueError('会话目录不能是符号链接')
         return path
 
+    def workspace_path(self, identifier: str) -> Path:
+        self.directory(identifier)  # Validate ID before constructing a filesystem path.
+        return self.workspace_root / identifier
+
+    def workspace(self, identifier: str) -> Path:
+        """Copy legacy files once; preserve originals and refuse ambiguous overwrites."""
+        destination = self.workspace_path(identifier)
+        legacy = self.directory(identifier) / 'workspace'
+        marker = self.directory(identifier) / 'workspace-migrated'
+        with self._workspace_lock:
+            if destination.is_symlink():
+                raise ValueError('工作区目录不能是符号链接')
+            if legacy.exists() and not marker.exists():
+                if destination.exists():
+                    raise ValueError(f'旧工作区与新工作区同时存在，未覆盖文件。请检查 {legacy} 和 {destination}')
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary = Path(tempfile.mkdtemp(prefix='.migration-', dir=destination.parent))
+                try:
+                    shutil.copytree(legacy, temporary, dirs_exist_ok=True, symlinks=True)
+                    temporary.rename(destination)
+                    self.atomic_write(marker, str(destination))
+                finally:
+                    if temporary.exists():
+                        shutil.rmtree(temporary)
+            destination.mkdir(parents=True, exist_ok=True)
+        return destination
+
+    def save_async(self, record: dict):
+        """Snapshot on the event loop; serialize and fsync on one ordered writer."""
+        record['updated_at'] = now()
+        snapshot = copy.deepcopy(record)
+        return asyncio.get_running_loop().run_in_executor(self.writer, self.save, snapshot)
+
     def save(self, record: dict):
         directory = self.directory(record['id'])
         directory.mkdir(exist_ok=True, mode=0o700)
         record['updated_at'] = now()
+        if not (directory / 'memory.md').exists():
+            (directory / 'memory.md').touch(mode=0o600, exist_ok=True)
         self.atomic_write(directory / 'session.json', json.dumps(record, ensure_ascii=False, indent=2) + '\n')
 
     @staticmethod
@@ -57,12 +116,16 @@ class SessionStore:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def create(self, title: str, prompt: str) -> dict:
+    def new_record(self, title: str, prompt: str) -> dict:
         record = {'version': 1, 'id': uuid.uuid4().hex, 'title': title,
                   'created_at': now(), 'status': 'idle', 'error': '',
                   'messages': [{'role': 'system', 'content': prompt}]}
+        record['updated_at'] = now()
+        return record
+
+    def create(self, title: str, prompt: str) -> dict:
+        record = self.new_record(title, prompt)
         self.save(record)
-        self.atomic_write(self.directory(record['id']) / 'memory.md', '')
         return record
 
     def load_all(self) -> list[dict]:
@@ -84,16 +147,7 @@ class SessionStore:
                 if record['status'] not in {'idle', 'error', 'cancelled', 'interrupted'}:
                     record['status'] = 'interrupted'
                     record['error'] = '上次任务被中断；已恢复已保存内容，不会自动重放工具。'
-                    # Finish any outstanding tool call protocol without rerunning side effects.
-                    pending = {}
-                    for message in record['messages']:
-                        for call in message.get('tool_calls', []):
-                            pending[call['id']] = call
-                        if message['role'] == 'tool':
-                            pending.pop(message['tool_call_id'], None)
-                    for identifier in pending:
-                        record['messages'].append({'role': 'tool', 'tool_call_id': identifier,
-                                                   'content': '[中断] 执行结果未知，请先检查文件状态，勿自动重放操作。'})
+                    finish_pending_tools(record['messages'])
                     self.save(record)
                 records.append(record)
             except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
@@ -106,6 +160,7 @@ class SessionStore:
 
     def remember(self, identifier: str, text: str):
         path = self.directory(identifier) / 'memory.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
         self.atomic_write(path, self.memory(identifier).rstrip() + '\n- ' + text.strip() + '\n')
 
     def export(self, record: dict, format: str = 'md') -> Path:

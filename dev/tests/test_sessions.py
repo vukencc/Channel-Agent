@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 @pytest.fixture
 def store(tmp_path):
-    value = SessionStore(tmp_path / 'state')
+    value = SessionStore(tmp_path / 'state', workspace_root=tmp_path / 'crud_tests')
     yield value
     value.close()
 
@@ -100,10 +100,10 @@ def test_threaded_crud_confirmations_and_workspaces_are_isolated(store, monkeypa
         manager.decide(a, True)
         manager.decide(b, False)
         await asyncio.gather(a.task, b.task)
-        assert (store.directory(a.id) / 'workspace/same.txt').read_text() == 'first'
-        assert not (store.directory(b.id) / 'workspace/same.txt').exists()
+        assert (store.workspace_path(a.id) / 'same.txt').read_text() == 'first'
+        assert not (store.workspace_path(b.id) / 'same.txt').exists()
         assert '[已取消]' in b.record['messages'][-1]['content']
-        assert not (store.directory(a.id) / 'workspace/session.json').exists()
+        assert not (store.workspace_path(a.id) / 'session.json').exists()
     asyncio.run(run())
 
 
@@ -122,7 +122,7 @@ def test_cancel_pending_confirmation_and_restart_context(store, monkeypatch):
         manager.cancel(session)
         await session.task
         assert session.record['status'] == 'cancelled'
-        assert not (store.directory(session.id) / 'workspace/no.txt').exists()
+        assert not (store.workspace_path(session.id) / 'no.txt').exists()
         recovered = SessionManager(store)
         assert recovered.sessions[session.id].record['messages'] == session.record['messages']
     asyncio.run(run())
