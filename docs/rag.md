@@ -1,95 +1,80 @@
 # Hybrid RAG
 
-`rag_search` executes independent dense and BM25 retrieval, reciprocal rank
-fusion (RRF), then a real local cross-encoder. It returns parent passages with
-source offsets and separately named scores. `strictness` is now a final raw
-reranker-logit gate, not a cosine gate; `breadth` still maps to 2/4/8 results.
-The direct Python API additionally accepts `top_k`, an injected `RetrievalIndex`,
-and a caller-owned `trace` dictionary. The registered agent tool stays unchanged.
+`rag_search` 执行独立向量召回和 BM25 召回，再经 RRF 融合、真实本地 CrossEncoder 重排。
+返回父段落正文、来源偏移和各阶段分数。注册工具参数不变；Python 接口额外支持 `top_k`、`index`、`trace`。
 
-## Development
+## 工程测试
 
-Current delivery scope is engineering validation. The full-corpus benchmark and
-threshold calibration are deferred. Run the small, label-independent public
-corpus check (300 documents, 5 frozen queries) with existing downloaded assets:
+当前范围是功能及真实链路验证，不评价或校准搜索阈值。安装环境使用 `uv sync --locked`。
 
 ```bash
+uv run pytest -m 'not integration'
 RUN_RAG_INTEGRATION=1 OPENBLAS_NUM_THREADS=1 \
   EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
-  uv run pytest -q -k 'not strictness and not baseline_adapter'
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 RAG_THREADS=4 \
-  EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
-  uv run python scripts/test_rag_engineering.py
+  uv run pytest -q -k 'not strictness'
 ```
 
-Results live in `reports/rag/engineering/`: fixed input IDs, complete real stage
-traces, timings and `STAGES.md`. Sampling uses SHA-256 document IDs independently
-of query text and relevance labels. Relevant documents may be absent; this check
-establishes execution and trace integrity, not retrieval accuracy. The ordinary
-production output gate remains in place, but its thresholds are not evaluated
-or tuned. See `reports/rag/DELIVERY.md` for the delivered implementation.
+集成测试显式启用后使用真实本地模型，模型加载或推理失败直接报错。
+单元测试的模拟数据仅验证工程行为，不作为质量评估。
 
-The following full evaluation workflow is retained for future use; it is **not**
-required for current engineering acceptance and can take hours on CPU:
+## 小规模公开数据验证
+
+`benchmarks/rag/inputs/engineering.json` 固定了公开 T2Retrieval 的 300 篇文档 ID、5 条查询、源文件和子集校验值。
+文档按 ID 的 SHA-256 排序选择，不依据查询、相关性标签或检索结果挑选。
+
+首次准备需要下载公开语料及模型（已有资源会复用）：
 
 ```bash
-uv sync --locked
-uv run pytest -m 'not integration'
-uv run python scripts/prepare_rag_benchmark.py
-RUN_RAG_INTEGRATION=1 uv run pytest -m integration
-uv run python scripts/quantize_rag_embedding.py
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=8 RAG_THREADS=8 \
-  EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
-  uv run python scripts/evaluate_rag.py --phase all
-uv run python scripts/report_rag.py
+uv run python scripts/rag/prepare_assets.py --only corpus
+uv run python scripts/rag/prepare_assets.py --only embedding
+uv run python scripts/rag/prepare_assets.py --only reranker
+uv run python -m benchmarks.rag.prepare_engineering
+# 可选 INT8 加速：输入应为原始 FP32 模型。
+uv run python scripts/rag/quantize_embedding.py
 ```
 
-Preparation downloads pinned public data and only the required reranker format;
-`--endpoint https://hf-mirror.com` is available when the official host is
-unreachable. Existing segment checkpoints support interrupted downloads. Assets
-live in ignored `.cache/rag/`; small manifests and reports live in `reports/rag/`.
-Downloaded weights are never committed. Real integration tests require real
-models and fail on load/inference errors when enabled; skipped tests do not
-constitute model validation.
+准备程序流式读取完整 Parquet、验证 SHA-256，只提取固定文档到
+`.cache/rag/benchmark/engineering/documents.jsonl`。之后运行只需要这个子集、输入清单与模型，
+不再加载完整语料、不读取 qrels、不导入全量评测脚本。
 
-The benchmark uses the complete official T2Retrieval corpus with 50 calibration
-and 100 evaluation queries selected before retrieval by SHA-256(query ID).
-`reports/rag/PROTOCOL.md` defines the scoring, baseline and selection rules.
-`--phase index`, `baseline`, `calibration`, and `evaluation` allow separate runs;
-evaluation requires the previously frozen calibration file. Raw stage metrics
-remain independent of output filtering. Review all regressions in `per-query.csv`.
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 RAG_THREADS=4 \
+  EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
+  uv run python -m benchmarks.rag.run_engineering
+```
 
-## Configuration and cache
+`prepare_engineering` 支持 `--source/--manifest/--output`；`run_engineering` 支持
+`--corpus/--manifest/--output`，可指定单独的本地输入与输出位置。
+默认输出到忽略的 `reports/rag/engineering/`：
 
-See `.env.example` for candidate budgets, chunk bounds, batch/thread controls,
-model paths and thresholds. `EMBEDDING_LOCAL_PATH` accepts an existing FastEmbed
-ONNX directory. Otherwise the embedding model uses `.cache/rag/models`.
-`RERANK_LOCAL_PATH` accepts an existing CrossEncoder directory. The preparation
-script's `.cache/rag/reranker` is automatically reused when its recorded model
-and revision match configuration. API embeddings remain supported; the local
-BGE query instruction is never added to arbitrary API models.
+- `manifest.json`：本轮输入 ID、查询及运行参数快照，不作为下次运行的输入。
+- `traces.jsonl`：四阶段完整候选、正文、分数、耗时及工具返回值。
+- `summary.json`、`STAGES.md`：工程执行摘要与各阶段 Top 3 对比。
 
-Defaults: 50 candidates per channel; RRF k=60; rerank 50 candidates; 600-character
-parents and 240-character children formed by packing adjacent sentences. Dense search scores children then collapses
-to each parent's maximum. BM25 uses the entire parent text and jieba with HMM
-turned off. No query-specific dictionaries, special-case answers or relevance
-labels are used by the pipeline. Reranking windows long candidate passages;
-it reserves at most 96 query tokens and uses the maximum passage-window logit.
+相关文档可能不在固定子集中；运行通过不能证明检索准确率提升。
+输入清单保存在版本控制中，下载数据和输出都不提交。人工审阅的历史记录独立保存在
+[交付报告](rag-delivery.md)和[阶段结果快照](rag-engineering-2026-09-27.md)。
 
-Content/model hashes address persistent embedding vectors; corpus/configuration
-changes rebuild the in-memory index. The corpus is read to detect same-size
-edits as well as additions/removals. SQLite transactions checkpoint vectors,
-and complete matrices are memory-mapped. Importing modules does not load models.
-Empty corpora return an explicit status; missing directories and invalid inputs
-raise errors. Reranker failure is propagated, never disguised as successful RRF.
+## 运行配置
 
-Scores from cosine, BM25, RRF and cross-encoder logits have different scales.
-Reranker logits are not probabilities or reliable out-of-domain rejection
-scores. Calibrate thresholds on held-out development labels for your own corpus;
-do not infer universal answerability from the public benchmark thresholds.
+`.env.example` 定义模型、批量/线程、候选数和分块设置；密钥留在忽略的 `.env`。
+默认每路召回 50 个父块，RRF k=60，重排前 50 个；父块 600 字符、子块 240 字符。
+向量取各父块的最大子块分数；BM25 使用 jieba（HMM=False）和正 IDF。
+重排最大输入 512 tokens，查询最多 96 tokens，长候选完整分窗后取最大 logit。
 
-The recorded full-corpus run uses the same INT8 BGE encoder in the original
-retrieval-logic baseline and the hybrid pipeline. It is not a bit-for-bit FP32
-replay. Weight checksums and a fixed 512-span FP32/INT8 comparison are included
-in the report artifacts. Quantization uses no calibration data or labels.
-Default application embeddings remain FP32 unless a local INT8 path is selected.
+`EMBEDDING_LOCAL_PATH` 指定 FastEmbed ONNX 目录；未指定 INT8 时默认仍是 FP32 BGE。
+`RERANK_LOCAL_PATH` 指定 CrossEncoder 目录；下载脚本生成的 `.cache/rag/reranker` 可自动复用。
+API embeddings 继续支持，不附加本地 BGE 专用查询指令。
+内容/模型指纹控制 SQLite 向量缓存和 mmap 矩阵复用；目录、文本、模型变化会失效重建。
+当前为 NumPy 精确向量检索，文件锁依赖 POSIX，未验证 Windows。
+
+`strictness` 控制重排后的 logit 门槛，`breadth` 对应 2/4/8 条。
+余弦、BM25、RRF 与 logit 尺度不同；logit 不是概率，默认阈值尚未校准。
+空库返回状态说明，参数错误或模型故障上抛，不静默退化成跳过重排。
+
+## 暂停的全量评测
+
+全量 118,605 文档、50 校准查询、100 评测查询的流程归档至
+[archive/full_corpus](../benchmarks/rag/archive/full_corpus/README.md)。
+它不属于默认 pytest，不参与工程测试，只有显式执行归档命令才运行。
+原始基线源码和固定查询完整保留；全量产物仍仅留本地，不代表已完成质量验收。

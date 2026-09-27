@@ -4,8 +4,9 @@ import sys
 from pathlib import Path
 from time import perf_counter
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
+(ROOT / 'reports/rag/full-corpus').mkdir(parents=True, exist_ok=True)
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -34,5 +35,5 @@ result = {'samples': len(texts), 'selection': 'First 512 packed children from fi
           'speedup': fp32_seconds / int8_seconds, 'vector_cosine_min': float(similarity.min()),
           'vector_cosine_mean': float(similarity.mean()),
           'vector_cosine_p05': float(np.percentile(similarity, 5))}
-(ROOT / 'reports/rag/embedding-profile.json').write_text(json.dumps(result, indent=2) + '\n')
+(ROOT / 'reports/rag/full-corpus/embedding-profile.json').write_text(json.dumps(result, indent=2) + '\n')
 print(json.dumps(result, indent=2))

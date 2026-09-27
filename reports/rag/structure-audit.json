@@ -1,8 +1,0 @@
-{
-  "documents": 118605,
-  "parents": 237046,
-  "children": 579476,
-  "empty_documents": 0,
-  "corpus_sha256": "d4a207a9277eb1cf31f68ab6a7236cbf3e8fbf9493e0e2b577a34660929fcd17",
-  "result": "Every parent/child offset matches original text; no non-whitespace content omitted."
-}

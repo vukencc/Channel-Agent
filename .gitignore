@@ -96,3 +96,7 @@ AGENTS.md
 
 # Local RAG indexes, downloaded models and benchmark corpora
 .cache/
+
+# Generated evaluation outputs and ONNX telemetry (keep curated docs separately)
+/reports/
+/:memory:.ses

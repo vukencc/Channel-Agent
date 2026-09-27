@@ -4,8 +4,9 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
+(ROOT / 'reports/rag/full-corpus').mkdir(parents=True, exist_ok=True)
 
 import pyarrow.parquet as pq
 from rag.chunking import TextSplitter
@@ -32,5 +33,5 @@ for batch in pq.ParquetFile(source).iter_batches(batch_size=1024):
 with source.open('rb') as stream:
     counts['corpus_sha256'] = hashlib.file_digest(stream, 'sha256').hexdigest()
 counts['result'] = 'Every parent/child offset matches original text; no non-whitespace content omitted.'
-(ROOT / 'reports/rag/structure-audit.json').write_text(json.dumps(counts, indent=2) + '\n')
+(ROOT / 'reports/rag/full-corpus/structure-audit.json').write_text(json.dumps(counts, indent=2) + '\n')
 print(json.dumps(counts, indent=2))

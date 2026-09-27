@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from scripts.evaluate_rag import metrics, unique_docs
+from benchmarks.rag.archive.full_corpus.evaluate import metrics, unique_docs
 
 
 def test_document_deduplication_preserves_first_rank():

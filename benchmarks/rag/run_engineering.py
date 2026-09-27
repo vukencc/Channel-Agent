@@ -1,11 +1,11 @@
 """Small, label-independent real-model engineering run; no threshold calibration."""
-import hashlib
+import argparse
 import json
 import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import config
@@ -13,15 +13,22 @@ from rag.embedding import get_embedding_model, local_model_path
 from rag.index import RetrievalIndex
 from rag.rerank import local_reranker_path
 from rag.tool import rag_search
-from scripts.evaluate_rag import load_documents
+from benchmarks.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, load_inputs
 
 
 def main():
-    output = ROOT / 'reports/rag/engineering'
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--manifest', type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument('--corpus', type=Path, default=DEFAULT_CORPUS)
+    parser.add_argument('--output', type=Path, default=ROOT / 'reports/rag/engineering')
+    args = parser.parse_args()
+    output = args.output.resolve()
+    # Inputs are immutable: results must not overwrite the manifest or corpus.
+    for source in (args.manifest.resolve(), args.corpus.resolve()):
+        if source.is_relative_to(output):
+            parser.error('--output must not contain input files')
+    documents, queries = load_inputs(args.manifest, args.corpus)
     output.mkdir(parents=True, exist_ok=True)
-    documents = sorted(load_documents(), key=lambda doc: hashlib.sha256(
-        doc['metadata']['doc_id'].encode()).hexdigest())[:300]
-    queries = json.loads((ROOT / 'reports/rag/queries.json').read_text())['evaluation'][:5]
     # Isolate this small run from the interrupted full-corpus index.
     config.EMBEDDING_LOCAL_PATH = local_model_path()
     config.RERANK_LOCAL_PATH = local_reranker_path()

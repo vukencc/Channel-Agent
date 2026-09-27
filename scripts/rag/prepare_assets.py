@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pyarrow.parquet as pq
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / '.cache/rag/benchmark'
 REPORT = ROOT / 'reports/rag'
 MODEL = ROOT / '.cache/rag/reranker'
@@ -223,7 +223,7 @@ def freeze_queries():
         'calibration': ordered[:50],
         'evaluation': ordered[50:150],
     }
-    target = REPORT / 'queries.json'
+    target = ROOT / 'benchmarks/rag/archive/full_corpus/inputs/queries.json'
     content = json.dumps(manifest, ensure_ascii=False, indent=2) + '\n'
     if target.exists() and target.read_text() != content:
         raise RuntimeError('Frozen query manifest differs; refusing to replace it')

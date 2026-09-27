@@ -5,8 +5,9 @@ import json
 import html
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-REPORT = ROOT / 'reports/rag'
+ROOT = Path(__file__).resolve().parents[4]
+ARCHIVE = Path(__file__).resolve().parent
+REPORT = ROOT / 'reports/rag/full-corpus'
 
 
 def load_records(name):
@@ -17,7 +18,7 @@ def load_records(name):
 def main():
     summary = json.loads((REPORT / 'evaluation-summary.json').read_text())
     baseline = json.loads((REPORT / 'baseline-summary.json').read_text())
-    manifest = json.loads((REPORT / 'queries.json').read_text())
+    manifest = json.loads((ARCHIVE / 'inputs/queries.json').read_text())
     calibration = json.loads((REPORT / 'calibration.json').read_text())
     records = load_records('evaluation-traces.jsonl.gz')
     baseline_records = {row['qid']: row for row in load_records('baseline-traces.jsonl.gz')}

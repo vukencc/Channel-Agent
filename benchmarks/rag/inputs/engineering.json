@@ -1,5 +1,4 @@
 {
-  "purpose": "Engineering validation only; no quality metrics or threshold calibration.",
   "selection": "First 300 corpus IDs sorted by SHA256; first 5 previously frozen evaluation queries. No qrels used.",
   "document_ids": [
     "665782",
@@ -325,11 +324,8 @@
       "text": "幼儿园班计划怎么写"
     }
   ],
-  "embedding_identity": "BAAI/bge-small-zh-v1.5:c05b2173ef26877ab2ec85d848cfcd427da6eafb3d3ae93b7cfbdf7beb75dd6d:normalized-v2",
-  "reranker": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
-  "parameters": {
-    "candidates": 50,
-    "rerank_top_n": 50,
-    "rrf_k": 60
-  }
+  "corpus_sha256": "d4a207a9277eb1cf31f68ab6a7236cbf3e8fbf9493e0e2b577a34660929fcd17",
+  "source": "C-MTEB/T2Retrieval",
+  "revision": "8731a845f1bf500a4f111cf1070785c793d10e64",
+  "documents_sha256": "5b9cfebfbeefb8667c02cea7bade56617d317ce38ea86110df897254564b798d"
 }

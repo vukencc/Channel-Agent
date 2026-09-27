@@ -1,6 +1,6 @@
 """Reproducible full-corpus evaluation; search never receives relevance labels.
 
-uv run python scripts/evaluate_rag.py --phase all
+uv run python benchmarks/rag/archive/full_corpus/evaluate.py --phase all
 Public qrels are used only after search, by the scorer and calibration phase.
 """
 import argparse
@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
@@ -25,7 +25,8 @@ from rag.embedding import get_embedding_model
 from rag.index import RetrievalIndex, cached_embeddings
 from rag.tool import rag_search
 
-REPORT = ROOT / 'reports/rag'
+ARCHIVE = Path(__file__).resolve().parent
+REPORT = ROOT / 'reports/rag/full-corpus'
 DATA = ROOT / '.cache/rag/benchmark'
 
 
@@ -35,7 +36,7 @@ def dump(path, data):
 
 def load_documents():
     source = next((DATA / 'corpus').glob('corpus-*.parquet'))
-    manifest = json.loads((REPORT / 'queries.json').read_text())
+    manifest = json.loads((ARCHIVE / 'inputs/queries.json').read_text())
     with source.open('rb') as f:
         assert hashlib.file_digest(f, 'sha256').hexdigest() == manifest['corpus_sha256']
     rows = pq.read_table(source).to_pylist()
@@ -81,7 +82,7 @@ class Baseline:
     de-duplication are preserved. Query encoding has NO new instruction prefix.
     """
     def __init__(self, documents):
-        path = REPORT / 'baseline/chunking.py'
+        path = ARCHIVE / 'baseline/chunking.py'
         spec = importlib.util.spec_from_file_location('legacy_chunking', path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -206,8 +207,9 @@ def summarize(records, build_seconds):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--phase', choices=['all', 'index', 'baseline', 'calibration', 'evaluation'], default='all')
+    parser.add_argument('--phase', choices=['all', 'index', 'baseline', 'calibration', 'evaluation'], required=True)
     args = parser.parse_args()
+    REPORT.mkdir(parents=True, exist_ok=True)
     dump(REPORT / 'execution.json', {
         'embedding_identity': get_embedding_model().identity,
         'embedding_local_path': str(config.EMBEDDING_LOCAL_PATH),
@@ -219,7 +221,7 @@ def main():
         'packages': {name: importlib.metadata.version(name) for name in
                      ('fastembed', 'onnxruntime', 'sentence-transformers', 'torch', 'rank-bm25', 'jieba', 'numpy')},
     })
-    queries = json.loads((REPORT / 'queries.json').read_text())
+    queries = json.loads((ARCHIVE / 'inputs/queries.json').read_text())
     documents = load_documents()
     print('full corpus:', len(documents), flush=True)
     labels = load_qrels()
