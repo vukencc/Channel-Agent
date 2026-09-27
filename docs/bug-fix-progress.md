@@ -14,7 +14,7 @@
 - [x] BUG-10
 - [x] BUG-11
 - [x] BUG-12
-- [ ] BUG-13
+- [x] BUG-13
 - [ ] BUG-14
 - [ ] BUG-15
 - [ ] BUG-16
@@ -94,3 +94,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 每次全读语料造成 IO 放大。rag/index.py 按文件指纹复用正文哈希，分块缓存，未变索引绕过重建锁；rag/lexical.py 缓存分词。新增 HTML 和可选 PDF/docx 加载器，pyproject.toml documents extra，uv lock/uv sync --locked 已同步（新增 lxml/pypdf/python-docx 仅可选）。test_bug12_index.py 验证 1000 文件第二次零读取、单改只读一文件及 HTML 去脚本。最小版本保持变化请求同步更新全局 BM25 IDF，不使用陈旧后台索引。
 
 验证：`uv run pytest dev/tests/test_bug12_index.py dev/tests/test_hybrid_rag.py dev/tests/test_rag_search.py -q（31 passed）；uv sync --locked 成功`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-13
+
+原始 logit 未校准且无质量门。新增 dev/rag/quality.py 与固定公开 qrels 清单：5 校准/5 留出、343 文档候选池，分开输入输出，文档去重指标、只用校准划分选阈值。真实链路已跑完，四阶段 Top3 和指标见 docs/rag-quality.md；默认阈值留出 hit@10/MRR 均 0.8，建议阈值未提高质量，默认保持不变。新增离线指标/划分测试与可选 integration 质量门；提示词要求引用编号作答。无新运行配置，测试入口 RAG_QUALITY_CORPUS。
+
+验证：`uv run pytest dev/tests/test_bug13_quality.py -m "not integration" -q（3 passed, 1 deselected）；dev.rag.quality 真实 10 查询完成`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

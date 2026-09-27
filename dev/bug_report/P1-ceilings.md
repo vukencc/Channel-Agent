@@ -145,7 +145,7 @@
 
 ## BUG-13 RAG 阈值未校准、质量回归默认跳过
 
-**级别** P1　**状态** 待修复　**文件** `config.py`、`rag/tool.py`、`dev/tests/test_rag_integration.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `config.py`、`rag/tool.py`、`dev/tests/test_rag_integration.py`
 
 **症状**
 - strict/normal/loose 阈值是原始 logit 拍值，与模型强相关，默认值可能过度过滤或放水。
@@ -167,6 +167,8 @@
 - 不改变默认路径的性能与测试稳定性。
 
 ---
+
+**修复说明** 原始 logit 未校准且无质量门。新增 dev/rag/quality.py 与固定公开 qrels 清单：5 校准/5 留出、343 文档候选池，分开输入输出，文档去重指标、只用校准划分选阈值。真实链路已跑完，四阶段 Top3 和指标见 docs/rag-quality.md；默认阈值留出 hit@10/MRR 均 0.8，建议阈值未提高质量，默认保持不变。新增离线指标/划分测试与可选 integration 质量门；提示词要求引用编号作答。无新运行配置，测试入口 RAG_QUALITY_CORPUS。 验证：`uv run pytest dev/tests/test_bug13_quality.py -m "not integration" -q（3 passed, 1 deselected）；dev.rag.quality 真实 10 查询完成`。
 
 ## BUG-14 记忆仅手工、无上限、全量注入、不可检索
 
