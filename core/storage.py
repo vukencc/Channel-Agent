@@ -158,10 +158,21 @@ class SessionStore:
         path = self.directory(identifier) / 'memory.md'
         return path.read_text(encoding='utf-8') if path.exists() else ''
 
+    def memory_for_model(self, identifier: str) -> str:
+        path = self.directory(identifier) / 'memory.md'
+        if not path.exists():
+            return ''
+        with path.open(encoding='utf-8') as stream:
+            text = stream.read(config.MEMORY_MAX_CHARS + 1)
+        return text if len(text) <= config.MEMORY_MAX_CHARS else text[:config.MEMORY_MAX_CHARS] + '\n[记忆超限，注入已截断；原文件保留]'
+
     def remember(self, identifier: str, text: str):
         path = self.directory(identifier) / 'memory.md'
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.atomic_write(path, self.memory(identifier).rstrip() + '\n- ' + text.strip() + '\n')
+        updated = self.memory(identifier).rstrip() + '\n- ' + text.strip() + '\n'
+        if len(updated) > config.MEMORY_MAX_CHARS:
+            raise ValueError('记忆超过 MEMORY_MAX_CHARS，请先整理或删除旧记忆')
+        self.atomic_write(path, updated)
 
     def export(self, record: dict, format: str = 'md') -> Path:
         if format not in {'md', 'json'}:

@@ -328,9 +328,9 @@ def test_slow_context_preparation_keeps_event_loop_responsive(store, monkeypatch
     import time
     from core import sessions
     original = sessions.build_model_history
-    def slow(messages):
+    def slow(messages, **kwargs):
         time.sleep(.12)
-        return original(messages)
+        return original(messages, **kwargs)
     monkeypatch.setattr(sessions, 'build_model_history', slow)
     async def run():
         async def model(history, **kwargs):

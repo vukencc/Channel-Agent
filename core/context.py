@@ -9,10 +9,26 @@ def history_size(messages: list[dict]) -> int:
     return len(json.dumps(messages, ensure_ascii=False))
 
 
-def build_model_history(messages: list[dict]) -> tuple[list[dict], dict]:
+class ContextBudgetError(ValueError):
+    """工作窗口不足，调用方应保存检查点而非丢弃记录。"""
+
+    def __init__(self, metrics):
+        self.metrics = metrics
+        super().__init__(f'上下文预算不足：{metrics}。完整记录未删除；请缩小请求、减少记忆或新建会话。')
+
+
+def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, extra_chars=0) -> tuple[list[dict], dict]:
     """Compact bulky historical file payloads; evict whole old turns only if necessary."""
     history = copy.deepcopy(messages)
     before = history_size(history)
+    schema_chars = history_size(schemas) if schemas else 0
+    limit = config.MODEL_INPUT_CHARS - schema_chars
+    def metrics():
+        return {'original_chars': before, 'sent_chars': history_size(history),
+                'schema': schema_chars, 'memory': memory_chars, 'extra': extra_chars,
+                'messages': history_size(history) - memory_chars - extra_chars,
+                'total_chars': history_size(history) + schema_chars,
+                'compacted_file_parts': compacted, 'omitted_turns': omitted}
     current = max((i for i, m in enumerate(history) if m['role'] == 'user'), default=1)
     recent = max(current, len(history) - 4)
     names = {}
@@ -39,7 +55,7 @@ def build_model_history(messages: list[dict]) -> tuple[list[dict], dict]:
             message['content'] = '[历史文件读取内容已省略；当前文件可能已修改，请按需重新 read_file。]'
             compacted += 1
     omitted = 0
-    budget = config.MODEL_INPUT_CHARS - (300 if compacted or before > config.MODEL_INPUT_CHARS else 0)
+    budget = limit - (300 if compacted or before > limit else 0)
     # Long scans within one turn must also fit; keep recent pages and their tool pairs.
     for i, message in enumerate(history):
         if history_size(history) <= budget:
@@ -52,7 +68,7 @@ def build_model_history(messages: list[dict]) -> tuple[list[dict], dict]:
     while history_size(history) > budget:
         turns = [i for i, m in enumerate(history) if m['role'] == 'user']
         if len(turns) < 2:
-            raise ValueError('当前轮次内容超出 MODEL_INPUT_CHARS；请保存必要记忆后新建会话，或缩小本轮任务。完整记录未删除。')
+            raise ContextBudgetError(metrics())
         del history[turns[0]:turns[1]]
         omitted += 1
     if compacted or omitted:
@@ -60,7 +76,6 @@ def build_model_history(messages: list[dict]) -> tuple[list[dict], dict]:
             f'\n[上下文窗口说明] 历史文件片段省略 {compacted} 处，旧轮次省略 {omitted} 轮；'
             '完整原始对话仍保存在会话文件。省略内容不是空文件或已删除的事实，不得按占位符覆盖文件。'
         )
-    if history_size(history) > config.MODEL_INPUT_CHARS:
-        raise ValueError('上下文窗口说明后仍超出 MODEL_INPUT_CHARS，请缩小任务；完整记录未删除。')
-    return history, {'original_chars': before, 'sent_chars': history_size(history),
-                     'compacted_file_parts': compacted, 'omitted_turns': omitted}
+    if history_size(history) > limit:
+        raise ContextBudgetError(metrics())
+    return history, metrics()

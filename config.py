@@ -93,3 +93,6 @@ RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)
 AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", ".agent")
 MAX_CONCURRENT_AGENTS = max(1, env_int("MAX_CONCURRENT_AGENTS", 4))
 MAX_TOOL_ROUNDS = max(1, env_int("MAX_TOOL_ROUNDS", 24))
+
+# 持久记忆写入上限；旧文件只限制注入，不改写。
+MEMORY_MAX_CHARS = env_int("MEMORY_MAX_CHARS", 4000)
