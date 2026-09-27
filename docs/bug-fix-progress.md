@@ -9,7 +9,7 @@
 - [x] BUG-05
 - [x] BUG-06
 - [x] BUG-07
-- [ ] BUG-08
+- [x] BUG-08
 - [ ] BUG-09
 - [ ] BUG-10
 - [ ] BUG-11
@@ -64,3 +64,9 @@ config.py 增加集中启动校验并让数字解析错误携带变量名；core
 core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除第二套循环；已有 CRUD 调度测试迁到 SessionManager，保留成功、拒绝、工具配对和文件内容断言。按本条要求修正 AGENTS.md 的测试路径；明确 AUDIT_LOG 仅无上下文时使用。无新配置。
 
 验证：`uv run pytest dev/tests/test_bug07_hygiene.py dev/tests/test_agent_tools.py dev/tests/test_sessions.py -q（18 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-08
+
+字符预算不能反映混合文本成本。core/context.py 增加 ASCII/非 ASCII token 估算、双预算与异步摘要；摘要限制输入输出和时限，仅修改工作副本，失败降级，按内容摘要缓存。core/sessions.py 接入并记录前后估算。新增 test_bug08_summary.py，fake judge 验证事实保留。新配置 MODEL_INPUT_TOKENS=16000、CONTEXT_SUMMARY=True、SUMMARY_INPUT_CHARS=12000、SUMMARY_CHARS=1000、SUMMARY_TIMEOUT=10。估算不是精确 tokenizer。
+
+验证：`uv run pytest dev/tests/test_bug08_summary.py dev/tests/test_context.py dev/tests/test_sessions.py -q（22 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

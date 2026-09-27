@@ -10,7 +10,7 @@ from typing import Callable
 import config
 from core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE
 from core.llm import call_model, complete, ModelResponseError, TOOL_SCHEMAS
-from core.context import build_model_history, ContextBudgetError
+from core.context import build_model_history, ContextBudgetError, prepare_model_history
 from core.storage import SessionStore, finish_pending_tools
 from core.log import get_logger
 from rag.assess import assess_rag
@@ -33,6 +33,7 @@ class Session:
     assessment_task: asyncio.Task | None = None
     partial_reasoning: str = ''
     last_model_event_at: float = 0.0
+    context_summaries: dict = field(default_factory=dict)
 
     @property
     def id(self):
@@ -234,7 +235,8 @@ class SessionManager:
                 history[0]['content'] += '\n' + FILE_WORKFLOW_GUIDE
                 history[0]['content'] += (f'\n本轮剩余模型交互次数：{config.MAX_TOOL_ROUNDS - round_index}。'
                     '预留最后一次核对结果并总结；接近上限时结束当前可运行阶段，如实说明未完成部分，不再启动新的大改写。')
-                history, context_metrics = await asyncio.to_thread(build_model_history, history, schemas=TOOL_SCHEMAS,
+                history, context_metrics = await prepare_model_history(history, judge=partial(complete, session_id=session.id),
+                    cache=session.context_summaries, builder=build_model_history, schemas=TOOL_SCHEMAS,
                     memory_chars=len(memory), extra_chars=len(history[0]['content']) - base_chars - len(memory))
                 session.record['last_run']['context'] = context_metrics
                 try:
@@ -257,7 +259,8 @@ class SessionManager:
                     history[0]['content'] += ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
                         '请基于当前工具结果继续：只输出一个小步骤，优先分页读取或 edit_file 局部替换；'
                         '每次新增内容尽量不超过 2000 字符，不要输出整份文件，不得重复已成功操作。')
-                    history, recovery_context = await asyncio.to_thread(build_model_history, history, schemas=TOOL_SCHEMAS,
+                    history, recovery_context = await prepare_model_history(history, judge=partial(complete, session_id=session.id),
+                    cache=session.context_summaries, builder=build_model_history, schemas=TOOL_SCHEMAS,
                     memory_chars=len(memory), extra_chars=len(history[0]['content']) - base_chars - len(memory))
                     session.record['last_run']['recovery_context'] = recovery_context
                     reply = await self._call_model(history, session_id=session.id,

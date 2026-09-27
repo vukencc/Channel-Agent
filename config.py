@@ -143,3 +143,9 @@ def validate_runtime_config() -> None:
         raise ValueError('配置错误：\n- ' + '\n- '.join(errors))
 
 ENABLE_DEBUG_TOOL = env_bool("ENABLE_DEBUG_TOOL", False)
+
+MODEL_INPUT_TOKENS = env_int("MODEL_INPUT_TOKENS", 16000)
+CONTEXT_SUMMARY = env_bool("CONTEXT_SUMMARY", True)
+SUMMARY_INPUT_CHARS = env_int("SUMMARY_INPUT_CHARS", 12000)
+SUMMARY_CHARS = env_int("SUMMARY_CHARS", 1000)
+SUMMARY_TIMEOUT = env_float("SUMMARY_TIMEOUT", 10)
