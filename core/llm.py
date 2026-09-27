@@ -85,7 +85,7 @@ async def _retry(operation, what: str, attempts: int | None = None):
     raise last_exc
 
 
-async def _open_stream(history: list[dict]):
+async def _open_stream(history: list[dict], session_id: str | None = None):
     """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
     async def operation():
         return await get_client().with_options(
@@ -96,38 +96,51 @@ async def _open_stream(history: list[dict]):
             stream=True,
             tools=TOOL_SCHEMAS,
             tool_choice="auto",
+            extra_headers={"x-opencode-session": session_id} if session_id else None,
         )
 
     return await _retry(operation, "模型调用")
 
 
-async def call_model(history: list[dict]) -> dict:
-    stream = await _open_stream(history)
+async def call_model(history: list[dict], *, session_id: str | None = None, emit=None) -> dict:
+    stream = await _open_stream(history, session_id)
 
     ai_message = ""
     tool_calls: dict[int, dict] = {}
 
     # 这是给用户看的对话内容，不是日志，所以走 stdout
-    print("AI: ", end="")
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        if delta.content:
-            print(delta.content, end="", flush=True)
-            ai_message += delta.content
-        # 模型决定调用工具时，内容在 delta.tool_calls 里，而且是分片传的
-        if delta.tool_calls:
-            for tc in delta.tool_calls:
-                if tc.index not in tool_calls:
-                    tool_calls[tc.index] = {"id": "", "name": "", "arguments": ""}
-                if tc.id:
-                    tool_calls[tc.index]["id"] = tc.id
-                if tc.function and tc.function.name:
-                    tool_calls[tc.index]["name"] = tc.function.name
-                if tc.function and tc.function.arguments:
-                    tool_calls[tc.index]["arguments"] += tc.function.arguments
-    print()
+    if emit is None:
+        print("AI: ", end="")
+    try:
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                if emit is None:
+                    print(delta.content, end="", flush=True)
+                else:
+                    emit("content", delta.content)
+                ai_message += delta.content
+            if emit and getattr(delta, "reasoning_content", None):
+                emit("status", "模型正在思考")
+            # 模型决定调用工具时，内容在 delta.tool_calls 里，而且是分片传的
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    if tc.index not in tool_calls:
+                        tool_calls[tc.index] = {"id": "", "name": "", "arguments": ""}
+                    if tc.id:
+                        tool_calls[tc.index]["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        tool_calls[tc.index]["name"] = tc.function.name
+                        if emit:
+                            emit("status", "准备调用 " + tc.function.name)
+                    if tc.function and tc.function.arguments:
+                        tool_calls[tc.index]["arguments"] += tc.function.arguments
+    finally:
+        await stream.close()
+    if emit is None:
+        print()
 
     if tool_calls:
         logger.debug(
@@ -149,7 +162,7 @@ async def call_model(history: list[dict]) -> dict:
     return message
 
 
-async def complete(prompt: str) -> str:
+async def complete(prompt: str, *, session_id: str | None = None) -> str:
     """
     非流式调用一次，返回完整文本。
 
@@ -164,6 +177,7 @@ async def complete(prompt: str) -> str:
             model=config.MODEL,
             messages=[PackMessage("user", prompt)],
             stream=False,
+            extra_headers={"x-opencode-session": session_id} if session_id else None,
         )
 
     response = await _retry(operation, "评估调用", attempts=2)

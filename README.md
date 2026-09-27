@@ -47,3 +47,10 @@ uv run python -m dev.rag.run_engineering
 更改依赖后运行 `uv lock` 和 `uv sync --locked`，不要手动截断锁文件。
 
 命令执行需要 Linux 系统的 Bubblewrap；文件工具及主动执行规则见 [沙箱说明](docs/sandbox.md)。
+
+## 多会话 CLI
+
+`uv run main.py` 现在启动全屏 Agent CLI。Ctrl+N 新建会话，左侧切换 Agent，Enter 发送，
+Ctrl+C 停止当前任务，Ctrl+Q 退出。多个会话并发执行，各自拥有历史、记忆和工作区。
+`/remember 内容` 保存记忆，`/export md` 或 `/export json` 导出实体文件；重启自动恢复 `.agent/` 下的数据。
+完整操作与持久化说明见 [CLI 指南](docs/cli.md)。

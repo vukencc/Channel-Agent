@@ -100,3 +100,6 @@ AGENTS.md
 # Generated evaluation outputs live under .cache/reports/; ignore legacy paths too
 /reports/
 /:memory:.ses
+
+# Private persistent conversations, memory, workspaces and exports
+.agent/

@@ -124,3 +124,20 @@ def test_timeout_terminates_spawned_children(sandbox_env, monkeypatch):
     assert '[超时]' in result
     time.sleep(0.9)
     assert not (sandbox_env / 'escaped-child').exists()
+
+
+def test_session_cancellation_terminates_running_command(sandbox_env):
+    import threading
+    import time
+    from tools.sandbox import ToolContext, tool_context
+    cancelled = threading.Event()
+    timer = threading.Timer(0.2, cancelled.set)
+    timer.start()
+    start = time.monotonic()
+    try:
+        with tool_context(ToolContext(sandbox_env, config.AUDIT_LOG, lambda *args: True, cancelled)):
+            result = run_command('sleep 5')
+        assert '[已取消]' in result
+        assert time.monotonic() - start < 2
+    finally:
+        timer.cancel()

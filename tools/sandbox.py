@@ -2,6 +2,11 @@
 
 安全原则（fail-closed）：任何异常、无法确认、用户拒绝、确认超时，一律按「不允许」处理。
 """
+from contextvars import ContextVar
+from contextlib import contextmanager
+from dataclasses import dataclass
+from threading import Event
+
 import datetime
 import json
 import os
@@ -20,13 +25,39 @@ logger = get_logger(__name__)
 confirmer: Callable[[str, float], bool] | None = None
 
 
+@dataclass
+class ToolContext:
+    root: Path
+    audit_path: Path
+    confirm: Callable[[str, float], bool]
+    cancelled: Event
+
+
+_context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)
+
+
+@contextmanager
+def tool_context(context: ToolContext):
+    token = _context.set(context)
+    try:
+        yield
+    finally:
+        _context.reset(token)
+
+
+def cancellation_requested() -> bool:
+    context = _context.get()
+    return bool(context and context.cancelled.is_set())
+
+
 class SandboxError(Exception):
     """沙箱约束被违反。"""
 
 
 def sandbox_root() -> Path:
     """沙箱根目录（从 config 读取），不存在则创建。"""
-    root = Path(config.SANDBOX_DIR)  # type: ignore[arg-type]
+    context = _context.get()
+    root = context.root if context else Path(config.SANDBOX_DIR)
     root.mkdir(parents=True, exist_ok=True)
     return root.resolve()
 
@@ -63,7 +94,8 @@ def truncate(text: str) -> str:
 
 
 def _audit_path() -> Path:
-    path = Path(config.AUDIT_LOG)  # type: ignore[arg-type]
+    context = _context.get()
+    path = context.audit_path if context else Path(config.AUDIT_LOG)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -110,9 +142,12 @@ def _console_confirm(prompt: str, timeout: float) -> bool:
 
 def confirm(prompt: str, timeout: float) -> bool:
     """请求确认；任何异常都按拒绝处理。"""
-    impl = confirmer or _console_confirm
+    context = _context.get()
+    if cancellation_requested():
+        return False
+    impl = context.confirm if context else (confirmer or _console_confirm)
     try:
-        return bool(impl(prompt, timeout))
+        return bool(impl(prompt, timeout)) and not cancellation_requested()
     except Exception:
         logger.exception("确认过程出错，按拒绝处理")
         return False

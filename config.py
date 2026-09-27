@@ -78,3 +78,8 @@ RERANK_LOCAL_PATH = env_path("RERANK_LOCAL_PATH")
 RAG_THRESHOLD_STRICT = env_float("RAG_THRESHOLD_STRICT", 0.0)
 RAG_THRESHOLD_NORMAL = env_float("RAG_THRESHOLD_NORMAL", -2.0)
 RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)
+
+# Durable user conversations and memory, separate from disposable model caches.
+AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", ".agent")
+MAX_CONCURRENT_AGENTS = max(1, env_int("MAX_CONCURRENT_AGENTS", 4))
+MAX_TOOL_ROUNDS = max(1, env_int("MAX_TOOL_ROUNDS", 12))

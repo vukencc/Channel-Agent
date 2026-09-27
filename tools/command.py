@@ -6,6 +6,7 @@ Bubblewrap 隔离主机文件与网络，工作目录 /workspace 映射沙箱目
 import subprocess
 import os
 import signal
+import time
 
 import config
 from pydantic import BaseModel, Field
@@ -16,6 +17,7 @@ from tools.sandbox import (
     ask_permission,
     audit,
     check_command,
+    cancellation_requested,
     isolated_command,
     sandbox_root,
     truncate,
@@ -62,12 +64,24 @@ def run_command(command: str, reason: str = "") -> str:
             encoding="utf-8",
             errors="replace",
         )
-        try:
-            stdout, stderr = proc.communicate(timeout=config.COMMAND_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.communicate()
-            raise
+        deadline = time.monotonic() + config.COMMAND_TIMEOUT
+        while True:
+            stopped = cancellation_requested()
+            if stopped or time.monotonic() >= deadline:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.communicate()
+                if stopped:
+                    audit("cancelled", action="run_command", command=command)
+                    return "[已取消] 命令及其子进程已终止。"
+                raise subprocess.TimeoutExpired(isolated, config.COMMAND_TIMEOUT)
+            try:
+                stdout, stderr = proc.communicate(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                continue
     except subprocess.TimeoutExpired:
         audit("timeout", action="run_command", command=command,
               timeout=config.COMMAND_TIMEOUT)
