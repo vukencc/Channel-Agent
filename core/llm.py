@@ -3,6 +3,8 @@
 只负责「和模型说一次话」：发消息、收流、把 content 和 tool_calls 拼好返回。
 不认识任何具体工具，也不管工具循环。
 """
+from contextvars import ContextVar
+import os
 import asyncio
 import uuid
 import json
@@ -16,6 +18,7 @@ from openai import AsyncOpenAI
 
 import config
 from core.log import get_logger
+from core.context import estimate_tokens, request_tokens
 from core.messages import PackMessage
 from tools import all_schemas
 
@@ -41,6 +44,35 @@ def get_client() -> AsyncOpenAI:
         # SDK resources are lazy imports too; resolve them in this worker.
         _client.chat.completions
     return _client
+
+_fallback_clients = {}
+_route = ContextVar('model_route', default=None)
+
+
+def endpoint_client(endpoint):
+    if not endpoint.get('base_url') and not endpoint.get('api_key_env'):
+        return get_client()
+    base_url = endpoint.get('base_url', config.BASE_URL)
+    key = os.getenv(endpoint['api_key_env']) if endpoint.get('api_key_env') else config.API_KEY
+    if not key:
+        raise ValueError('备用模型 api_key_env 未配置')
+    identity = (base_url, key)
+    with _client_lock:
+        if identity not in _fallback_clients:
+            _fallback_clients[identity] = AsyncOpenAI(api_key=key, base_url=base_url,
+                max_retries=0, timeout=config.TIMEOUT)
+        client = _fallback_clients[identity]
+        client.chat.completions
+        return client
+
+
+async def close_clients():
+    global _client
+    clients = list(_fallback_clients.values()) + ([_client] if _client else [])
+    _fallback_clients.clear()
+    _client = None
+    await asyncio.gather(*(client.close() for client in clients))
+
 
 # 从工具注册表派生，新增工具后这里不用改
 TOOL_SCHEMAS = all_schemas()
@@ -106,26 +138,38 @@ async def _retry(operation, what: str, attempts: int | None = None):
 
 async def _open_stream(history: list[dict], session_id: str | None = None):
     """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
-    # TLS/HTTP client initialization performs synchronous filesystem work.
-    client = await asyncio.to_thread(get_client)
-    async def operation():
-        return await client.with_options(
-            timeout=config.SESSION_TIMEOUT
-        ).chat.completions.create(
-            model=config.MODEL,
-            **model_options(),
-            messages=history,
-            stream=True,
-            tools=TOOL_SCHEMAS,
-            tool_choice="auto",
-            extra_headers={"x-opencode-session": session_id} if session_id else None,
-        )
-
-    return await _retry(operation, "模型调用")
+    endpoints = [{'model': config.MODEL}, *config.MODEL_FALLBACKS]
+    route = _route.get()
+    if route is None:
+        route = {'model': config.MODEL, 'fallbacks': []}
+        _route.set(route)
+    for index, endpoint in enumerate(endpoints):
+        route['model'] = endpoint['model']
+        route['endpoint'] = endpoint
+        async def operation():
+            client = await asyncio.to_thread(endpoint_client, endpoint)
+            options = model_options()
+            if config.MODEL_STREAM_USAGE:
+                options['stream_options'] = {'include_usage': True}
+            return await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
+                model=endpoint['model'], **options, messages=history, stream=True,
+                tools=TOOL_SCHEMAS, tool_choice='auto',
+                extra_headers={'x-opencode-session': session_id} if session_id else None)
+        try:
+            # 有备用时为每个连接阶段预留时间；流开始后不自动换模型。
+            async with asyncio.timeout(config.MODEL_CALL_TIMEOUT / len(endpoints)):
+                return await _retry(operation, '模型调用')
+        except Exception as exc:
+            if index + 1 == len(endpoints) or not (_is_transient(exc) or isinstance(exc, TimeoutError)):
+                raise
+            route['fallbacks'].append({'from': endpoint['model'], 'to': endpoints[index + 1]['model'],
+                                       'reason': type(exc).__name__})
 
 
 async def call_model(history: list[dict], *, session_id: str | None = None, emit=None) -> dict:
     """Bound retries + stream by a wall-clock deadline; never execute partial calls."""
+    route = {'model': config.MODEL, 'fallbacks': [], 'endpoint': {}}
+    route_token = _route.set(route)
     started = time.monotonic()
     metrics = {'input_chars': len(json.dumps(history, ensure_ascii=False)),
                'reasoning_chars': 0, 'content_chars': 0, 'argument_chars': 0}
@@ -141,6 +185,9 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
             if emit is None:
                 print("AI: ", end="")
             async for chunk in stream:
+                usage = getattr(chunk, 'usage', None)
+                if usage:
+                    metrics.update(input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, tokens_source='provider')
                 if not chunk.choices:
                     continue
                 elapsed = time.monotonic() - started
@@ -219,6 +266,17 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
     finally:
         if stream is not None:
             await stream.close()
+        metrics.setdefault('input_tokens', request_tokens(history, TOOL_SCHEMAS))
+        metrics.setdefault('output_tokens', estimate_tokens(''.join(content) + ''.join(reasoning)
+                           + ''.join(''.join(call['arguments']) for call in tool_calls.values())))
+        metrics.setdefault('tokens_source', 'estimate')
+        endpoint = route['endpoint']
+        input_price = endpoint.get('input_cost_per_million', config.INPUT_COST_PER_MILLION if not route['fallbacks'] else 0)
+        output_price = endpoint.get('output_cost_per_million', config.OUTPUT_COST_PER_MILLION if not route['fallbacks'] else 0)
+        metrics.update(model=route['model'], fallbacks=route['fallbacks'],
+            estimated_cost_usd=(metrics['input_tokens'] * input_price + metrics['output_tokens'] * output_price) / 1e6
+            if input_price or output_price else None)
+        _route.reset(route_token)
         metrics.update(total_s=round(time.monotonic() - started, 3), finish_reason=finish)
         metrics.setdefault('outcome', 'interrupted')
         logger.info('model_metrics session=%s %s', session_id, json.dumps(metrics))

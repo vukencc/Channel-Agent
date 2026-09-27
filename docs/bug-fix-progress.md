@@ -16,7 +16,7 @@
 - [x] BUG-12
 - [x] BUG-13
 - [x] BUG-14
-- [ ] BUG-15
+- [x] BUG-15
 - [ ] BUG-16
 - [ ] BUG-17（P2：低风险实现或设计）
 - [ ] BUG-18（P2：低风险实现或设计）
@@ -106,3 +106,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 记忆全量注入且无条目管理。新增 core/memory.py 兼容旧文本、结构化条目、BM25 top-k 和注入预算；core/storage.py 去重/容量/删除/显式共享，core/cli.py 增加 list/rm 与删除确认；core/sessions.py 可选后台候选提取，需用户 /remember 采纳，不自动改变有效记忆。新增 MEMORY_TOP_K=4、MEMORY_INJECT_CHARS=1200、MEMORY_AUTO_EXTRACT=False、MEMORY_SHARED=False。test_bug14_memory.py 覆盖去重删除和相关召回预算，旧隔离与记忆限制测试继续通过。
 
 验证：`uv run pytest dev/tests/test_bug14_memory.py dev/tests/test_bug01_budget.py dev/tests/test_sessions.py dev/tests/test_cli.py -q（22 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-15
+
+单一模型瞬时故障无备用。core/llm.py 支持同协议 MODEL_FALLBACKS，在流开始前重试失败/超时后切换，开始输出后不重放；独立客户端关闭与会话 ContextVar 路由指标。记录 provider usage 或含 schema 的近似 token 与配置价格成本（未知为 null）。新增 MODEL_FALLBACKS=[]、MODEL_STREAM_USAGE=False、INPUT_COST_PER_MILLION=0、OUTPUT_COST_PER_MILLION=0。test_bug15_fallback.py 注入主模型连接错误验证备用成功，并验证 provider usage/费用。
+
+验证：`uv run pytest dev/tests/test_bug15_fallback.py dev/tests/test_llm_stream.py dev/tests/test_llm_retry.py dev/tests/test_bug05_config.py -q（20 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

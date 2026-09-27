@@ -381,9 +381,7 @@ class AgentCLI:
             await self.manager.shutdown()
             if self._ui_jobs:
                 await asyncio.gather(*list(self._ui_jobs), return_exceptions=True)
-            if llm._client:
-                await llm._client.close()
-                llm._client = None
+            await llm.close_clients()
 
 
 def main():

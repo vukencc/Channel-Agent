@@ -198,7 +198,7 @@
 
 ## BUG-15 单模型无 fallback、无 token/成本计量
 
-**级别** P1　**状态** 待修复　**文件** `config.py`、`core/llm.py`、`core/sessions.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `config.py`、`core/llm.py`、`core/sessions.py`
 
 **症状**
 - 主模型不可用时整轮失败，没有备用模型/服务。
@@ -220,6 +220,8 @@
 - 会话记录可见 token/成本估算。
 
 ---
+
+**修复说明** 单一模型瞬时故障无备用。core/llm.py 支持同协议 MODEL_FALLBACKS，在流开始前重试失败/超时后切换，开始输出后不重放；独立客户端关闭与会话 ContextVar 路由指标。记录 provider usage 或含 schema 的近似 token 与配置价格成本（未知为 null）。新增 MODEL_FALLBACKS=[]、MODEL_STREAM_USAGE=False、INPUT_COST_PER_MILLION=0、OUTPUT_COST_PER_MILLION=0。test_bug15_fallback.py 注入主模型连接错误验证备用成功，并验证 provider usage/费用。 验证：`uv run pytest dev/tests/test_bug15_fallback.py dev/tests/test_llm_stream.py dev/tests/test_llm_retry.py dev/tests/test_bug05_config.py -q（20 passed）`。
 
 ## BUG-16 评估 prompt 无长度控制
 

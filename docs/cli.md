@@ -160,3 +160,12 @@ Tool 元数据可设置 timeout_s/concurrency，默认 TOOL_TIMEOUT=120 秒。�
 MEMORY_AUTO_EXTRACT 默认关闭；启用时后台提取 JSON 候选保存到 memory-candidates.json，`/memory candidates` 查看，
 通过 `/remember 内容` 明确采纳后才注入。失败不影响回答；候选不等于已核实事实。
 MEMORY_SHARED 默认关闭；显式开启后使用状态根的 shared-memory.md，旧会话记忆不搬移、不删除，关闭即可回到隔离文件。
+
+## 备用模型与计量
+
+MODEL_FALLBACKS 默认为空 JSON 数组，可按顺序指定 model/base_url/api_key_env；不同服务地址必须显式指定密钥环境变量。
+仅流开始前的连接、限流、5xx 或连接阶段总超时，在当前模型重试耗尽后切换；鉴权/参数错误不切换，已开始输出的流不自动重放。
+last_run.model_calls 记录实际 model、fallbacks、input_tokens/output_tokens、tokens_source 与 estimated_cost_usd。
+MODEL_STREAM_USAGE=True 时请求服务商 usage；否则按文本和 schema 估算。默认单模型行为不改变。
+INPUT_COST_PER_MILLION/OUTPUT_COST_PER_MILLION 为美元每百万 token，均 0 表示未知、成本为 null。
+备用条目可独立指定 input_cost_per_million/output_cost_per_million，未配置时不套用主模型价格；重试失败的服务商计费无法精确获知。

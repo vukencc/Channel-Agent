@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import pathlib
@@ -130,7 +131,7 @@ def validate_runtime_config() -> None:
     if url.scheme not in {'http', 'https'} or not url.hostname:
         errors.append('BASE_URL 必须是有效的 http/https 地址')
     for name, value in globals().items():
-        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_'):
+        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION'}:
             if not math.isfinite(value) or value <= 0:
                 errors.append(f'{name} 必须大于 0 且有限')
     if not DOC_DIR or not DOC_DIR.is_dir() or not os.access(DOC_DIR, os.R_OK):
@@ -139,6 +140,22 @@ def validate_runtime_config() -> None:
         errors.append('SANDBOX_DIR 必须是目录路径')
     if WEB_SEARCH_CONFIRM not in {'always', 'off'}:
         errors.append('WEB_SEARCH_CONFIRM 必须为 always 或 off')
+    for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:
+        if value < 0:
+            errors.append(f'{name} 不能为负数')
+    for endpoint in MODEL_FALLBACKS:
+        if endpoint.get('base_url'):
+            parsed = urlparse(endpoint['base_url'])
+            if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+                errors.append('MODEL_FALLBACKS 的 base_url 必须是 http/https 地址')
+            if endpoint['base_url'] != BASE_URL and not endpoint.get('api_key_env'):
+                errors.append('备用服务地址不同于 BASE_URL 时必须显式指定 api_key_env')
+        if endpoint.get('api_key_env') and not os.getenv(endpoint['api_key_env']):
+            errors.append('备用模型指定的 api_key_env 未配置')
+        for name in ('input_cost_per_million', 'output_cost_per_million'):
+            value = endpoint.get(name, 0)
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                errors.append(f'备用模型 {name} 必须为非负有限数字')
     if errors:
         raise ValueError('配置错误：\n- ' + '\n- '.join(errors))
 
@@ -160,3 +177,16 @@ MEMORY_TOP_K = env_int("MEMORY_TOP_K", 4)
 MEMORY_INJECT_CHARS = env_int("MEMORY_INJECT_CHARS", 1200)
 MEMORY_AUTO_EXTRACT = env_bool("MEMORY_AUTO_EXTRACT", False)
 MEMORY_SHARED = env_bool("MEMORY_SHARED", False)
+
+
+try:
+    MODEL_FALLBACKS = json.loads(os.getenv('MODEL_FALLBACKS', '[]'))
+    if not isinstance(MODEL_FALLBACKS, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get('model'), str) or not item['model'].strip()
+            for item in MODEL_FALLBACKS):
+        raise ValueError
+except (ValueError, TypeError):
+    raise ValueError('MODEL_FALLBACKS 必须是包含 model 的 JSON 对象数组') from None
+MODEL_STREAM_USAGE = env_bool('MODEL_STREAM_USAGE', False)
+INPUT_COST_PER_MILLION = env_float('INPUT_COST_PER_MILLION', 0)
+OUTPUT_COST_PER_MILLION = env_float('OUTPUT_COST_PER_MILLION', 0)
