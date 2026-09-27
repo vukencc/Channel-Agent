@@ -330,9 +330,7 @@ class AgentCLI:
                     else:
                         raise ValueError('当前会话没有待确认操作')
                 elif command == '/export':
-                    import copy
-                    snapshot = copy.deepcopy(session.record)
-                    self.disk_job(lambda: self.store.export(snapshot, argument or 'md'), lambda path: '已导出：' + str(path))
+                    self.disk_job(lambda: self.store.export_saved(session.id, argument or 'md'), lambda path: '已导出：' + str(path))
                 elif command == '/stop':
                     self.manager.cancel(session)
                 elif command == '/close':

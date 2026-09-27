@@ -87,6 +87,8 @@ class SessionManager:
             raise ValueError('此会话正在运行，请等待、停止，或切换到其他会话')
         if not text.strip():
             raise ValueError('消息不能为空')
+        if self.store.session_bytes(session.id) + len(text.encode('utf-8')) > config.SESSION_MAX_MB * 1024 * 1024:
+            raise ValueError('会话超过 SESSION_MAX_MB，请先 /export 归档并新建会话；不会自动删除历史')
         session.cancelled.clear()
         session.started_at = time.monotonic()
         session.partial = ''

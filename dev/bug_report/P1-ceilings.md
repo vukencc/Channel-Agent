@@ -61,7 +61,7 @@
 
 ## BUG-10 保存放大：事件循环 deepcopy + 每步全量重写
 
-**级别** P1　**状态** 待修复　**文件** `core/storage.py`、`core/cli.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `core/storage.py`、`core/cli.py`
 
 **症状**
 - 每步保存都在事件循环上 `deepcopy` 整份会话，长会话造成 UI 卡顿。
@@ -85,6 +85,8 @@
 - 崩溃恢复与现有 `test_sessions.py`、慢磁盘测试全过。
 
 ---
+
+**修复说明** 保存时全量 deepcopy/序列化造成线性放大。core/storage.py 改为版本 2 消息 JSONL 增量追加及小型原子提交索引，旧格式备份后迁移，崩溃尾部不重放；异步保存只复制元数据并捕获不可变消息边界。core/cli.py 导出在线程读取已提交快照。SESSION_MAX_MB=64 控制新轮次准入，归档保留全部内容。test_bug10_storage.py 使用 10k 消息验证索引小于 5 KB、新消息写入小于 100 B及旧版备份/崩溃尾部恢复。 验证：`uv run pytest dev/tests/test_bug10_storage.py dev/tests/test_sessions.py dev/tests/test_cli.py dev/tests/test_cli_performance.py -q（26 passed）`。
 
 ## BUG-11 工具串行执行、单轮调用无上限、无工具级超时
 

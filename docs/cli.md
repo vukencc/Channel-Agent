@@ -136,3 +136,11 @@ RAG 自动评分在后台执行，回答完成后可立即继续同一会话；�
 后台评估使用独立的 ASSESS_CONCURRENCY 池（默认 1），不占前台模型容量。
 
 审计配置：CLI 的审计按会话写入 `AGENT_STATE_DIR/<id>/audit.jsonl`；`AUDIT_LOG` 仅用于无会话 ToolContext 的独立工具调用。默认提示词统一位于 `core/prompts.py`。测试路径为 `dev/tests/`。
+
+## 增量持久化（v2）
+
+`session.json` 保存元数据、系统指令与提交字节偏移，完整消息在 `messages.jsonl` 追加后 fsync，再原子提交索引。
+恢复忽略未提交尾部；已保存工具结果不重放。消息追加后不可原地修改（系统指令单独快照）。
+旧 v1 文件读取兼容，首次保存迁移前保留 `session.v1.bak`，不会批量修改尚未使用的会话。
+导出先等待保存队列，再在线程读取完整提交快照；导出的 JSON 仍包含完整 messages。
+`SESSION_MAX_MB=64` 是新轮次准入限额，不丢弃在途工具结果；超限后 `/export` 归档并新建会话，系统不自动删除用户数据。

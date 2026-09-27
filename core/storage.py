@@ -90,18 +90,72 @@ class SessionStore:
         return destination
 
     def save_async(self, record: dict):
-        """Snapshot on the event loop; serialize and fsync on one ordered writer."""
+        """只复制小型元数据；消息追加后不可修改，计数界定本次快照。"""
         record['updated_at'] = now()
-        snapshot = copy.deepcopy(record)
+        snapshot = copy.deepcopy({key: value for key, value in record.items() if key != 'messages'})
+        snapshot['messages'] = record['messages']
+        snapshot['_count'] = len(record['messages'])
+        snapshot['_system'] = copy.deepcopy(record['messages'][0])
         return asyncio.get_running_loop().run_in_executor(self.writer, self.save, snapshot)
 
     def save(self, record: dict):
         directory = self.directory(record['id'])
         directory.mkdir(exist_ok=True, mode=0o700)
-        record['updated_at'] = now()
         if not (directory / 'memory.md').exists():
             (directory / 'memory.md').touch(mode=0o600, exist_ok=True)
-        self.atomic_write(directory / 'session.json', json.dumps(record, ensure_ascii=False, indent=2) + '\n')
+        path = directory / 'session.json'
+        previous = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        if previous.get('version') == 1 and not (directory / 'session.v1.bak').exists():
+            self.atomic_write(directory / 'session.v1.bak', path.read_text(encoding='utf-8'))
+        committed = previous.get('message_count', 0) if previous.get('version') == 2 else 0
+        offset = previous.get('message_bytes', 0) if previous.get('version') == 2 else 0
+        count = record.get('_count', len(record['messages']))
+        if count < committed:
+            raise ValueError('会话消息只允许追加，拒绝覆盖已提交历史')
+        journal = directory / 'messages.jsonl'
+        if journal.is_symlink():
+            raise ValueError('消息日志不能是符号链接')
+        descriptor = os.open(journal, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, 'r+b') as stream:
+            if stream.seek(0, os.SEEK_END) < offset:
+                raise ValueError('消息日志短于已提交索引，拒绝覆盖')
+            stream.truncate(offset)  # 仅清理崩溃留下的未提交尾部。
+            stream.seek(offset)
+            for index in range(committed, count):
+                stream.write((json.dumps(record['messages'][index], ensure_ascii=False) + '\n').encode('utf-8'))
+            stream.flush()
+            os.fsync(stream.fileno())
+            end = stream.tell()
+        metadata = {key: value for key, value in record.items() if key != 'messages' and not key.startswith('_')}
+        metadata.update(version=2, updated_at=now(), message_count=count, message_bytes=end,
+                        system_message=record.get('_system', record['messages'][0]))
+        # 日志先 fsync，原子索引后提交；恢复只读取已提交字节。
+        self.atomic_write(path, json.dumps(metadata, ensure_ascii=False, indent=2) + '\n')
+
+    @staticmethod
+    def read_record(path: Path) -> dict:
+        record = json.loads(path.read_text(encoding='utf-8'))
+        if isinstance(record, dict) and record.get('version') == 2 and 'messages' not in record:
+            journal = path.parent / 'messages.jsonl'
+            if journal.is_symlink():
+                raise ValueError('消息日志不能是符号链接')
+            with journal.open('rb') as stream:
+                payload = stream.read(record['message_bytes'])
+            if len(payload) != record['message_bytes'] or not payload.endswith(b'\n'):
+                raise ValueError('消息日志不完整')
+            record['messages'] = [json.loads(line) for line in payload.splitlines()]
+            if len(record['messages']) != record['message_count']:
+                raise ValueError('消息数量与索引不符')
+            record['messages'][0] = record['system_message']
+        return record
+
+    def export_saved(self, identifier: str, format: str = 'md') -> Path:
+        """调用方先 flush；在磁盘线程读取已提交快照，避免 UI 全量复制。"""
+        return self.export(self.read_record(self.directory(identifier) / 'session.json'), format)
+
+    def session_bytes(self, identifier: str) -> int:
+        directory = self.directory(identifier)
+        return sum(p.stat().st_size for p in (directory / 'session.json', directory / 'messages.jsonl') if p.exists())
 
     @staticmethod
     def atomic_write(path: Path, text: str):
@@ -132,10 +186,10 @@ class SessionStore:
         records = []
         for path in sorted(self.root.glob('*/session.json')):
             try:
-                record = json.loads(path.read_text(encoding='utf-8'))
+                record = self.read_record(path)
                 if not isinstance(record, dict):
                     raise ValueError('会话文件必须是 JSON 对象')
-                if (record.get('version') != 1 or record['id'] != path.parent.name
+                if (record.get('version') not in {1, 2} or record['id'] != path.parent.name
                         or self.directory(record['id']) != path.parent
                         or not isinstance(record['messages'], list)
                         or not record['messages'] or record['messages'][0]['role'] != 'system'

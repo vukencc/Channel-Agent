@@ -25,7 +25,7 @@ async def run_live(output: Path, runs: int, effort: str, thinking: str, replay: 
     config.THINKING_MODE = thinking
     config.RAG_ASSESS = False
     rows = []
-    source = json.loads(replay.read_text()) if replay else None
+    source = SessionStore.read_record(replay) if replay else None
     with tempfile.TemporaryDirectory(prefix='agent-diagnose-') as temporary:
         root = Path(temporary)
         store = SessionStore(root / 'state', root / 'crud_tests')

@@ -11,7 +11,7 @@
 - [x] BUG-07
 - [x] BUG-08
 - [x] BUG-09
-- [ ] BUG-10
+- [x] BUG-10
 - [ ] BUG-11
 - [ ] BUG-12
 - [ ] BUG-13
@@ -76,3 +76,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 大文件单次参数易截断。采用分段生成协议：tools/file_crud.py 增加 append_file（4000 字符、预期偏移、逐次确认、原子写与审计）；core/prompts.py 指导逐段落盘，core/context.py 压缩历史分段参数。测试实际保存 60k 中文字符并拒绝重复偏移、拒绝确认；原有不完整流不执行测试保持。无新增配置。
 
 验证：`uv run pytest dev/tests/test_bug09_append.py dev/tests/test_file_crud.py dev/tests/test_llm_stream.py -q（36 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-10
+
+保存时全量 deepcopy/序列化造成线性放大。core/storage.py 改为版本 2 消息 JSONL 增量追加及小型原子提交索引，旧格式备份后迁移，崩溃尾部不重放；异步保存只复制元数据并捕获不可变消息边界。core/cli.py 导出在线程读取已提交快照。SESSION_MAX_MB=64 控制新轮次准入，归档保留全部内容。test_bug10_storage.py 使用 10k 消息验证索引小于 5 KB、新消息写入小于 100 B及旧版备份/崩溃尾部恢复。
+
+验证：`uv run pytest dev/tests/test_bug10_storage.py dev/tests/test_sessions.py dev/tests/test_cli.py dev/tests/test_cli_performance.py -q（26 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
