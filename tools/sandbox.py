@@ -198,4 +198,39 @@ def isolated_command(argv: list[str]) -> list[str]:
                 "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
                 "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
                 "--setenv", "LANG", "C.UTF-8", "--", *argv]
-    return command
+    launcher = shutil.which('prlimit', path='/usr/bin:/bin')
+    if not launcher:
+        raise SandboxError('需要 prlimit 资源限制；拒绝无配额执行')
+    limits = [f'--as={config.COMMAND_MEMORY_MB * 1024 * 1024}',
+              f'--cpu={config.COMMAND_CPU_SECONDS}',
+              f'--fsize={config.COMMAND_FILE_MB * 1024 * 1024}',
+              f'--nproc={config.COMMAND_PROCESSES}']
+    # 独立进程设置 rlimit，避免多线程程序中使用不安全的 preexec_fn。
+    import resource
+    try:
+        for name in ('RLIMIT_AS', 'RLIMIT_CPU', 'RLIMIT_FSIZE', 'RLIMIT_NPROC'):
+            resource.getrlimit(getattr(resource, name))
+    except (OSError, ValueError, AttributeError) as exc:
+        raise SandboxError('prlimit 资源能力探测失败，拒绝执行') from exc
+    audit('resource_limits', limits=limits, launcher=launcher)
+    # 命名空间创建后再设置限制，避免宿主已有线程计入创建阶段。
+    return command[:-len(argv)] + [launcher, *limits, '--', *argv]
+
+
+def check_workspace_quota() -> int:
+    """不跟随符号链接，超额拒绝；不删除任何工作区文件。"""
+    total = 0
+    try:
+        for directory, _, files in os.walk(sandbox_root(), followlinks=False):
+            for name in files:
+                path = Path(directory) / name
+                if not path.is_symlink():
+                    try:
+                        total += path.stat().st_size
+                    except FileNotFoundError:
+                        continue
+                if total > config.WORKSPACE_LIMIT_MB * 1024 * 1024:
+                    raise SandboxError('工作区超过 WORKSPACE_LIMIT_MB 配额，请先人工整理或增加配额')
+    except OSError as exc:
+        raise SandboxError('无法检查工作区配额，拒绝执行') from exc
+    return total

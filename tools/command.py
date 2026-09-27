@@ -18,6 +18,7 @@ from tools.sandbox import (
     ask_permission,
     audit,
     check_command,
+    check_workspace_quota,
     cancellation_requested,
     isolated_command,
     sandbox_root,
@@ -45,6 +46,7 @@ def run_command(command: str, reason: str = "") -> str:
     在沙箱目录内执行一条命令。
     """
     try:
+        check_workspace_quota()
         argv = check_command(command)
         isolated = isolated_command(argv)
     except SandboxError as exc:
@@ -55,6 +57,7 @@ def run_command(command: str, reason: str = "") -> str:
         return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
 
     try:
+        check_workspace_quota()
         proc = subprocess.Popen(
             isolated,
             shell=False,
@@ -77,6 +80,7 @@ def run_command(command: str, reason: str = "") -> str:
                     if cancellation_requested():
                         audit("cancelled", action="run_command", command=command)
                         return "[已取消] 命令及其子进程已终止。"
+                    check_workspace_quota()
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired(isolated, config.COMMAND_TIMEOUT)
@@ -104,6 +108,9 @@ def run_command(command: str, reason: str = "") -> str:
             proc.wait()
             for pipe in buffers:
                 pipe.close()
+    except SandboxError as exc:
+        audit("blocked", action="run_command", command=command, reason=str(exc))
+        return f"[已拦截] {exc}"
     except subprocess.TimeoutExpired:
         audit("timeout", action="run_command", command=command,
               timeout=config.COMMAND_TIMEOUT)
@@ -115,6 +122,11 @@ def run_command(command: str, reason: str = "") -> str:
         audit("failed", action="run_command", command=command, error=str(exc))
         return f"[失败] 命令无法执行：{exc}"
 
+    try:
+        check_workspace_quota()
+    except SandboxError as exc:
+        audit("quota_exceeded", action="run_command", reason=str(exc))
+        return f"[配额超限] {exc}；已保留文件，请检查部分输出。"
     audit("executed", action="run_command", command=command,
           exit_code=proc.returncode, reason=reason)
 

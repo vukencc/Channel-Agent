@@ -5,7 +5,7 @@
 - [x] BUG-01
 - [x] BUG-02
 - [x] BUG-03
-- [ ] BUG-04
+- [x] BUG-04
 - [ ] BUG-05
 - [ ] BUG-06
 - [ ] BUG-07
@@ -40,3 +40,9 @@
 tools/web_search.py 移除导入时客户端，改用有超时及 2 MB 响应上限的 HTTP 流；默认逐次出网确认，查询完整展示、审计，缺 key 拒绝。参数限制 1–10 条、输出截断。新增 WEB_SEARCH_CONFIRM=always（可 off）、WEB_SEARCH_TIMEOUT=15 秒。测试覆盖拒绝不请求、参数越界、慢响应与大结果。
 
 验证：`uv run pytest dev/tests/test_bug03_web.py dev/tests/test_tools.py -q（10 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-04
+
+缺少资源限制。tools/sandbox.py 探测宿主 rlimit 能力与 prlimit，命名空间建立后设置 AS/CPU/FSIZE/NPROC；tools/command.py 执行前中后检查工作区大小，超额终止并审计，不删除文件。新增五项配置见 .env.example；轮询非硬磁盘配额、按进程/UID 限制边界详见 docs/sandbox.md。新增 test_bug04_limits.py 验证超额拒绝、缺启动器失败关闭、实际大文件受限。
+
+验证：`uv run pytest dev/tests/test_bug04_limits.py dev/tests/test_command.py dev/tests/test_file_crud.py -q（48 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

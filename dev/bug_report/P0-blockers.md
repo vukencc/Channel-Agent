@@ -90,7 +90,7 @@
 
 ## BUG-04 沙箱无 CPU/内存/磁盘/进程数配额
 
-**级别** P0　**状态** 待修复　**文件** `tools/sandbox.py`、`tools/command.py`
+**级别** P0　**状态** 已修复（说明见下）　**文件** `tools/sandbox.py`、`tools/command.py`
 
 **症状**
 - 单条 10 秒命令即可写满磁盘或创建大量进程，拖垮主机。
@@ -110,6 +110,8 @@
 - 新增测试覆盖磁盘配额与 rlimit 探测失败路径。
 
 ---
+
+**修复说明** 缺少资源限制。tools/sandbox.py 探测宿主 rlimit 能力与 prlimit，命名空间建立后设置 AS/CPU/FSIZE/NPROC；tools/command.py 执行前中后检查工作区大小，超额终止并审计，不删除文件。新增五项配置见 .env.example；轮询非硬磁盘配额、按进程/UID 限制边界详见 docs/sandbox.md。新增 test_bug04_limits.py 验证超额拒绝、缺启动器失败关闭、实际大文件受限。 验证：`uv run pytest dev/tests/test_bug04_limits.py dev/tests/test_command.py dev/tests/test_file_crud.py -q（48 passed）`。
 
 ## BUG-05 配置缺失或非法在启动时不报错
 

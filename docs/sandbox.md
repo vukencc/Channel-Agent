@@ -22,7 +22,7 @@ Python 依赖仍由 `uv sync --locked` 安装。没有 bwrap、命名空间受�
 
 命令使用系统安装的工具；不自动带入项目第三方 Python 包。网络关闭，因此 `curl` 等即使系统已安装，
 也不能访问外部网络。沙箱内文件删除仍真实生效，执行前应核对确认提示。
-这不是面向不可信多租户的资源隔离服务：没有子进程内存/磁盘配额；stdout/stderr 持续排空，但仅保留受限前缀，避免大输出撑满 Agent 内存。
+这不是面向不可信多租户的资源隔离服务：命令继承 prlimit 的单进程内存、CPU、单文件尺寸和按 UID 进程数限制；stdout/stderr 持续排空，但仅保留受限前缀，避免大输出撑满 Agent 内存。
 
 命令由隔离环境内的 `/bin/sh -c` 执行，宿主仍以 `shell=False` 启动 Bubblewrap。支持 POSIX Shell 语法：
 
@@ -59,3 +59,10 @@ uv run pytest dev/tests/test_command.py dev/tests/test_file_crud.py dev/tests/te
 
 `update_file` 只用于不超过 `FILE_READ_CHARS` 的小文件。大文件全文覆盖会被拦截，改用 `edit_file` 分步修改，避免拿单页内容覆盖全文。
 新建较大项目时可分离 HTML/CSS 等资源，单步生成较小内容。命令工具保持可用，执行隔离规则不变。
+
+## 资源限制
+
+执行前探测 prlimit 支持，失败即拒绝；默认单进程地址空间 512 MiB、CPU 5 秒、单文件 32 MiB、同 UID 进程数 128。
+工作区默认 512 MiB，执行前、执行中约 100 ms 一次及结束后检查，不删除超额文件。命令总时限仍有效。
+这不是文件系统硬配额：轮询存在超量窗口，RLIMIT_AS/CPU 按进程计，RLIMIT_NPROC 按宿主 UID 计且不限制 root。
+可信单用户环境可用这些兜底；不可信多租户部署仍需 cgroup 和独立配额卷，不应以本配置宣称硬隔离。
