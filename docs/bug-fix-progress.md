@@ -20,7 +20,7 @@
 - [x] BUG-16
 - [x] BUG-17（P2：低风险实现或设计）
 - [x] BUG-18（P2：低风险实现或设计）
-- [ ] BUG-19（P2：低风险实现或设计）
+- [x] BUG-19（P2：低风险实现或设计）
 - [ ] BUG-20（P2：低风险实现或设计）
 
 ## BUG-01
@@ -130,3 +130,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 按 P2 低风险范围实现：rag/cancellation.py 提供协作取消，rag/tool.py 阶段、embedding/rerank 批次间检查；工具超时独立取消标志；CLI 明确等待当前调用退出。已有 web 超时和独立评估池复用。不能强杀在途 native 线程，进程隔离方案与验收见 docs/platform-design.md，未承诺硬截止。test_bug18_cancel.py 验证停止后不进入昂贵索引。无新配置。
 
 验证：`uv run pytest dev/tests/test_bug18_cancel.py dev/tests/test_hybrid_rag.py dev/tests/test_sessions.py dev/tests/test_command.py -q（60 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-19
+
+按用户范围仅完成设计：docs/platform-design.md 明确 headless 参数、JSON/JSONL 契约、退出码、默认拒绝审批、配对和持久化验收；API/SSE 的状态锁、幂等/审批，MCP 权限与 schema 预算，多模态上传及网页出网边界。未实现新入口/监听服务、未新增配置/依赖；没有声称通过不存在的运行功能测试。
+
+验证：`设计核对：CLI 默认入口、沙箱确认、会话锁与工具配对契约；无运行代码变更`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
