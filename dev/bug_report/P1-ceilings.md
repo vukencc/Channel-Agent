@@ -225,7 +225,7 @@
 
 ## BUG-16 评估 prompt 无长度控制
 
-**级别** P1　**状态** 待修复　**文件** `rag/assess.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `rag/assess.py`
 
 **症状**
 - 多轮 RAG 上下文拼接后评估 prompt 可能超模型输入限制或超时。
@@ -242,3 +242,5 @@
 
 **验收**
 - 超大检索上下文下评估仍可完成或明确降级，不影响回答。
+
+**修复说明** 评估将全部 query/context/answer 拼接，可能超窗。rag/assess.py 分配总预算、单片段上限，保留总命中数与纳入数说明，极小预算或 token 超限明确降级且不调用裁判。新增 ASSESS_INPUT_CHARS=12000、ASSESS_CONTEXT_CHARS=2000。test_bug16_assess.py 把超过 200 万字符的输入压到 2000 字符内并完成 fake judge。 验证：`uv run pytest dev/tests/test_bug16_assess.py dev/tests/test_assess.py dev/tests/test_sessions.py -q（见提交验证）`。

@@ -17,7 +17,7 @@
 - [x] BUG-13
 - [x] BUG-14
 - [x] BUG-15
-- [ ] BUG-16
+- [x] BUG-16
 - [ ] BUG-17（P2：低风险实现或设计）
 - [ ] BUG-18（P2：低风险实现或设计）
 - [ ] BUG-19（P2：低风险实现或设计）
@@ -112,3 +112,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 单一模型瞬时故障无备用。core/llm.py 支持同协议 MODEL_FALLBACKS，在流开始前重试失败/超时后切换，开始输出后不重放；独立客户端关闭与会话 ContextVar 路由指标。记录 provider usage 或含 schema 的近似 token 与配置价格成本（未知为 null）。新增 MODEL_FALLBACKS=[]、MODEL_STREAM_USAGE=False、INPUT_COST_PER_MILLION=0、OUTPUT_COST_PER_MILLION=0。test_bug15_fallback.py 注入主模型连接错误验证备用成功，并验证 provider usage/费用。
 
 验证：`uv run pytest dev/tests/test_bug15_fallback.py dev/tests/test_llm_stream.py dev/tests/test_llm_retry.py dev/tests/test_bug05_config.py -q（20 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-16
+
+评估将全部 query/context/answer 拼接，可能超窗。rag/assess.py 分配总预算、单片段上限，保留总命中数与纳入数说明，极小预算或 token 超限明确降级且不调用裁判。新增 ASSESS_INPUT_CHARS=12000、ASSESS_CONTEXT_CHARS=2000。test_bug16_assess.py 把超过 200 万字符的输入压到 2000 字符内并完成 fake judge。
+
+验证：`uv run pytest dev/tests/test_bug16_assess.py dev/tests/test_assess.py dev/tests/test_sessions.py -q（见提交验证）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

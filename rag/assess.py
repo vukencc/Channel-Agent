@@ -13,6 +13,9 @@
 - 运行时的 RAG 评估由 LLM 统一负责：assess_rag 把【问题】【检索到的上下文】
   【模型答案】一起交给裁判模型，一次产出对上述维度的评估结果。
 """
+import config
+from core.context import estimate_tokens
+
 from typing import Awaitable, Callable, Iterable, Sequence
 
 # 裁判函数：接收提示词，返回模型文本回复（通常传入 core.llm.complete）
@@ -90,9 +93,28 @@ MRR: <分数>
 
 async def assess_rag(query: str, contexts: Sequence[str], answer: str, judge: Judge) -> str:
     """由 LLM 统一对一轮 RAG 做评估，返回评估结果文本。"""
-    prompt = _ASSESS_PROMPT.format(
-        query=query,
-        contexts="\n---\n".join(contexts),
-        answer=answer,
-    )
+    limit = min(config.ASSESS_INPUT_CHARS, config.MODEL_INPUT_CHARS)
+    overhead = len(_ASSESS_PROMPT.format(query='', contexts='', answer='')) + 120
+    available = limit - overhead
+    if available < 200:
+        return '[评估降级] 输入预算不足，未调用裁判；不影响回答。'
+
+    def clip(text, size):
+        marker = '[已截断]'
+        return text if len(text) <= size else text[:max(0, size - len(marker))] + marker[:size]
+
+    query = clip(query, available // 4)
+    answer = clip(answer, available // 4)
+    remaining = available - len(query) - len(answer)
+    selected = []
+    for context in contexts:
+        if remaining < 20:
+            break
+        text = clip(context, min(config.ASSESS_CONTEXT_CHARS, remaining - 5))
+        selected.append(text)
+        remaining -= len(text) + 5
+    detail = f'[输入范围] 原始片段 {len(contexts)} 条，纳入 {len(selected)} 条；超限内容截断或省略，不能据此判断全部资料。\n'
+    prompt = _ASSESS_PROMPT.format(query=query, contexts=detail + '\n---\n'.join(selected), answer=answer)
+    if len(prompt) > limit or estimate_tokens(prompt) > config.MODEL_INPUT_TOKENS:
+        return '[评估降级] 输入仍超预算，未调用裁判；不影响回答。'
     return (await judge(prompt)).strip()
