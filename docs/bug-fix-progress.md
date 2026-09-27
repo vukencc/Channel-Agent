@@ -4,7 +4,7 @@
 
 - [x] BUG-01
 - [x] BUG-02
-- [ ] BUG-03
+- [x] BUG-03
 - [ ] BUG-04
 - [ ] BUG-05
 - [ ] BUG-06
@@ -34,3 +34,9 @@
 整轮持有信号量造成确认阻塞；core/sessions.py 改为仅模型调用占槽，评估独立池 ASSESS_CONCURRENCY=1。新增 test_bug02_slots.py 验证四个等待工具时第五会话可完成。
 
 验证：`uv run pytest dev/tests/test_bug02_slots.py dev/tests/test_sessions.py -q（15 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-03
+
+tools/web_search.py 移除导入时客户端，改用有超时及 2 MB 响应上限的 HTTP 流；默认逐次出网确认，查询完整展示、审计，缺 key 拒绝。参数限制 1–10 条、输出截断。新增 WEB_SEARCH_CONFIRM=always（可 off）、WEB_SEARCH_TIMEOUT=15 秒。测试覆盖拒绝不请求、参数越界、慢响应与大结果。
+
+验证：`uv run pytest dev/tests/test_bug03_web.py dev/tests/test_tools.py -q（10 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

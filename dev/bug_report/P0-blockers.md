@@ -62,7 +62,7 @@
 
 ## BUG-03 web_search 免确认出网、无超时/上限/截断
 
-**级别** P0　**状态** 待修复　**文件** `tools/web_search.py`、`tools/sandbox.py`、`.env.example`
+**级别** P0　**状态** 已修复（说明见下）　**文件** `tools/web_search.py`、`tools/sandbox.py`、`.env.example`
 
 **症状**
 - 提示词注入可驱动模型把会话或文件内容拼进搜索 query 发往 Tavily（数据外泄面）。
@@ -85,6 +85,8 @@
 - 现有测试不回归。
 
 ---
+
+**修复说明** tools/web_search.py 移除导入时客户端，改用有超时及 2 MB 响应上限的 HTTP 流；默认逐次出网确认，查询完整展示、审计，缺 key 拒绝。参数限制 1–10 条、输出截断。新增 WEB_SEARCH_CONFIRM=always（可 off）、WEB_SEARCH_TIMEOUT=15 秒。测试覆盖拒绝不请求、参数越界、慢响应与大结果。 验证：`uv run pytest dev/tests/test_bug03_web.py dev/tests/test_tools.py -q（10 passed）`。
 
 ## BUG-04 沙箱无 CPU/内存/磁盘/进程数配额
 
