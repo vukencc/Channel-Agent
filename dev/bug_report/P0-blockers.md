@@ -115,7 +115,7 @@
 
 ## BUG-05 配置缺失或非法在启动时不报错
 
-**级别** P0　**状态** 待修复　**文件** `config.py`、`core/cli.py`
+**级别** P0　**状态** 已修复（说明见下）　**文件** `config.py`、`core/cli.py`
 
 **症状**
 - 缺少 `OPENCODE_API_KEY`、`BASE_URL`、`MODEL` 时，程序照常启动，直到首次模型调用才以会话 `error` 形式暴露。
@@ -136,6 +136,8 @@
 - `dev/tests/test_config.py` 扩展通过。
 
 ---
+
+**修复说明** config.py 增加集中启动校验并让数字解析错误携带变量名；core/cli.py 在创建状态目录前验证，main.py 捕获导入期配置错误并以退出码 2 输出中文提示。--list 无需模型密钥。新增 test_bug05_config.py 覆盖缺 key、非法范围、正确配置静默。无新配置。 验证：`uv run pytest dev/tests/test_bug05_config.py dev/tests/test_config.py dev/tests/test_cli.py -q（见提交验证）`。
 
 ## BUG-06 调试工具常驻生产、DEBUG 输出污染 TUI
 

@@ -381,6 +381,11 @@ def main():
     parser.add_argument('--list', action='store_true', help='列出已保存会话后退出')
     args = parser.parse_args()
     try:
+        if not args.list:
+            config.validate_runtime_config()
+    except ValueError as exc:
+        parser.exit(2, str(exc) + '\n')
+    try:
         store = SessionStore(args.state_dir)
     except (OSError, RuntimeError) as exc:
         parser.exit(1, str(exc) + '\n')

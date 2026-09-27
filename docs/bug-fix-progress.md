@@ -6,7 +6,7 @@
 - [x] BUG-02
 - [x] BUG-03
 - [x] BUG-04
-- [ ] BUG-05
+- [x] BUG-05
 - [ ] BUG-06
 - [ ] BUG-07
 - [ ] BUG-08
@@ -46,3 +46,9 @@ tools/web_search.py 移除导入时客户端，改用有超时及 2 MB 响应上
 缺少资源限制。tools/sandbox.py 探测宿主 rlimit 能力与 prlimit，命名空间建立后设置 AS/CPU/FSIZE/NPROC；tools/command.py 执行前中后检查工作区大小，超额终止并审计，不删除文件。新增五项配置见 .env.example；轮询非硬磁盘配额、按进程/UID 限制边界详见 docs/sandbox.md。新增 test_bug04_limits.py 验证超额拒绝、缺启动器失败关闭、实际大文件受限。
 
 验证：`uv run pytest dev/tests/test_bug04_limits.py dev/tests/test_command.py dev/tests/test_file_crud.py -q（48 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-05
+
+config.py 增加集中启动校验并让数字解析错误携带变量名；core/cli.py 在创建状态目录前验证，main.py 捕获导入期配置错误并以退出码 2 输出中文提示。--list 无需模型密钥。新增 test_bug05_config.py 覆盖缺 key、非法范围、正确配置静默。无新配置。
+
+验证：`uv run pytest dev/tests/test_bug05_config.py dev/tests/test_config.py dev/tests/test_cli.py -q（见提交验证）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
