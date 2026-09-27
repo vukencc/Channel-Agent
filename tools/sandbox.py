@@ -11,7 +11,6 @@ import datetime
 import json
 import os
 import select
-import shlex
 import sys
 from pathlib import Path
 from typing import Callable
@@ -169,16 +168,12 @@ def ask_permission(action: str, detail: str, reason: str = "") -> bool:
 
 
 def check_command(command: str) -> list[str]:
-    """Parse argv without a host shell; execution must use isolated_command."""
+    """Shell syntax is interpreted only inside isolated_command, never on the host."""
     if not command or not command.strip():
         raise SandboxError("命令不能为空")
-    try:
-        argv = shlex.split(command)
-    except ValueError as exc:
-        raise SandboxError(f"命令无法解析：{exc}") from exc
-    if not argv or any("\x00" in part for part in argv):
+    if "\x00" in command:
         raise SandboxError("命令不能为空或包含 NUL 字符")
-    return argv
+    return ["/bin/sh", "-c", command]
 
 
 def isolated_command(argv: list[str]) -> list[str]:

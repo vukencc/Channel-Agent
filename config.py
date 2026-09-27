@@ -37,6 +37,11 @@ def env_path(name: str, default: str | None = None) -> pathlib.Path | None:
 API_KEY = os.getenv("OPENCODE_API_KEY")
 BASE_URL = os.getenv("BASE_URL")
 MODEL = os.getenv("MODEL")
+REASONING_EFFORT = (os.getenv("REASONING_EFFORT") or "").strip()
+# Optional provider extension; auto sends no thinking override.
+THINKING_MODE = (os.getenv("THINKING_MODE") or "auto").strip().lower()
+if THINKING_MODE not in {"auto", "enabled", "disabled"}:
+    raise ValueError("THINKING_MODE 必须为 auto、enabled 或 disabled")
 WEB_SEARCH_API_KEY = os.getenv("WEB_SEARCH_API_KEY")
 
 DOC_DIR = env_path("DOC_DIR", "data/raw")
@@ -50,8 +55,10 @@ EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small
 EMBEDDING_LOCAL_PATH = env_path("EMBEDDING_LOCAL_PATH")
 
 TIMEOUT = env_float("TIMEOUT", 30.0)
-SESSION_TIMEOUT = env_float("SESSION_TIMEOUT", 15.0)
-MAX_RETRIES = env_int("MAX_RETRIES", 5)
+SESSION_TIMEOUT = env_float("SESSION_TIMEOUT", 60.0)
+MAX_RETRIES = env_int("MAX_RETRIES", 2)
+MODEL_CALL_TIMEOUT = max(1.0, env_float("MODEL_CALL_TIMEOUT", 90.0))
+ASSESS_TIMEOUT = max(1.0, env_float("ASSESS_TIMEOUT", 30.0))
 
 # 工具沙箱与命令执行
 SANDBOX_DIR = env_path("SANDBOX_DIR", "crud_tests")   # 文件/命令操作的活动范围

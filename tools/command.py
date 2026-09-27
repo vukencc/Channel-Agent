@@ -7,6 +7,7 @@ import subprocess
 import os
 import signal
 import time
+import selectors
 
 import config
 from pydantic import BaseModel, Field
@@ -29,7 +30,8 @@ class RunCommandArgs(BaseModel):
     在隔离工作区执行命令，支持 Python、Shell、mkdir/cp/mv/rm 等系统工具。
     主机仅沙箱目录映射为 /workspace 并可写；网络关闭，主机密钥和虚拟环境不可见。
     简单文件增删改查优先用 CRUD 工具。命令自动发起执行确认，无需先口头询问。
-    普通命令不解释管道/重定向；需要时显式使用 sh -c '...'。
+    使用隔离环境内的 POSIX sh，支持管道、重定向和 heredoc 多行脚本。
+    非交互运行，标准输入关闭；Python 多行代码使用 python3 - <<'PY' ... PY。
     """
     command: str = Field(
         description="要执行的命令，例如 ls -la、python3 -c 'print(1+1)' 或 sh -c 'ls | head'"
@@ -57,35 +59,55 @@ def run_command(command: str, reason: str = "") -> str:
             isolated,
             shell=False,
             cwd=sandbox_root(),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
-            encoding="utf-8",
-            errors="replace",
         )
         deadline = time.monotonic() + config.COMMAND_TIMEOUT
-        while True:
-            stopped = cancellation_requested()
-            if stopped or time.monotonic() >= deadline:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                proc.communicate()
-                if stopped:
-                    audit("cancelled", action="run_command", command=command)
-                    return "[已取消] 命令及其子进程已终止。"
-                raise subprocess.TimeoutExpired(isolated, config.COMMAND_TIMEOUT)
+        buffers = {proc.stdout: bytearray(), proc.stderr: bytearray()}
+        clipped = set()
+        # Drain both pipes continuously, retaining only a bounded UTF-8 prefix.
+        limit = max(1, config.TOOL_MAX_OUTPUT) * 4
+        try:
+            with selectors.DefaultSelector() as selector:
+                for pipe in buffers:
+                    selector.register(pipe, selectors.EVENT_READ)
+                while selector.get_map() or proc.poll() is None:
+                    if cancellation_requested():
+                        audit("cancelled", action="run_command", command=command)
+                        return "[已取消] 命令及其子进程已终止。"
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(isolated, config.COMMAND_TIMEOUT)
+                    for key, _ in selector.select(min(.1, remaining)):
+                        data = os.read(key.fileobj.fileno(), 8192)
+                        if not data:
+                            selector.unregister(key.fileobj)
+                            continue
+                        buffer = buffers[key.fileobj]
+                        room = max(0, limit - len(buffer))
+                        buffer.extend(data[:room])
+                        if len(data) > room:
+                            clipped.add(key.fileobj)
+            stdout, stderr = [
+                truncate(data.decode('utf-8', errors='replace'))
+                + ('\n[输出已截断]' if pipe in clipped else '')
+                for pipe, data in buffers.items()
+            ]
+        finally:
+            # Also reap descendants holding a pipe after their parent exits.
             try:
-                stdout, stderr = proc.communicate(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
-                break
-            except subprocess.TimeoutExpired:
-                continue
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+            for pipe in buffers:
+                pipe.close()
     except subprocess.TimeoutExpired:
         audit("timeout", action="run_command", command=command,
               timeout=config.COMMAND_TIMEOUT)
-        return f"[超时] 命令超过 {config.COMMAND_TIMEOUT:.0f} 秒未结束，已终止。"
+        return f"[超时] 命令超过 {config.COMMAND_TIMEOUT:g} 秒未结束，已终止。请检查死循环或拆分长任务。"
     except FileNotFoundError:
         audit("failed", action="run_command", command=command, error="命令不存在")
         return f"[失败] 找不到命令：{argv[0]}"

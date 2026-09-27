@@ -193,3 +193,52 @@ def test_stream_failure_preserves_partial_and_allows_next_turn(store):
         assert session.record['messages'][-1]['content'] == 'partial'
         assert store.load_all()[0]['messages'][-1]['content'] == 'partial'
     asyncio.run(run())
+
+
+def test_background_assessment_does_not_block_next_turn_or_overwrite_it(store, monkeypatch):
+    from core import sessions
+    monkeypatch.setattr(config, 'RAG_ASSESS', True)
+    async def run():
+        assessing = asyncio.Event()
+        async def slow_assess(*args):
+            assessing.set()
+            await asyncio.sleep(10)
+            return 'stale assessment'
+        monkeypatch.setattr(sessions, 'assess_rag', slow_assess)
+        async def model(history, **kwargs):
+            if history[-1]['content'] == 'search':
+                return {'role':'assistant','content':'','tool_calls':[{'id':'r','function':{'name':'rag_search','arguments':'{}'}}]}
+            return {'role':'assistant','content':'answer'}
+        manager = SessionManager(store, model=model)
+        async def tool(*args):
+            return 'retrieval context'
+        monkeypatch.setattr(manager, '_tool', tool)
+        s = manager.create()
+        manager.submit(s, 'search')
+        await asyncio.wait_for(s.task, 1)
+        await asyncio.wait_for(assessing.wait(), 1)
+        assert not s.busy
+        manager.submit(s, 'continue')
+        await asyncio.wait_for(s.task, 1)
+        assert s.record['messages'][-1]['content'] == 'answer'
+        assert 'assessment' not in s.record
+        await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_assessment_timeout_is_nonfatal_and_persisted(store, monkeypatch):
+    from core import sessions
+    monkeypatch.setattr(config, 'ASSESS_TIMEOUT', .02)
+    async def run():
+        async def stalled(*args):
+            await asyncio.sleep(10)
+        monkeypatch.setattr(sessions, 'assess_rag', stalled)
+        manager = SessionManager(store)
+        session = manager.create()
+        manager._start_assessment(session, 'query', ['context'], 'answer')
+        await asyncio.wait_for(session.assessment_task, 1)
+        assert session.record['status'] == 'idle'
+        assert 'TimeoutError' in session.record['assessment']
+        assert store.load_all()[0]['assessment'] == session.record['assessment']
+        await manager.shutdown()
+    asyncio.run(run())

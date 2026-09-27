@@ -24,10 +24,10 @@ def test_nonzero_exit_code_reported(sandbox_env):
     assert '[stderr]' in result
 
 
-def test_shell_metacharacters_are_not_interpreted(sandbox_env):
+def test_shell_metacharacters_are_interpreted_inside_isolation(sandbox_env):
     result = run_command('echo a; echo b')
     assert '[退出码] 0' in result
-    assert 'a; echo b' in result
+    assert 'a\nb' in result
 
 
 def test_python_shell_and_file_commands_allowed(sandbox_env):
@@ -100,7 +100,8 @@ def test_output_truncated(sandbox_env, monkeypatch):
 
 
 def test_invalid_command_and_audit(sandbox_env):
-    assert '[已拦截]' in run_command("echo '")
+    assert '[stderr]' in run_command("echo '")
+    assert '[已拦截]' in run_command("echo \x00")
     run_command('ls')
     records = [json.loads(line) for line in config.AUDIT_LOG.read_text().splitlines()]
     assert {'blocked', 'confirm', 'executed'} <= {row['event'] for row in records}
@@ -141,3 +142,46 @@ def test_session_cancellation_terminates_running_command(sandbox_env):
         assert time.monotonic() - start < 2
     finally:
         timer.cancel()
+
+
+def test_heredoc_and_syntax_errors_return_without_waiting_for_terminal(sandbox_env, monkeypatch):
+    import os
+    import time
+    import subprocess
+    original = subprocess.Popen
+    observed = []
+    def capture(*args, **kwargs):
+        observed.append(kwargs.get('stdin'))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(subprocess, 'Popen', capture)
+    start = time.monotonic()
+    result = run_command("python3 - <<'PYCODE'\nprint(2 + 3)\nPYCODE")
+    assert '[stdout]\n5' in result
+    result = run_command("python3 - <<'PYCODE'\ndef seg(name,(x1,y1),(x2,y2)):\n    pass\nPYCODE")
+    assert 'SyntaxError' in result
+    assert '[超时]' not in result
+    assert '[退出码] 0' in run_command('python3 -')
+    assert time.monotonic() - start < 2
+    assert observed == [subprocess.DEVNULL] * 3
+
+
+def test_heredoc_preserves_quotes_pipes_and_redirects(sandbox_env):
+    result = run_command("cat <<'EOF' > quoted.txt\nit's literal: $HOME `id`\nEOF\ncat quoted.txt | wc -l")
+    assert '[退出码] 0' in result
+    assert (sandbox_env / 'quoted.txt').read_text() == "it's literal: $HOME `id`\n"
+
+
+def test_large_stdout_and_stderr_are_drained_with_bounded_memory(sandbox_env, monkeypatch):
+    import tracemalloc
+    monkeypatch.setattr(config, 'TOOL_MAX_OUTPUT', 1000)
+    tracemalloc.start()
+    try:
+        result = run_command("python3 - <<'PYCODE'\nimport os\nfor _ in range(1000):\n    os.write(1, b'a'*10000)\n    os.write(2, b'b'*10000)\nPYCODE")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert '[退出码] 0' in result
+    assert '[stdout]' in result and '[stderr]' in result
+    assert '已截断' in result
+    assert len(result) < 2500
+    assert peak < 1024 * 1024

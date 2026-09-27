@@ -11,9 +11,12 @@ import config
 from core.agent import DEFAULT_PROMPT
 from core.llm import call_model, complete
 from core.storage import SessionStore, finish_pending_tools
+from core.log import get_logger
 from rag.assess import assess_rag
 from tools import TOOL_REGISTRY
 from tools.sandbox import ToolContext, tool_context
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -26,6 +29,9 @@ class Session:
     started_at: float = 0.0
     confirmation: dict | None = None
     decision: concurrent.futures.Future | None = None
+    assessment_task: asyncio.Task | None = None
+    partial_reasoning: str = ''
+    last_model_event_at: float = 0.0
 
     @property
     def id(self):
@@ -81,6 +87,11 @@ class SessionManager:
         session.cancelled.clear()
         session.started_at = time.monotonic()
         session.partial = ''
+        session.partial_reasoning = ''
+        if session.assessment_task and not session.assessment_task.done():
+            session.assessment_task.cancel()
+        session.record.pop('assessment', None)
+        session.record['last_run'] = {'model_calls': [], 'tools': []}
         session.record.update(status='queued', error='')
         session.record['messages'].append({'role': 'user', 'content': text})
         self.save(session)
@@ -92,6 +103,13 @@ class SessionManager:
         session.task.add_done_callback(finish)
 
     def emit(self, session, kind, text):
+        if kind == 'metrics':
+            session.record.setdefault('last_run', {}).setdefault('model_calls', []).append(text)
+            return
+        if kind == 'reasoning':
+            session.partial_reasoning = text
+            return
+        session.last_model_event_at = time.monotonic()
         if kind == 'content':
             session.partial += text
         else:
@@ -168,6 +186,25 @@ class SessionManager:
             except Exception as exc:
                 return f'[已取消] 工具结束：{type(exc).__name__}'
 
+    def _start_assessment(self, session, query, contexts, answer):
+        """Optional scoring must not occupy the conversation's foreground task."""
+        turn = session.started_at
+        session.record['assessment'] = '检索质量正在后台评估，可继续对话。'
+        async def run():
+            try:
+                async with asyncio.timeout(config.ASSESS_TIMEOUT):
+                    async with self.slots:
+                        result = await assess_rag(query, list(contexts), answer,
+                                                 partial(complete, session_id=session.id))
+            except asyncio.CancelledError:
+                result = '后台评估已取消。'
+            except Exception as exc:
+                result = '评估失败（不影响回答）：' + type(exc).__name__
+            if session.started_at == turn:
+                session.record['assessment'] = result
+                await self.save(session)
+        session.assessment_task = asyncio.create_task(run())
+
     async def _run(self, session):
         contexts = []
         try:
@@ -178,7 +215,9 @@ class SessionManager:
                     if session.cancelled.is_set():
                         raise asyncio.CancelledError
                     session.partial = ''
+                    session.partial_reasoning = ''
                     session.phase = '等待模型响应'
+                    session.last_model_event_at = time.monotonic()
                     self.notify()
                     history = [dict(message) for message in session.record['messages']]
                     memory = await asyncio.to_thread(self.store.memory, session.id)
@@ -188,23 +227,20 @@ class SessionManager:
                                              emit=lambda kind, text: self.emit(session, kind, text))
                     session.record['messages'].append(reply)
                     session.partial = ''
+                    session.partial_reasoning = ''
                     await self.save(session)
                     calls = reply.get('tool_calls', [])
                     if not calls:
                         if config.RAG_ASSESS and contexts:
-                            session.phase = '评估检索结果（可切换会话）'
-                            self.notify()
-                            try:
-                                session.record['assessment'] = await assess_rag(
-                                    next(m['content'] for m in reversed(history) if m['role'] == 'user'),
-                                    contexts, reply.get('content', ''), partial(complete, session_id=session.id))
-                            except Exception as exc:
-                                session.record['assessment'] = '评估失败（不影响回答）：' + type(exc).__name__
+                            self._start_assessment(session,
+                                next(m['content'] for m in reversed(history) if m['role'] == 'user'),
+                                contexts, reply.get('content', ''))
                         break
                     for call in calls:
                         name = call['function']['name']
                         session.phase = '执行工具：' + name
                         self.notify()
+                        tool_started = time.monotonic()
                         if session.cancelled.is_set():
                             result = '[已取消] 工具尚未执行。'
                         else:
@@ -212,6 +248,10 @@ class SessionManager:
                                 result = await self._tool(session, call)
                             except Exception as exc:
                                 result = f'工具执行失败: {type(exc).__name__}: {exc}'
+                        metrics = {'name': name, 'wall_s_including_confirmation': round(time.monotonic() - tool_started, 3),
+                                   'output_chars': len(result)}
+                        session.record['last_run']['tools'].append(metrics)
+                        logger.info('tool_metrics session=%s %s', session.id, metrics)
                         session.record['messages'].append({'role': 'tool', 'tool_call_id': call['id'], 'content': result})
                         if name == 'rag_search':
                             contexts.append(result)
@@ -231,13 +271,21 @@ class SessionManager:
             if session.record['status'] in {'cancelled', 'error'}:
                 finish_pending_tools(session.record['messages'])
             if session.partial:
-                session.record['messages'].append({'role': 'assistant', 'content': session.partial})
+                message = {'role': 'assistant', 'content': session.partial}
+                if session.partial_reasoning:
+                    message['reasoning_content'] = session.partial_reasoning
+                session.record['messages'].append(message)
                 session.partial = ''
+            session.partial_reasoning = ''
             session.phase = ''
+            session.record['last_run']['total_s'] = round(time.monotonic() - session.started_at, 3)
             await self.save(session)
 
     async def shutdown(self):
         for session in self.sessions.values():
             self.cancel(session)
+            if session.assessment_task:
+                session.assessment_task.cancel()
         await asyncio.gather(*(s.task for s in self.sessions.values() if s.task), return_exceptions=True)
+        await asyncio.gather(*(s.assessment_task for s in self.sessions.values() if s.assessment_task), return_exceptions=True)
         await self.flush()

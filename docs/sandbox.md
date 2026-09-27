@@ -22,17 +22,18 @@ Python 依赖仍由 `uv sync --locked` 安装。没有 bwrap、命名空间受�
 
 命令使用系统安装的工具；不自动带入项目第三方 Python 包。网络关闭，因此 `curl` 等即使系统已安装，
 也不能访问外部网络。沙箱内文件删除仍真实生效，执行前应核对确认提示。
-这不是面向不可信多租户的资源隔离服务：没有内存/磁盘配额，捕获输出后才截断显示。
+这不是面向不可信多租户的资源隔离服务：没有子进程内存/磁盘配额；stdout/stderr 持续排空，但仅保留受限前缀，避免大输出撑满 Agent 内存。
 
-普通命令通过 `shlex` 分词后直接执行，不解释 Shell 语法：
+命令由隔离环境内的 `/bin/sh -c` 执行，宿主仍以 `shell=False` 启动 Bubblewrap。支持 POSIX Shell 语法：
 
 ```text
 python3 -c 'print(1 + 1)'
 mkdir -p notes
-sh -c 'ls -la | head'
+ls -la | head
 ```
 
-需要管道、重定向或多个步骤时显式调用 `sh -c`；简单文件读写仍优先使用 CRUD。
+支持管道、重定向、多个步骤和 heredoc；简单文件读写仍优先使用 CRUD。
+命令的标准输入连接 `/dev/null`，不会抢占 CLI 键盘输入。多行 Python 使用 `python3 - <<'PY'` 加换行脚本与结尾 `PY`，而不是等待交互输入。
 `/bin/ls` 等绝对可执行路径指隔离环境内的路径，不是放行任意主机路径。
 
 ## 验证
@@ -44,7 +45,4 @@ uv run pytest dev/tests/test_command.py dev/tests/test_file_crud.py dev/tests/te
 命令测试需要允许创建 Linux 用户、进程和网络命名空间；在禁止嵌套隔离的 CI/容器中需要调整运行器。
 测试验证真实隔离边界、Python/Shell、确认取消、超时子进程回收及 CRUD 结果反馈。
 
-本次验证：工程回归 95 项通过，3 项 RAG 集成/阈值相关测试未执行。
-另外对当前配置的真实模型发送两条独立请求：保存 hello 到指定文件、读取指定文件，
-分别返回 `create_file`、`read_file` 调用。该探测仅观察模型选择，不执行其调用；
-不是跨模型统计评测，也不保证所有措辞下都能正确选择工具。
+最新验证与失败样本见 [系统诊断报告](system-diagnostics-2026-09-27.md)。

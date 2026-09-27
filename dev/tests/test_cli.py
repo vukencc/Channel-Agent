@@ -50,3 +50,24 @@ def test_fullscreen_cli_accepts_keyboard_and_exits(tmp_path):
         finally:
             store.close()
     asyncio.run(run())
+
+
+def test_status_distinguishes_remote_stream_gap_from_local_tool_work(tmp_path):
+    import time
+    store = SessionStore(tmp_path / 'state')
+    try:
+        with create_pipe_input() as pipe:
+            cli = AgentCLI(store, input=pipe, output=DummyOutput())
+            session = cli.active
+            class Running:
+                def done(self):
+                    return False
+            session.task = Running()
+            session.phase = '模型正在回答'
+            session.started_at = session.last_model_event_at = time.monotonic() - 10
+            assert '等待后续数据' in cli.status_text()[0][1]
+            session.phase = '执行工具：run_command'
+            assert '等待后续数据' not in cli.status_text()[0][1]
+            session.task = None
+    finally:
+        store.close()

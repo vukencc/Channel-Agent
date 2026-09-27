@@ -191,6 +191,10 @@ class AgentCLI:
     def status_text(self):
         s = self.active
         elapsed = f' 本轮 {time.monotonic() - s.started_at:.0f}s' if s.busy else ''
+        if s.busy and s.phase.startswith(('模型', '生成工具', '等待模型')):
+            idle = time.monotonic() - s.last_model_event_at
+            if s.last_model_event_at and idle >= 5:
+                elapsed += f' · 等待后续数据 {idle:.0f}s / 空闲上限 {config.SESSION_TIMEOUT:g}s'
         return [('class:status', f'{s.id[:8]} | {LABELS.get(s.record["status"], "")} {s.phase}{elapsed} | 上下文 {len(s.record["messages"])} 条 | Ctrl+Q 退出')]
 
     def select(self, identifier):
