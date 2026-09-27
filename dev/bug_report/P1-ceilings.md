@@ -33,7 +33,7 @@
 
 ## BUG-09 长输出全有或全无，截断后只能一次性恢复
 
-**级别** P1　**状态** 待修复　**文件** `core/llm.py`、`core/sessions.py`、`config.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `core/llm.py`、`core/sessions.py`、`config.py`
 
 **症状**
 - 单次输出上限 48000 字符，超限或不完整结束即整轮失败。
@@ -56,6 +56,8 @@
 - 不完整工具调用仍永不执行。
 
 ---
+
+**修复说明** 大文件单次参数易截断。采用分段生成协议：tools/file_crud.py 增加 append_file（4000 字符、预期偏移、逐次确认、原子写与审计）；core/prompts.py 指导逐段落盘，core/context.py 压缩历史分段参数。测试实际保存 60k 中文字符并拒绝重复偏移、拒绝确认；原有不完整流不执行测试保持。无新增配置。 验证：`uv run pytest dev/tests/test_bug09_append.py dev/tests/test_file_crud.py dev/tests/test_llm_stream.py -q（36 passed）`。
 
 ## BUG-10 保存放大：事件循环 deepcopy + 每步全量重写
 

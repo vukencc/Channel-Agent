@@ -1,6 +1,7 @@
 """新建与恢复会话共用的系统指令。"""
 
 FILE_WORKFLOW_GUIDE = """当前文件工具协议（适用于新会话和恢复的旧会话）：
+- 超长输出必须分段落盘：create_file 建立文件后，用 append_file 每段不超过 4000 字符，expected_chars 使用上次返回的 next_offset；分段成功后再生成下一段，结束时核对文件。
 - read_file 支持 offset/limit 字符分页；出现 next_offset 时内容不是全文。按 next_offset 获取需要的部分，禁止凭分页结果覆盖整个文件。
 - 定位标签、函数或样式时用 read_file 的 search 精确查找并读取附近片段，不必猜测偏移或遍历全文件。
 - 已有文件优先 edit_file：先读取真实片段，old_text 必须唯一匹配；每次仅修改一个明确部分，其余内容由工具保留。

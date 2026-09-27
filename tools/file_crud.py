@@ -295,3 +295,46 @@ def list_files(path: str = ".") -> str:
     if not entries:
         return f"[目录] {path}（空）"
     return f"[目录] {path}（{len(entries)} 项）\n" + "\n".join(entries)
+
+
+class AppendFileArgs(BaseModel):
+    """分段生成长文件：每段最多 4000 字符，expected_chars 必须等于当前文件字符长度。
+    新文件先 create_file，再根据成功结果的 next_offset 追加；失败后读取确认，禁止重复追加。
+    """
+    path: str
+    content: str = Field(min_length=1, max_length=4000)
+    expected_chars: int = Field(ge=0)
+    reason: str = ''
+
+
+@register_tool(AppendFileArgs, name='append_file')
+def append_file(path: str, content: str, expected_chars: int, reason: str = '') -> str:
+    AppendFileArgs(path=path, content=content, expected_chars=expected_chars, reason=reason)
+    temporary = None
+    try:
+        target = resolve_path(path)
+        before = target.read_bytes()
+        actual = len(before.decode('utf-8'))
+        if actual != expected_chars:
+            audit('blocked', action='append_file', path=path, expected=expected_chars, actual=actual)
+            return f'[已拦截] 文件字符偏移不匹配：当前 {actual}，请求 {expected_chars}；请先读取核对。'
+        if not ask_permission('append_file', f'{path}，偏移 {actual}，新增 {len(content)} 字符', reason):
+            return '[已取消] 用户未确认，文件未修改。'
+        if resolve_path(path) != target or target.read_bytes() != before:
+            return '[已拦截] 确认期间文件已变化，请重新读取。'
+        descriptor, temporary = tempfile.mkstemp(prefix='.append-', dir=target.parent)
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(before)
+            stream.write(content.encode('utf-8'))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, target.stat().st_mode & 0o777)
+        os.replace(temporary, target)
+        audit('executed', action='append_file', path=path, added_chars=len(content))
+        return f'[完成] 已追加 {len(content)} 字符；next_offset={actual + len(content)}'
+    except (OSError, UnicodeError, SandboxError) as exc:
+        audit('failed', action='append_file', path=path, error=type(exc).__name__)
+        return f'[失败] 无法追加：{exc}'
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)

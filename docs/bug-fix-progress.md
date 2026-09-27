@@ -10,7 +10,7 @@
 - [x] BUG-06
 - [x] BUG-07
 - [x] BUG-08
-- [ ] BUG-09
+- [x] BUG-09
 - [ ] BUG-10
 - [ ] BUG-11
 - [ ] BUG-12
@@ -70,3 +70,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 字符预算不能反映混合文本成本。core/context.py 增加 ASCII/非 ASCII token 估算、双预算与异步摘要；摘要限制输入输出和时限，仅修改工作副本，失败降级，按内容摘要缓存。core/sessions.py 接入并记录前后估算。新增 test_bug08_summary.py，fake judge 验证事实保留。新配置 MODEL_INPUT_TOKENS=16000、CONTEXT_SUMMARY=True、SUMMARY_INPUT_CHARS=12000、SUMMARY_CHARS=1000、SUMMARY_TIMEOUT=10。估算不是精确 tokenizer。
 
 验证：`uv run pytest dev/tests/test_bug08_summary.py dev/tests/test_context.py dev/tests/test_sessions.py -q（22 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-09
+
+大文件单次参数易截断。采用分段生成协议：tools/file_crud.py 增加 append_file（4000 字符、预期偏移、逐次确认、原子写与审计）；core/prompts.py 指导逐段落盘，core/context.py 压缩历史分段参数。测试实际保存 60k 中文字符并拒绝重复偏移、拒绝确认；原有不完整流不执行测试保持。无新增配置。
+
+验证：`uv run pytest dev/tests/test_bug09_append.py dev/tests/test_file_crud.py dev/tests/test_llm_stream.py -q（36 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

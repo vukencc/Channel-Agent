@@ -66,3 +66,5 @@ uv run pytest dev/tests/test_command.py dev/tests/test_file_crud.py dev/tests/te
 工作区默认 512 MiB，执行前、执行中约 100 ms 一次及结束后检查，不删除超额文件。命令总时限仍有效。
 这不是文件系统硬配额：轮询存在超量窗口，RLIMIT_AS/CPU 按进程计，RLIMIT_NPROC 按宿主 UID 计且不限制 root。
 可信单用户环境可用这些兜底；不可信多租户部署仍需 cgroup 和独立配额卷，不应以本配置宣称硬隔离。
+
+长输出可先 `create_file`，再 `append_file(path, content, expected_chars)` 分段追加，每段最多 4000 字符。偏移是文件字符数；每段确认、原子替换，返回 next_offset。重复旧偏移会拒绝，确认期间变化也拒绝。不完整模型工具参数仍不执行。此协议支持长输出，但完成速度和实际拆分行为仍取决于模型。

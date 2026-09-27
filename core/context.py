@@ -53,7 +53,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
         for call in message.get('tool_calls', []):
             function = call['function']
             names[call['id']] = function['name']
-            if i >= recent or function['name'] not in {'create_file', 'update_file', 'edit_file', 'run_command'}:
+            if i >= recent or function['name'] not in {'create_file', 'update_file', 'edit_file', 'append_file', 'run_command'}:
                 continue
             try:
                 arguments = json.loads(function['arguments'])
