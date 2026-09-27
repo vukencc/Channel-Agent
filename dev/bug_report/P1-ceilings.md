@@ -172,7 +172,7 @@
 
 ## BUG-14 记忆仅手工、无上限、全量注入、不可检索
 
-**级别** P1　**状态** 待修复　**文件** `core/storage.py`、`core/sessions.py`、`core/cli.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `core/storage.py`、`core/sessions.py`、`core/cli.py`
 
 **症状**
 - 只有 `/remember` 手工写入；记忆整段拼进 system，无相关性筛选。
@@ -193,6 +193,8 @@
 - 记忆注入 token 受控；相关记忆可被召回；旧测试兼容。
 
 ---
+
+**修复说明** 记忆全量注入且无条目管理。新增 core/memory.py 兼容旧文本、结构化条目、BM25 top-k 和注入预算；core/storage.py 去重/容量/删除/显式共享，core/cli.py 增加 list/rm 与删除确认；core/sessions.py 可选后台候选提取，需用户 /remember 采纳，不自动改变有效记忆。新增 MEMORY_TOP_K=4、MEMORY_INJECT_CHARS=1200、MEMORY_AUTO_EXTRACT=False、MEMORY_SHARED=False。test_bug14_memory.py 覆盖去重删除和相关召回预算，旧隔离与记忆限制测试继续通过。 验证：`uv run pytest dev/tests/test_bug14_memory.py dev/tests/test_bug01_budget.py dev/tests/test_sessions.py dev/tests/test_cli.py -q（22 passed）`。
 
 ## BUG-15 单模型无 fallback、无 token/成本计量
 

@@ -151,3 +151,12 @@ RAG 自动评分在后台执行，回答完成后可立即继续同一会话；�
 每轮最多执行 MAX_TOOL_CALLS_PER_ROUND=8 个调用，超额调用逐一返回拒绝结果，保持原顺序和配对。
 Tool 元数据可设置 timeout_s/concurrency，默认 TOOL_TIMEOUT=120 秒。只读超时返回后后台线程仍占读槽直到结束；退出等待收尾。
 写工具超时先取消确认/发出停止信号并等待旧线程，才允许下一轮，避免迟到写入；Python 线程不能被强制杀死。
+
+## 记忆条目与检索
+
+`/remember` 去重保存条目（ID、时间、来源、标签和正文）；`/memory list` 查看，`/memory rm <id>` 需 /yes 确认删除。
+旧纯 Markdown 仍可读，下一次显式编辑时转换为带元数据的条目行；最多 64 条，正文总量受 MEMORY_MAX_CHARS 限制。
+按当前用户问题用 BM25 取 MEMORY_TOP_K=4 条，注入最多 MEMORY_INJECT_CHARS=1200 字符，无命中时仅提供有界摘录。
+MEMORY_AUTO_EXTRACT 默认关闭；启用时后台提取 JSON 候选保存到 memory-candidates.json，`/memory candidates` 查看，
+通过 `/remember 内容` 明确采纳后才注入。失败不影响回答；候选不等于已核实事实。
+MEMORY_SHARED 默认关闭；显式开启后使用状态根的 shared-memory.md，旧会话记忆不搬移、不删除，关闭即可回到隔离文件。

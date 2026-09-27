@@ -47,6 +47,7 @@ class SessionStore:
         self.workspace_root = Path(workspace_root or config.SANDBOX_DIR).resolve()
         self.writer = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-save")
         self._workspace_lock = threading.Lock()
+        self._memory_lock = threading.RLock()
 
     def close(self):
         self.writer.shutdown(wait=True)
@@ -208,25 +209,54 @@ class SessionStore:
                 self.errors.append(f'{path.parent.name}: {exc}')
         return sorted(records, key=lambda r: r['updated_at'])
 
+    def memory_path(self, identifier: str) -> Path:
+        self.directory(identifier)
+        return self.root / 'shared-memory.md' if config.MEMORY_SHARED else self.directory(identifier) / 'memory.md'
+
     def memory(self, identifier: str) -> str:
-        path = self.directory(identifier) / 'memory.md'
+        path = self.memory_path(identifier)
         return path.read_text(encoding='utf-8') if path.exists() else ''
 
-    def memory_for_model(self, identifier: str) -> str:
-        path = self.directory(identifier) / 'memory.md'
+    def memory_entries(self, identifier: str) -> list[dict]:
+        from core.memory import parse_entries
+        return parse_entries(self.memory(identifier))
+
+    def memory_for_model(self, identifier: str, query: str = '') -> str:
+        from core.memory import parse_entries, select_memory
+        path = self.memory_path(identifier)
         if not path.exists():
             return ''
         with path.open(encoding='utf-8') as stream:
-            text = stream.read(config.MEMORY_MAX_CHARS + 1)
-        return text if len(text) <= config.MEMORY_MAX_CHARS else text[:config.MEMORY_MAX_CHARS] + '\n[记忆超限，注入已截断；原文件保留]'
+            text = stream.read(config.MEMORY_MAX_CHARS * 8)
+        return select_memory(parse_entries(text), query)
 
-    def remember(self, identifier: str, text: str):
-        path = self.directory(identifier) / 'memory.md'
-        path.parent.mkdir(parents=True, exist_ok=True)
-        updated = self.memory(identifier).rstrip() + '\n- ' + text.strip() + '\n'
-        if len(updated) > config.MEMORY_MAX_CHARS:
-            raise ValueError('记忆超过 MEMORY_MAX_CHARS，请先整理或删除旧记忆')
-        self.atomic_write(path, updated)
+    def remember(self, identifier: str, text: str, source: str = 'manual', tags=None):
+        from core.memory import render_entries
+        text = text.strip()
+        if not text:
+            raise ValueError('记忆不能为空')
+        with self._memory_lock:
+            entries = self.memory_entries(identifier)
+            if any(entry['text'].strip() == text for entry in entries):
+                return
+            if sum(len(entry['text']) for entry in entries) + len(text) > config.MEMORY_MAX_CHARS:
+                raise ValueError('记忆超过 MEMORY_MAX_CHARS，请先整理或删除旧记忆')
+            if len(entries) >= 64:
+                raise ValueError('记忆最多 64 条，请先删除不再需要的条目')
+            entries.append({'id': uuid.uuid4().hex[:12], 'text': text, 'created_at': now(),
+                            'source': source, 'tags': tags or []})
+            path = self.memory_path(identifier)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.atomic_write(path, render_entries(entries))
+
+    def remove_memory(self, identifier: str, entry_id: str):
+        from core.memory import render_entries
+        with self._memory_lock:
+            entries = self.memory_entries(identifier)
+            remaining = [entry for entry in entries if entry['id'] != entry_id]
+            if len(remaining) == len(entries):
+                raise ValueError('记忆 ID 不存在')
+            self.atomic_write(self.memory_path(identifier), render_entries(remaining))
 
     def export(self, record: dict, format: str = 'md') -> Path:
         if format not in {'md', 'json'}:

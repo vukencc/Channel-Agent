@@ -313,6 +313,14 @@ class AgentCLI:
                         raise ValueError('请输入要记住的内容')
                     self.disk_job(lambda: self.store.remember(session.id, argument),
                                   lambda _: '记忆已保存，下次模型请求时生效。')
+                elif command == '/memory' and argument.startswith('rm '):
+                    if session.confirmation:
+                        raise ValueError('请先处理工具确认')
+                    self.pending_memory_remove = (session.id, argument[3:].strip())
+                    self.notice = '确认删除指定记忆？输入 /yes 或 /no。'
+                elif command == '/memory' and argument == 'candidates':
+                    self.disk_job(lambda: (self.store.directory(session.id) / 'memory-candidates.json').read_text(),
+                                  lambda text: '候选尚未注入；用 /remember 内容 明确采纳：\n' + text)
                 elif command == '/memory':
                     self.disk_job(lambda: self.store.memory(session.id),
                                   lambda text: f'记忆文件：{self.store.directory(session.id) / "memory.md"}\n' + (text or '（空）'))
@@ -323,9 +331,14 @@ class AgentCLI:
                 elif command in {'/yes', '/no'}:
                     if session.confirmation:
                         self.manager.decide(session, command == '/yes')
+                    elif getattr(self, 'pending_memory_remove', (None,))[0] == session.id:
+                        _, entry_id = self.pending_memory_remove
+                        self.pending_memory_remove = (None,)
+                        if command == '/yes':
+                            self.disk_job(lambda: self.store.remove_memory(session.id, entry_id), lambda _: '记忆条目已删除。')
                     elif self.pending_forget == session.id:
                         if command == '/yes':
-                            self.disk_job(lambda: self.store.atomic_write(self.store.directory(session.id) / 'memory.md', ''), lambda _: '记忆已清空。')
+                            self.disk_job(lambda: self.store.atomic_write(self.store.memory_path(session.id), ''), lambda _: '记忆已清空。')
                         self.pending_forget = None
                     else:
                         raise ValueError('当前会话没有待确认操作')

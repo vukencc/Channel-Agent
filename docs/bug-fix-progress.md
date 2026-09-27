@@ -15,7 +15,7 @@
 - [x] BUG-11
 - [x] BUG-12
 - [x] BUG-13
-- [ ] BUG-14
+- [x] BUG-14
 - [ ] BUG-15
 - [ ] BUG-16
 - [ ] BUG-17（P2：低风险实现或设计）
@@ -100,3 +100,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 原始 logit 未校准且无质量门。新增 dev/rag/quality.py 与固定公开 qrels 清单：5 校准/5 留出、343 文档候选池，分开输入输出，文档去重指标、只用校准划分选阈值。真实链路已跑完，四阶段 Top3 和指标见 docs/rag-quality.md；默认阈值留出 hit@10/MRR 均 0.8，建议阈值未提高质量，默认保持不变。新增离线指标/划分测试与可选 integration 质量门；提示词要求引用编号作答。无新运行配置，测试入口 RAG_QUALITY_CORPUS。
 
 验证：`uv run pytest dev/tests/test_bug13_quality.py -m "not integration" -q（3 passed, 1 deselected）；dev.rag.quality 真实 10 查询完成`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-14
+
+记忆全量注入且无条目管理。新增 core/memory.py 兼容旧文本、结构化条目、BM25 top-k 和注入预算；core/storage.py 去重/容量/删除/显式共享，core/cli.py 增加 list/rm 与删除确认；core/sessions.py 可选后台候选提取，需用户 /remember 采纳，不自动改变有效记忆。新增 MEMORY_TOP_K=4、MEMORY_INJECT_CHARS=1200、MEMORY_AUTO_EXTRACT=False、MEMORY_SHARED=False。test_bug14_memory.py 覆盖去重删除和相关召回预算，旧隔离与记忆限制测试继续通过。
+
+验证：`uv run pytest dev/tests/test_bug14_memory.py dev/tests/test_bug01_budget.py dev/tests/test_sessions.py dev/tests/test_cli.py -q（22 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
