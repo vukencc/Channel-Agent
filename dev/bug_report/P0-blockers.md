@@ -35,7 +35,7 @@
 
 ## BUG-02 并发信号量被人工确认与后台评估占用
 
-**级别** P0　**状态** 待修复　**文件** `core/sessions.py`、`config.py`
+**级别** P0　**状态** 已修复（说明见下）　**文件** `core/sessions.py`、`config.py`
 
 **症状**
 - 4 个会话等待用户确认时，其他会话全部排队，无法启动。
@@ -57,6 +57,8 @@
 - `dev/tests/test_sessions.py` 全过。
 
 ---
+
+**修复说明** 整轮持有信号量造成确认阻塞；core/sessions.py 改为仅模型调用占槽，评估独立池 ASSESS_CONCURRENCY=1。新增 test_bug02_slots.py 验证四个等待工具时第五会话可完成。 验证：`uv run pytest dev/tests/test_bug02_slots.py dev/tests/test_sessions.py -q（15 passed）`。
 
 ## BUG-03 web_search 免确认出网、无超时/上限/截断
 

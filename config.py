@@ -96,3 +96,5 @@ MAX_TOOL_ROUNDS = max(1, env_int("MAX_TOOL_ROUNDS", 24))
 
 # 持久记忆写入上限；旧文件只限制注入，不改写。
 MEMORY_MAX_CHARS = env_int("MEMORY_MAX_CHARS", 4000)
+
+ASSESS_CONCURRENCY = env_int("ASSESS_CONCURRENCY", 1)
