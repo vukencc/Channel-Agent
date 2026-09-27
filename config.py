@@ -65,6 +65,9 @@ SANDBOX_DIR = env_path("SANDBOX_DIR", "crud_tests")   # 文件/命令操作的�
 CONFIRM_TIMEOUT = env_float("CONFIRM_TIMEOUT", 30.0)  # 风险操作确认等待秒数，超时视为拒绝
 COMMAND_TIMEOUT = env_float("COMMAND_TIMEOUT", 10.0)  # 单条命令最长执行秒数
 TOOL_MAX_OUTPUT = env_int("TOOL_MAX_OUTPUT", 20000)   # 工具输出（命令/文件内容）最大字符数，超出截断
+FILE_READ_CHARS = max(1, env_int("FILE_READ_CHARS", 6000))
+MODEL_INPUT_CHARS = max(1000, env_int("MODEL_INPUT_CHARS", 64000))
+MODEL_OUTPUT_CHARS = max(1000, env_int("MODEL_OUTPUT_CHARS", 48000))
 AUDIT_LOG = env_path("AUDIT_LOG", "logs/audit.log")   # 确认与执行审计日志
 
 DEBUG = env_bool("DEBUG")
@@ -89,4 +92,4 @@ RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)
 # Durable user conversations and memory, separate from disposable model caches.
 AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", ".agent")
 MAX_CONCURRENT_AGENTS = max(1, env_int("MAX_CONCURRENT_AGENTS", 4))
-MAX_TOOL_ROUNDS = max(1, env_int("MAX_TOOL_ROUNDS", 12))
+MAX_TOOL_ROUNDS = max(1, env_int("MAX_TOOL_ROUNDS", 24))

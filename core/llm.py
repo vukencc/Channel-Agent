@@ -45,6 +45,9 @@ def get_client() -> AsyncOpenAI:
 # 从工具注册表派生，新增工具后这里不用改
 TOOL_SCHEMAS = all_schemas()
 
+class ModelResponseError(RuntimeError):
+    """A response was not executable; a bounded smaller-step recovery is safe."""
+
 def model_options() -> dict:
     """Explicit provider options; do not silently retry with different semantics."""
     options = {}
@@ -170,6 +173,8 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                     if tc.function and tc.function.arguments:
                         call['arguments'].append(tc.function.arguments)
                         metrics['argument_chars'] += len(tc.function.arguments)
+                if sum(metrics[key] for key in ('content_chars', 'reasoning_chars', 'argument_chars')) > config.MODEL_OUTPUT_CHARS:
+                    raise ModelResponseError('模型单次输出超过字符上限，未执行工具；请拆分为小步骤。')
                 if emit and elapsed - progress_at >= .25:
                     if delta.tool_calls:
                         names = ', '.join(c['name'] for c in tool_calls.values())
@@ -180,7 +185,7 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                         emit('status', '模型正在回答')
                     progress_at = elapsed
             if finish not in {'stop', 'tool_calls'}:
-                raise RuntimeError(f'模型输出未完整结束（finish_reason={finish}），未执行工具；请重试或缩小任务。')
+                raise ModelResponseError(f'模型输出未完整结束（finish_reason={finish}），未执行工具；请重试或缩小任务。')
             message: dict = PackMessage('assistant', ''.join(content))
             # Required by thinking-mode providers on subsequent tool turns.
             if reasoning:
@@ -190,18 +195,18 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                 for _, call in sorted(tool_calls.items()):
                     arguments = ''.join(call['arguments'])
                     if not call['id'] or not call['name'] or call['id'] in ids:
-                        raise RuntimeError('模型返回不完整或重复的工具标识，未执行工具。')
+                        raise ModelResponseError('模型返回不完整或重复的工具标识，未执行工具。')
                     ids.add(call['id'])
                     try:
                         if not isinstance(json.loads(arguments), dict):
                             raise ValueError('工具参数必须是 JSON 对象')
                     except ValueError as exc:
-                        raise RuntimeError('模型返回无效工具 JSON，未执行工具。') from exc
+                        raise ModelResponseError('模型返回无效工具 JSON，未执行工具。') from exc
                     calls.append({'id': call['id'], 'type': 'function',
                                   'function': {'name': call['name'], 'arguments': arguments}})
                 message['tool_calls'] = calls
             elif not message['content']:
-                raise RuntimeError('模型没有返回回答或工具调用，请重试。')
+                raise ModelResponseError('模型没有返回回答或工具调用，请重试。')
             metrics['outcome'] = 'ok'
             return message
     except (TimeoutError, httpx.TimeoutException, openai.APITimeoutError) as exc:

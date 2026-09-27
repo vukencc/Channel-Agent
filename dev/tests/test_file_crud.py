@@ -149,3 +149,93 @@ def test_audit_records_confirm_and_execute(sandbox_env):
     assert '"event": "executed"' in log
     assert '"action": "create_file"' in log
     assert '"allowed": true' in log
+
+
+def test_paginated_unicode_read_reconstructs_complete_file(sandbox_env, monkeypatch):
+    monkeypatch.setattr(config, 'FILE_READ_CHARS', 7)
+    text = '中文😀\r\n' * 13 + '保留文件末尾'
+    (sandbox_env / 'long.txt').write_bytes(text.encode())
+    pieces, offset = [], 0
+    while True:
+        page = read_file('long.txt', offset=offset, limit=100000)
+        assert '[文件分页]' in page
+        body = page.split('[内容开始]\n', 1)[1].rsplit('\n[内容结束]', 1)[0]
+        pieces.append(body)
+        assert len(body) <= 7
+        if ' EOF\n' in page:
+            break
+        import re
+        offset = int(re.search(r'next_offset=(\d+)', page)[1])
+    assert ''.join(pieces) == text
+    assert '[失败]' in read_file('long.txt', offset=1000)
+
+
+def test_partial_read_cannot_be_used_to_overwrite_large_file(sandbox_env, monkeypatch):
+    monkeypatch.setattr(config, 'FILE_READ_CHARS', 10)
+    path = sandbox_env / 'large.txt'
+    path.write_text('prefix' + 'x' * 100 + 'tail')
+    assert 'next_offset' in read_file('large.txt')
+    assert '[已拦截]' in update_file('large.txt', 'only the prefix')
+    assert path.read_text().endswith('tail')
+
+
+def test_edit_large_file_preserves_unselected_content_and_crlf(sandbox_env):
+    from tools.file_crud import edit_file
+    path = sandbox_env / 'large.html'
+    before = '<html>\r\n' + '原文😀' * 9000 + '\r\n</html>'
+    path.write_bytes(before.encode())
+    assert '[完成]' in edit_file('large.html', '</html>', '<!-- detailed -->\r\n</html>')
+    assert path.read_bytes().decode() == before.replace('</html>', '<!-- detailed -->\r\n</html>')
+
+
+def test_edit_refuses_ambiguous_missing_and_denied_changes(sandbox_env, monkeypatch):
+    from tools.file_crud import edit_file
+    path = sandbox_env / 'a.txt'
+    path.write_text('repeat repeat unique')
+    for old in ['', 'repeat', 'missing']:
+        assert '[失败]' in edit_file('a.txt', old, 'replacement')
+    monkeypatch.setattr(sandbox, 'confirmer', lambda *a: False)
+    assert '[已取消]' in edit_file('a.txt', 'unique', 'changed')
+    assert path.read_text() == 'repeat repeat unique'
+    assert '[已拦截]' in edit_file('../outside', 'a', 'b')
+
+
+def test_edit_detects_change_during_confirmation(sandbox_env, monkeypatch):
+    from tools.file_crud import edit_file
+    path = sandbox_env / 'a.txt'
+    path.write_text('original')
+    def confirm(*a):
+        path.write_text('other writer')
+        return True
+    monkeypatch.setattr(sandbox, 'confirmer', confirm)
+    assert '发生变化' in edit_file('a.txt', 'original', 'replacement')
+    assert path.read_text() == 'other writer'
+
+
+def test_failed_atomic_edit_keeps_original_and_cleans_temporary(sandbox_env, monkeypatch):
+    from tools import file_crud
+    path = sandbox_env / 'a.txt'
+    path.write_text('original')
+    def fail(*a):
+        raise OSError('disk failure')
+    monkeypatch.setattr(file_crud.os, 'replace', fail)
+    assert '[失败]' in file_crud.edit_file('a.txt', 'original', 'replacement')
+    assert path.read_text() == 'original'
+    assert not list(sandbox_env.glob('.edit-*'))
+
+
+def test_read_search_finds_unicode_anchor_across_buffer_boundary(sandbox_env):
+    text = '字' * 65533 + 'unique-anchor\r\n尾部' + 'x' * 100
+    (sandbox_env / 'large.txt').write_bytes(text.encode())
+    page = read_file('large.txt', search='unique-anchor', limit=20)
+    assert 'offset=65533' in page
+    assert 'unique-anchor\r\n尾部' in page
+    assert '[未找到]' in read_file('large.txt', search='unique-anchor', offset=65534)
+
+
+def test_read_search_repeated_anchor_can_continue_from_next_offset(sandbox_env):
+    (sandbox_env / 'a.txt').write_text('start target middle target end')
+    first = read_file('a.txt', search='target', limit=6)
+    assert 'offset=6' in first and 'next_offset=12' in first
+    second = read_file('a.txt', search='target', offset=12, limit=100)
+    assert 'offset=20' in second and 'EOF' in second

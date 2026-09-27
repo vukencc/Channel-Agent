@@ -144,7 +144,7 @@ class SessionStore:
                 for message in record['messages']:
                     if not isinstance(message, dict) or message.get('role') not in {'system', 'user', 'assistant', 'tool'}:
                         raise ValueError('无效消息角色')
-                if record['status'] not in {'idle', 'error', 'cancelled', 'interrupted'}:
+                if record['status'] not in {'idle', 'error', 'cancelled', 'interrupted', 'checkpoint'}:
                     record['status'] = 'interrupted'
                     record['error'] = '上次任务被中断；已恢复已保存内容，不会自动重放工具。'
                     finish_pending_tools(record['messages'])

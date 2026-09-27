@@ -5,6 +5,10 @@
   拒绝或确认超时一律中止（fail-closed）。
 """
 from typing import List
+import os
+import tempfile
+
+import config
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +19,6 @@ from tools.sandbox import (
     audit,
     resolve_path,
     sandbox_root,
-    truncate,
 )
 
 
@@ -30,14 +33,29 @@ class CreateFileArgs(BaseModel):
 
 class ReadFileArgs(BaseModel):
     """
-    用户要求查看文件或修改已有文件前调用；无需确认。路径相对沙箱根目录。
+    分页读取文件；无需确认。大文件返回 next_offset，必须继续读取所需片段，不能把分页内容当作全文。
     """
     path: str = Field(description="相对沙箱根目录的路径，例如 notes/todo.txt")
+    offset: int = Field(default=0, ge=0, description="从 0 开始的字符偏移；续读使用返回的 next_offset，不是字节数")
+    limit: int = Field(default=6000, ge=1, description="本页最多字符数，服务端还会限制在 FILE_READ_CHARS 内")
+    search: str = Field(default="", max_length=1024, description="可选：从 offset 起查找精确文本，从首次匹配处读取；用于定位标签、函数、CSS 选择器")
+
+
+class EditFileArgs(BaseModel):
+    """修改已有文件的首选工具。精确替换一个唯一文本片段，其他内容保留，写前确认。
+    先 read_file 读取目标片段；old_text 必须逐字匹配且只出现一次。
+    长文件逐步修改，每次 new_text 建议不超过 4000 字符，不要重新输出整份文件。
+    插入内容时用相邻唯一文本作锚点；删除片段时 new_text 传空字符串。
+    """
+    path: str = Field(description="相对沙箱根目录的文件路径")
+    old_text: str = Field(min_length=1, description="从实际文件读取的唯一原文，不接受省略号或模糊匹配")
+    new_text: str = Field(description="替换后的局部内容；未选中的文件内容不变")
+    reason: str = Field(default="", description="本次局部修改的目的")
 
 
 class UpdateFileArgs(BaseModel):
     """
-    用户要求修改已有文件时调用：先 read_file，再传入修改后的完整内容。工具自动处理确认。
+    仅适合小文件全文更新。长文件或只读取了分页时使用 edit_file 局部修改，避免重传全文与截断覆盖。
     """
     path: str = Field(description="相对沙箱根目录的路径，例如 notes/todo.txt")
     content: str = Field(default="", description="新的完整内容（会覆盖原内容）")
@@ -88,7 +106,7 @@ def create_file(path: str, content: str = "", reason: str = "") -> str:
 
 
 @register_tool(ReadFileArgs, name="read_file")
-def read_file(path: str) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 6000, search: str = "") -> str:
     """
     读取沙箱内文件的内容。
     """
@@ -100,15 +118,86 @@ def read_file(path: str) -> str:
 
     if not target.is_file():
         return f"[失败] 文件不存在：{path}"
+    if offset < 0 or limit < 1:
+        return "[失败] offset 必须非负，limit 必须为正数。"
 
     try:
-        text = target.read_text(encoding="utf-8")
+        size = min(limit, config.FILE_READ_CHARS, max(1, config.TOOL_MAX_OUTPUT))
+        if search:
+            with target.open(encoding='utf-8', newline='') as source:
+                tail, consumed, found = '', 0, -1
+                while chunk := source.read(65536):
+                    window = tail + chunk
+                    base = consumed - len(tail)
+                    index = window.find(search, max(0, offset - base))
+                    if index >= 0:
+                        found = base + index
+                        break
+                    consumed += len(chunk)
+                    tail = window[-(len(search) - 1):] if len(search) > 1 else ''
+                if found < 0:
+                    return f"[未找到] 从 offset={offset} 起没有匹配 search 的文本，文件未修改。"
+                offset = found
+        with target.open(encoding="utf-8", newline='') as stream:
+            remaining = offset
+            while remaining:
+                skipped = stream.read(min(remaining, 65536))
+                if not skipped:
+                    return "[失败] offset 超出文件末尾，请使用上一页的 next_offset。"
+                remaining -= len(skipped)
+            text = stream.read(size)
+            more = bool(stream.read(1))
     except (OSError, UnicodeDecodeError) as exc:
         audit("failed", action="read_file", path=path, error=str(exc))
         return f"[失败] 读取失败：{exc}"
 
-    audit("executed", action="read_file", path=path, size=len(text))
-    return truncate(text)
+    audit("executed", action="read_file", path=path, size=len(text), offset=offset, has_more=more)
+    if offset == 0 and not more and not search:
+        return text
+    next_offset = offset + len(text)
+    state = f"next_offset={next_offset}" if more else "EOF"
+    return f"[文件分页] path={path} offset={offset} chars={len(text)} {state}\n[内容开始]\n{text}\n[内容结束]"
+
+
+@register_tool(EditFileArgs, name="edit_file")
+def edit_file(path: str, old_text: str, new_text: str, reason: str = "") -> str:
+    """Replace one exact anchor atomically; refuse ambiguity and changes during confirmation."""
+    try:
+        target = resolve_path(path)
+        before = target.read_bytes()
+        text = before.decode('utf-8')
+    except SandboxError as exc:
+        audit("blocked", action="edit_file", path=path, reason=str(exc))
+        return f"[已拦截] {exc}"
+    except (OSError, UnicodeError) as exc:
+        return f"[失败] 无法读取文件：{exc}"
+    count = text.count(old_text) if old_text else 0
+    if count != 1:
+        return f"[失败] old_text 必须非空且唯一匹配，实际匹配 {count} 处；请重新读取目标片段并扩大锚点，文件未修改。"
+    if old_text == new_text:
+        return "[未修改] 新旧片段相同。"
+    if not ask_permission('edit_file', f'{path}（替换 {len(old_text)} → {len(new_text)} 字符）', reason):
+        return "[已取消] 用户未确认，文件未修改。"
+    temporary = None
+    try:
+        if resolve_path(path) != target or target.read_bytes() != before:
+            return "[失败] 确认期间文件发生变化，请重新读取后修改。"
+        after = text.replace(old_text, new_text, 1).encode('utf-8')
+        descriptor, temporary = tempfile.mkstemp(prefix='.edit-', dir=target.parent)
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(after)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, target.stat().st_mode & 0o777)
+        os.replace(temporary, target)
+    except OSError as exc:
+        audit('failed', action='edit_file', path=path, error=str(exc))
+        return f"[失败] 修改失败：{exc}"
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+    audit('executed', action='edit_file', path=path, removed=len(old_text), added=len(new_text), reason=reason)
+    return f"[完成] 已局部更新 {path}（替换 1 处，文件 {len(after)} 字节；其余内容保留）"
 
 
 @register_tool(UpdateFileArgs, name="update_file")
@@ -124,6 +213,14 @@ def update_file(path: str, content: str = "", reason: str = "") -> str:
 
     if not target.is_file():
         return f"[失败] 文件不存在，请先用 create_file 创建：{path}"
+    try:
+        with target.open(encoding='utf-8') as stream:
+            large = len(stream.read(config.FILE_READ_CHARS + 1)) > config.FILE_READ_CHARS
+    except (OSError, UnicodeError) as exc:
+        return f"[失败] 无法检查原文件：{exc}"
+    if large:
+        audit('blocked', action='update_file', path=path, reason='large_file_requires_edit')
+        return '[已拦截] 原文件超过单页读取上限，禁止全文覆盖；请分页 read_file 后使用 edit_file 局部替换，原文件未修改。'
 
     if not ask_permission("update_file", f"{path}（{len(content)} 字符）", reason):
         return "[已取消] 用户未确认（拒绝或确认超时），文件未修改。"

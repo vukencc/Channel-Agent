@@ -163,3 +163,14 @@ def test_slow_client_initialization_does_not_freeze_event_loop(monkeypatch):
         assert len(ticks) >= 5
         assert max(ticks) < .08
     asyncio.run(run())
+
+
+def test_output_budget_stops_oversized_tool_arguments_without_execution(monkeypatch):
+    import pytest
+    import config
+    monkeypatch.setattr(config, 'MODEL_OUTPUT_CHARS', 100)
+    stream = FakeStream([chunk(calls=[tool_delta(0, 'a', 'create_file', '{"content":"' + 'x'*200)])])
+    install_stream(monkeypatch, stream)
+    with pytest.raises(llm.ModelResponseError, match='字符上限'):
+        asyncio.run(llm.call_model([], emit=lambda *a: None))
+    assert stream.closed

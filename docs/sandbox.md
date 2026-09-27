@@ -1,7 +1,7 @@
 # 工具执行与文件任务
 
 Agent 的默认提示词将文件操作视为执行任务：查看目录用 `list_files`，新建用 `create_file`，
-读取用 `read_file`，修改前读取再 `update_file`，删除用 `delete_file`。
+读取用 `read_file`，修改前读取再 `edit_file`，删除用 `delete_file`。
 路径相对于 `SANDBOX_DIR`，不添加 `crud_tests/` 前缀。
 写入、删除和命令执行直接发起工具调用，由工具提示确认；拒绝或超时后停止，不换工具绕过。
 工具结果决定是否报告成功。提示词改善默认行为，但不保证每个模型每次都选择正确工具。
@@ -46,3 +46,16 @@ uv run pytest dev/tests/test_command.py dev/tests/test_file_crud.py dev/tests/te
 测试验证真实隔离边界、Python/Shell、确认取消、超时子进程回收及 CRUD 结果反馈。
 
 最新验证与失败样本见 [系统诊断报告](system-diagnostics-2026-09-27.md)。
+
+## 长文件读取与修改
+
+`read_file(path, offset=0, limit=6000, search="")` 按字符分页。返回 `next_offset` 时应继续读取所需部分；`EOF` 表示末页。
+偏移不是 UTF-8 字节数，换行保持原样。可用 `search="</style>"` 或函数/选择器名称直接定位，从匹配处返回内容，避免猜测偏移。
+小文件首次完整读取仍返回原文；分页输出有 `[内容开始]` / `[内容结束]` 边界，它们不是文件内容。
+
+`edit_file(path, old_text, new_text, reason)` 只替换一个唯一匹配的片段。必须先读取真实原文；空锚点、不匹配或多处匹配均拒绝。
+插入时把唯一相邻文本保留在新片段中；删除时传空 `new_text`。写入仍需确认，确认期间文件改变会拒绝操作。
+替换通过同目录临时文件、fsync 和原子替换完成；失败不留下半写文件，其他内容与 CRLF 换行保留。
+
+`update_file` 只用于不超过 `FILE_READ_CHARS` 的小文件。大文件全文覆盖会被拦截，改用 `edit_file` 分步修改，避免拿单页内容覆盖全文。
+新建较大项目时可分离 HTML/CSS 等资源，单步生成较小内容。命令工具保持可用，执行隔离规则不变。

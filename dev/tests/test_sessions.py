@@ -242,3 +242,108 @@ def test_assessment_timeout_is_nonfatal_and_persisted(store, monkeypatch):
         assert store.load_all()[0]['assessment'] == session.record['assessment']
         await manager.shutdown()
     asyncio.run(run())
+
+
+def test_timeout_recovers_once_with_small_step_and_never_replays_successful_tool(store, monkeypatch):
+    async def run():
+        calls = []
+        tools = []
+        async def model(history, **kwargs):
+            calls.append(history)
+            assert 'edit_file' in history[0]['content']
+            if len(calls) == 1:
+                return {'role':'assistant','content':'','tool_calls':[{'id':'a','function':{'name':'create_file','arguments':'{}'}}]}
+            if len(calls) == 2:
+                kwargs['emit']('content', 'unfinished response')
+                raise TimeoutError('stalled stream')
+            assert '恢复要求' in history[0]['content']
+            assert history[-1]['role'] == 'tool'
+            return {'role':'assistant','content':'done'}
+        manager = SessionManager(store, model=model)
+        async def tool(session, call):
+            tools.append(call['id'])
+            return '[完成]'
+        monkeypatch.setattr(manager, '_tool', tool)
+        session = manager.create(prompt='existing old system prompt')
+        manager.submit(session, 'change')
+        await session.task
+        assert session.record['status'] == 'idle'
+        assert tools == ['a']
+        assert any(m.get('content') == 'unfinished response' for m in session.record['messages'])
+        assert session.record['messages'][0]['content'] == 'existing old system prompt'
+        await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_second_generation_failure_stops_recovery(store):
+    async def run():
+        count = 0
+        async def model(history, **kwargs):
+            nonlocal count
+            count += 1
+            raise TimeoutError('still unavailable')
+        manager = SessionManager(store, model=model)
+        session = manager.create()
+        manager.submit(session, 'test')
+        await session.task
+        assert session.record['status'] == 'error'
+        assert count == 2
+        await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_budget_checkpoint_persists_and_continues_without_replaying_tools(store, monkeypatch):
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 2)
+    async def run():
+        count = 0
+        executions = []
+        async def model(history, **kwargs):
+            nonlocal count
+            if history[-1]['role'] == 'user' and history[-1]['content'] == '继续':
+                assert '阶段已保存' in history[-2]['content']
+                return {'role':'assistant','content':'finished reviewing saved results'}
+            count += 1
+            return {'role':'assistant','content':'','tool_calls':[{'id':str(count),'function':{'name':'probe','arguments':'{}'}}]}
+        async def tool(session, call):
+            executions.append(call['id'])
+            return '[完成]'
+        manager = SessionManager(store, model=model)
+        monkeypatch.setattr(manager, '_tool', tool)
+        session = manager.create()
+        manager.submit(session, 'long task')
+        await session.task
+        assert session.record['status'] == 'checkpoint'
+        assert session.record['error'] == ''
+        assert '尚未确认完成' in session.record['messages'][-1]['content']
+        assert store.load_all()[0]['status'] == 'checkpoint'
+        manager.submit(session, '继续')
+        await session.task
+        assert session.record['status'] == 'idle'
+        assert executions == ['1', '2']
+        await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_slow_context_preparation_keeps_event_loop_responsive(store, monkeypatch):
+    import time
+    from core import sessions
+    original = sessions.build_model_history
+    def slow(messages):
+        time.sleep(.12)
+        return original(messages)
+    monkeypatch.setattr(sessions, 'build_model_history', slow)
+    async def run():
+        async def model(history, **kwargs):
+            return {'role':'assistant','content':'ok'}
+        manager = SessionManager(store, model=model)
+        session = manager.create()
+        manager.submit(session, 'hello')
+        gaps = []
+        while session.busy:
+            start = time.monotonic()
+            await asyncio.sleep(.01)
+            gaps.append(time.monotonic()-start)
+        assert len(gaps) >= 5
+        assert max(gaps) < .08
+        await manager.shutdown()
+    asyncio.run(run())

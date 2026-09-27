@@ -42,7 +42,8 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 以 // 开头可发送以 / 开头的普通消息。记忆和上下文仅在当前会话内使用。'''
 
 LABELS = {'idle': '就绪', 'queued': '排队', 'running': '运行', 'confirming': '待确认',
-          'stopping': '停止中', 'cancelled': '已停止', 'error': '错误', 'interrupted': '中断恢复'}
+          'stopping': '停止中', 'cancelled': '已停止', 'error': '错误', 'interrupted': '中断恢复',
+          'checkpoint': '阶段保存·可继续'}
 
 
 class AgentCLI:
