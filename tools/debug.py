@@ -2,7 +2,6 @@ import random
 
 from pydantic import BaseModel, Field
 
-from tools.base import register_tool
 
 
 class ToolDebugArgs(BaseModel):
@@ -15,7 +14,6 @@ class ToolDebugArgs(BaseModel):
     )
 
 
-@register_tool(ToolDebugArgs, name="tool_debug")
 def tool_debug(max: int = 1) -> float:
     """
     开发生成测试工具，在指定范围内随机生成一个数字，判断大模型

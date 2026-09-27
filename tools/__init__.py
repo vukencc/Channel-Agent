@@ -5,7 +5,12 @@
 from tools.base import Tool, TOOL_REGISTRY, register_tool
 
 # 导入即注册
-from tools import command, debug, file_crud, rag_search, web_search  # noqa: F401  (仅为了触发注册)
+from tools import command, file_crud, rag_search, web_search  # noqa: F401  (仅为了触发注册)
+
+import config
+if config.ENABLE_DEBUG_TOOL:
+    from tools.debug import ToolDebugArgs, tool_debug
+    register_tool(ToolDebugArgs, name='tool_debug')(tool_debug)
 
 __all__ = ["Tool", "TOOL_REGISTRY", "register_tool", "all_schemas"]
 

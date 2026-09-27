@@ -7,7 +7,7 @@
 - [x] BUG-03
 - [x] BUG-04
 - [x] BUG-05
-- [ ] BUG-06
+- [x] BUG-06
 - [ ] BUG-07
 - [ ] BUG-08
 - [ ] BUG-09
@@ -52,3 +52,9 @@ tools/web_search.py 移除导入时客户端，改用有超时及 2 MB 响应上
 config.py 增加集中启动校验并让数字解析错误携带变量名；core/cli.py 在创建状态目录前验证，main.py 捕获导入期配置错误并以退出码 2 输出中文提示。--list 无需模型密钥。新增 test_bug05_config.py 覆盖缺 key、非法范围、正确配置静默。无新配置。
 
 验证：`uv run pytest dev/tests/test_bug05_config.py dev/tests/test_config.py dev/tests/test_cli.py -q（见提交验证）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-06
+
+调试工具无条件注册与 stdout print 导致 schema 浪费及串屏。tools/__init__.py 显式 ENABLE_DEBUG_TOOL=True 才注册；tools/rag_search.py 改为日志长度指标。默认 DEBUG=False、ENABLE_DEBUG_TOOL=False。既有调试测试保留全部断言，仅用夹具显式启用；新测试验证默认清单与零 stdout。
+
+验证：`uv run pytest dev/tests/test_bug06_debug.py dev/tests/test_tools.py -q（9 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

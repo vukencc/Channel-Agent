@@ -141,7 +141,7 @@
 
 ## BUG-06 调试工具常驻生产、DEBUG 输出污染 TUI
 
-**级别** P0　**状态** 待修复　**文件** `tools/__init__.py`、`tools/debug.py`、`tools/rag_search.py`
+**级别** P0　**状态** 已修复（说明见下）　**文件** `tools/__init__.py`、`tools/debug.py`、`tools/rag_search.py`
 
 **症状**
 - `tool_debug` 每次请求都发送 schema，浪费上下文并可能被模型误选。
@@ -162,6 +162,8 @@
 - 全屏 CLI 下工具执行不向 stdout 输出内容。
 
 ---
+
+**修复说明** 调试工具无条件注册与 stdout print 导致 schema 浪费及串屏。tools/__init__.py 显式 ENABLE_DEBUG_TOOL=True 才注册；tools/rag_search.py 改为日志长度指标。默认 DEBUG=False、ENABLE_DEBUG_TOOL=False。既有调试测试保留全部断言，仅用夹具显式启用；新测试验证默认清单与零 stdout。 验证：`uv run pytest dev/tests/test_bug06_debug.py dev/tests/test_tools.py -q（9 passed）`。
 
 ## BUG-07 工程卫生：死代码、文档路径、AUDIT_LOG 语义
 

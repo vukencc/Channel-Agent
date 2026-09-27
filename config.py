@@ -141,3 +141,5 @@ def validate_runtime_config() -> None:
         errors.append('WEB_SEARCH_CONFIRM 必须为 always 或 off')
     if errors:
         raise ValueError('配置错误：\n- ' + '\n- '.join(errors))
+
+ENABLE_DEBUG_TOOL = env_bool("ENABLE_DEBUG_TOOL", False)

@@ -5,6 +5,14 @@ from pydantic import ValidationError
 from tools import TOOL_REGISTRY, all_schemas
 
 
+@pytest.fixture(autouse=True)
+def enable_debug_tool_for_validation(monkeypatch):
+    """这些测试显式启用调试工具，保留原有参数与结果断言。"""
+    from tools.base import Tool
+    from tools.debug import ToolDebugArgs, tool_debug
+    monkeypatch.setitem(TOOL_REGISTRY, 'tool_debug', Tool('tool_debug', ToolDebugArgs, tool_debug))
+
+
 def test_expected_tools_registered():
     assert {"web_search", "tool_debug"} <= set(TOOL_REGISTRY)
 

@@ -5,7 +5,9 @@ from pydantic import BaseModel, Field
 
 from rag.tool import rag_search as _rag_search
 from tools.base import register_tool
-import config
+from core.log import get_logger
+
+logger = get_logger(__name__)
 
 
 class RagSearchArgs(BaseModel):
@@ -38,6 +40,5 @@ def rag_search(query: str, strictness: str = "normal", breadth: str = "normal") 
     从本地知识库中检索与问题最相关的文本片段。
     """
     result = _rag_search(query, strictness=strictness, breadth=breadth)
-    if config.DEBUG:
-        print(result)
+    logger.debug("RAG 返回 %d 字符", len(result))
     return result
