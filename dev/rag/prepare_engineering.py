@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from benchmarks.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, ROOT
+from dev.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, ROOT
 
 
 def prepare(source: Path, manifest_path: Path, output: Path) -> None:
@@ -46,7 +46,7 @@ def main():
     args = parser.parse_args()
     source = args.source or next((ROOT / '.cache/rag/benchmark/corpus').glob('corpus-*.parquet'), None)
     if source is None:
-        parser.error('Download corpus with scripts/rag/prepare_assets.py --only corpus, or supply --source')
+        parser.error('Download corpus with dev/rag/prepare_assets.py --only corpus, or supply --source')
     prepare(source, args.manifest, args.output)
 
 

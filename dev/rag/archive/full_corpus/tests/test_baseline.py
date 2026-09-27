@@ -20,10 +20,10 @@ def test_baseline_adapter_matches_frozen_original_cosine_search(actual_corpus):
     """Use real embeddings to verify the offline baseline's ranking semantics."""
     import importlib.util
     import sys
-    from benchmarks.rag.archive.full_corpus.evaluate import Baseline
+    from dev.rag.archive.full_corpus.evaluate import Baseline
     from rag.index import DocLoader
     baseline = Baseline(DocLoader(config.DOC_DIR).load())
-    path = config.PROJECT_ROOT / 'benchmarks/rag/archive/full_corpus/baseline/tool.py'
+    path = config.PROJECT_ROOT / 'dev/rag/archive/full_corpus/baseline/tool.py'
     spec = importlib.util.spec_from_file_location('frozen_tool', path)
     original = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = original

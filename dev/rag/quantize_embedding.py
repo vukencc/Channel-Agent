@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-(ROOT / 'reports/rag').mkdir(parents=True, exist_ok=True)
+(ROOT / '.cache/reports/rag').mkdir(parents=True, exist_ok=True)
 
 from onnxruntime.quantization import QuantType, quantize_dynamic
 from onnx import TensorProto
@@ -37,5 +37,5 @@ def checksum(path):
 manifest = {'model': 'BAAI/bge-small-zh-v1.5', 'source': str(source),
             'source_onnx_sha256': checksum(original), 'int8_onnx_sha256': checksum(output),
             'method': 'onnxruntime dynamic QInt8 per-channel MatMul/Attention; no calibration or relevance labels'}
-(ROOT / 'reports/rag/embedding-quantization.json').write_text(json.dumps(manifest, indent=2) + '\n')
+(ROOT / '.cache/reports/rag/embedding-quantization.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(json.dumps(manifest, indent=2))

@@ -10,22 +10,23 @@ uv sync --locked
 uv run main.py
 ```
 
-## 目录
+## 结构
 
-| 目录 | 职责 |
-|---|---|
-| `core/` | Agent 循环、模型调用、消息与日志 |
-| `tools/` | 工具注册、文件/命令沙箱、Web/RAG 工具接口 |
-| `rag/` | 文档分块、编码、向量/BM25 检索、融合与重排 |
-| `data/raw/` | 应用知识库输入 |
-| `tests/` | 当前工程回归与可选真实模型集成测试 |
-| `benchmarks/rag/` | 独立工程验证入口和输入准备 |
-| `benchmarks/rag/inputs/` | 受版本控制的固定输入 ID、查询及校验值 |
-| `benchmarks/rag/archive/full_corpus/` | 暂停的全量评测、协议、基线及专属测试 |
-| `scripts/rag/` | 资源下载和可选模型量化工具 |
-| `docs/` | 使用文档与人工维护的历史交付记录 |
-| `reports/` | 本地生成的评测输出，不提交 |
-| `.cache/` | 本地模型、数据下载、向量缓存，不提交 |
+```text
+main.py / config.py  应用入口与配置
+core/               Agent 循环、模型调用、消息与日志
+tools/              工具注册与沙箱接口
+rag/                分块、编码、检索、融合与重排
+data/raw/           应用知识库
+dev/                开发辅助功能的唯一入口
+  tests/            默认回归与真实模型集成测试
+  rag/              数据/模型准备、小规模验证、固定输入与归档
+docs/               使用文档与历史交付记录
+.cache/             本地模型、下载、索引及 reports/ 输出（不提交）
+```
+
+原 `benchmarks/`、`scripts/`、`tests/` 合并到 `dev/`，原 `reports/` 移至 `.cache/reports/`。
+应用模块路径保持稳定。暂停的全量评测在 `dev/rag/archive/full_corpus/`，不参与默认测试。
 
 ## 验证
 
@@ -33,6 +34,14 @@ uv run main.py
 uv run pytest -m 'not integration'
 # 已有本地模型时：
 RUN_RAG_INTEGRATION=1 uv run pytest -m integration -k 'not strictness'
+uv run python -m dev.rag.prepare_engineering
+uv run python -m dev.rag.run_engineering
 ```
 
-小规模公开数据验证见 [RAG 文档](docs/rag.md)。全量评测不属于默认测试或工程验证入口；不自动校准阈值。
+模型准备和配置见 [RAG 文档](docs/rag.md)。小规模验证不自动校准阈值。
+
+## 依赖维护
+
+`pyproject.toml` 只声明当前功能使用的依赖，`uv.lock` 由 `uv lock` 生成并提交，保留跨平台锁定和完整性校验。
+移除了未使用的 LangChain、LlamaIndex、绘图和数据分析依赖；归档基线专用的 ChromaDB 仅在显式运行旧代码时安装，见归档说明。
+更改依赖后运行 `uv lock` 和 `uv sync --locked`，不要手动截断锁文件。

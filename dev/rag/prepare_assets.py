@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / '.cache/rag/benchmark'
-REPORT = ROOT / 'reports/rag'
+REPORT = ROOT / '.cache/reports/rag'
 MODEL = ROOT / '.cache/rag/reranker'
 REPOS = {
     'corpus': ('datasets', 'C-MTEB/T2Retrieval'),
@@ -223,7 +223,7 @@ def freeze_queries():
         'calibration': ordered[:50],
         'evaluation': ordered[50:150],
     }
-    target = ROOT / 'benchmarks/rag/archive/full_corpus/inputs/queries.json'
+    target = ROOT / 'dev/rag/archive/full_corpus/inputs/queries.json'
     content = json.dumps(manifest, ensure_ascii=False, indent=2) + '\n'
     if target.exists() and target.read_text() != content:
         raise RuntimeError('Frozen query manifest differs; refusing to replace it')

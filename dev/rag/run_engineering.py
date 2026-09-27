@@ -13,14 +13,14 @@ from rag.embedding import get_embedding_model, local_model_path
 from rag.index import RetrievalIndex
 from rag.rerank import local_reranker_path
 from rag.tool import rag_search
-from benchmarks.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, load_inputs
+from dev.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, load_inputs
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument('--corpus', type=Path, default=DEFAULT_CORPUS)
-    parser.add_argument('--output', type=Path, default=ROOT / 'reports/rag/engineering')
+    parser.add_argument('--output', type=Path, default=ROOT / '.cache/reports/rag/engineering')
     args = parser.parse_args()
     output = args.output.resolve()
     # Inputs are immutable: results must not overwrite the manifest or corpus.

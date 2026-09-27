@@ -4,7 +4,7 @@ Status: the full-corpus protocol below is deferred at the user's request.
 Current delivery uses a separate engineering run: 300 corpus documents selected
 by SHA-256 ID order and the first 5 already-frozen evaluation queries. No qrels,
 threshold tuning, or quality metrics are used. Its manifest, real stage traces
-and results are in local `reports/rag/engineering/`; the original manifests below remain intact.
+and results are in local `.cache/reports/rag/engineering/`; the original manifests below remain intact.
 
 Frozen before retrieval: `inputs/queries.json` sorts all official query IDs by the hex
 SHA-256 of their UTF-8 ID. Positions 0–49 calibrate the output gate; positions
@@ -13,7 +13,7 @@ The complete official T2Retrieval corpus is retained. This is a fixed-query
 subset evaluation, not an official full C-MTEB score.
 
 Data: https://huggingface.co/datasets/C-MTEB/T2Retrieval and
-https://huggingface.co/datasets/C-MTEB/T2Retrieval-qrels. local `reports/rag/assets.json` records
+https://huggingface.co/datasets/C-MTEB/T2Retrieval-qrels. local `.cache/reports/rag/assets.json` records
 repository revisions and downloaded-file SHA-256 checksums. The pre-change
 source snapshot and checksums are in `baseline/`.
 

@@ -41,10 +41,10 @@
 改造现有 `rag/chunking.py`、`rag/embedding.py`、`rag/tool.py`、`tools/rag_search.py`；
 同步 `config.py`、`.env.example`、`pyproject.toml`、`uv.lock`，将下载资源及缓存排除在 Git 外。
 
-新增测试文件为 `tests/test_hybrid_rag.py`、`tests/test_rag_integration.py`、`benchmarks/rag/archive/full_corpus/tests/test_metrics.py`（已归档）。
+新增测试文件为 `dev/tests/test_hybrid_rag.py`、`dev/tests/test_rag_integration.py`、`dev/rag/archive/full_corpus/tests/test_metrics.py`（已归档）。
 新增数据准备、分块审计、模型量化/测速、评测与报告脚本；其中
-`benchmarks/rag/run_engineering.py` 是本轮小规模工程验证入口。
-全量 `benchmarks/rag/archive/full_corpus/evaluate.py` / `report.py` 仅保留待后续使用，不代表已完成全量验收。
+`dev/rag/run_engineering.py` 是本轮小规模工程验证入口。
+全量 `dev/rag/archive/full_corpus/evaluate.py` / `report.py` 仅保留待后续使用，不代表已完成全量验收。
 
 依赖增量：运行依赖显式增加 `fastembed`、`jieba`、`rank-bm25`；开发依赖增加
 `onnx`（离线量化）、`pyarrow`（读取公开 Parquet 数据）。
@@ -60,7 +60,7 @@
 
 默认应用仍使用 FP32 BGE，只有显式设置 `EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8`
 才启用 INT8。本轮工程测试使用 INT8；重排模型未量化。模型权重在忽略的 `.cache/rag/` 内。
-原始/量化权重 SHA-256 见 本地 `reports/rag/embedding-quantization.json`；下载来源和校验值见 本地 `reports/rag/assets.json`。
+原始/量化权重 SHA-256 见 本地 `.cache/reports/rag/embedding-quantization.json`；下载来源和校验值见 本地 `.cache/reports/rag/assets.json`。
 未增加生成式大模型，也没有改变 Agent 的主对话模型。
 
 ## 本轮测试数据与方法
@@ -76,13 +76,13 @@
 
 ## 测试结果
 
-- 本轮 pytest：**89 passed，3 deselected，0 skipped；18.29 秒**。排除两项 strictness 测试和旧基线适配测试；准确命令见 本地 `reports/rag/engineering/tests.json`。
+- 本轮 pytest：**89 passed，3 deselected，0 skipped；18.29 秒**。排除两项 strictness 测试和旧基线适配测试；准确命令见 本地 `.cache/reports/rag/engineering/tests.json`。
 - 公开数据实跑：**300 文档 → 551 父块 → 1,336 子块；5/5 查询完成**。
 - 独立小规模索引首次构建：**14.795 秒**。未恢复此前的全量编码任务。
 - 5 条查询耗时：**12.038、6.287、6.748、5.521、5.705 秒**；首条含重排模型初始化，后续主要耗时也在重排。
 - `git diff --check` 通过。
 
-此前两次 FP32/INT8 各 92 项通过的记录保留在 本地 `reports/rag/validation.json`，是历史验证，不能与本轮范围混为一谈。
+此前两次 FP32/INT8 各 92 项通过的记录保留在 本地 `.cache/reports/rag/validation.json`，是历史验证，不能与本轮范围混为一谈。
 
 下面列出真实阶段 Top 1，括号中为父段落起始偏移；同一文档可有多个候选段落：
 
@@ -97,7 +97,7 @@
 例如查询 18926：向量首位余弦 0.52592；BM25 首位 8.56266；RRF 首位 0.03252；重排首位 logit -1.93565。
 这些分数不可跨阶段比较，排名变化也不代表质量改善。
 所有 5 条查询各阶段 Top 3、候选数和耗时见 [历史阶段对比](rag-engineering-2026-09-27.md)；
-完整候选正文、来源、分数与最终输出见 本地 `reports/rag/engineering/traces.jsonl`。
+完整候选正文、来源、分数与最终输出见 本地 `.cache/reports/rag/engineering/traces.jsonl`。
 
 ## 复现与边界
 
@@ -109,7 +109,7 @@ RUN_RAG_INTEGRATION=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 \
   .venv/bin/python -m pytest -q -k 'not strictness and not baseline_adapter'
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 RAG_THREADS=4 \
   EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
-  .venv/bin/python benchmarks/rag/run_engineering.py
+  .venv/bin/python dev/rag/run_engineering.py
 ```
 
 本轮不执行阈值校准、Recall/MRR/nDCG、原实现质量对比、并发压测或大规模容量验收。

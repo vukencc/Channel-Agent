@@ -1,6 +1,6 @@
 """Reproducible full-corpus evaluation; search never receives relevance labels.
 
-uv run python benchmarks/rag/archive/full_corpus/evaluate.py --phase all
+uv run python dev/rag/archive/full_corpus/evaluate.py --phase all
 Public qrels are used only after search, by the scorer and calibration phase.
 """
 import argparse
@@ -26,7 +26,7 @@ from rag.index import RetrievalIndex, cached_embeddings
 from rag.tool import rag_search
 
 ARCHIVE = Path(__file__).resolve().parent
-REPORT = ROOT / 'reports/rag/full-corpus'
+REPORT = ROOT / '.cache/reports/rag/full-corpus'
 DATA = ROOT / '.cache/rag/benchmark'
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 ARCHIVE = Path(__file__).resolve().parent
-REPORT = ROOT / 'reports/rag/full-corpus'
+REPORT = ROOT / '.cache/reports/rag/full-corpus'
 
 
 def load_records(name):
