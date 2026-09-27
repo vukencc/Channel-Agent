@@ -13,7 +13,7 @@
 - [x] BUG-09
 - [x] BUG-10
 - [x] BUG-11
-- [ ] BUG-12
+- [x] BUG-12
 - [ ] BUG-13
 - [ ] BUG-14
 - [ ] BUG-15
@@ -88,3 +88,9 @@ core/prompts.py 收敛提示词，core/agent.py 仅保留兼容导出并移除�
 工具循环串行且无调用总数边界。tools/base.py 增加 concurrency/timeout_s 元数据；core/sessions.py 有界并发连续只读批次、按原顺序回填结果、写操作串行、超额调用明确拒绝并配对，取消等待旧写线程。新增 MAX_TOOL_CALLS_PER_ROUND=8、TOOL_CONCURRENCY=4、TOOL_TIMEOUT=120。test_bug11_tools.py 验证慢读取并行和超额不执行；线程级取消边界见 CLI 文档。
 
 验证：`uv run pytest dev/tests/test_bug11_tools.py dev/tests/test_sessions.py dev/tests/test_cli_performance.py -q（22 passed）`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。
+
+## BUG-12
+
+每次全读语料造成 IO 放大。rag/index.py 按文件指纹复用正文哈希，分块缓存，未变索引绕过重建锁；rag/lexical.py 缓存分词。新增 HTML 和可选 PDF/docx 加载器，pyproject.toml documents extra，uv lock/uv sync --locked 已同步（新增 lxml/pypdf/python-docx 仅可选）。test_bug12_index.py 验证 1000 文件第二次零读取、单改只读一文件及 HTML 去脚本。最小版本保持变化请求同步更新全局 BM25 IDF，不使用陈旧后台索引。
+
+验证：`uv run pytest dev/tests/test_bug12_index.py dev/tests/test_hybrid_rag.py dev/tests/test_rag_search.py -q（31 passed）；uv sync --locked 成功`。新增回归先在旧实现失败，再通过；详见对应提交测试文件。

@@ -17,6 +17,9 @@ dependencies = [
     "tavily-python>=0.8.0,<0.9",
 ]
 
+[project.optional-dependencies]
+documents = ["pypdf", "python-docx"]
+
 [dependency-groups]
 dev = [
     "onnx>=1.23.0",

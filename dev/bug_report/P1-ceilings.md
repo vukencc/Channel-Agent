@@ -118,7 +118,7 @@
 
 ## BUG-12 RAG 每次搜索全量重读语料、仅支持 txt/md
 
-**级别** P1　**状态** 待修复　**文件** `rag/index.py`
+**级别** P1　**状态** 已修复（说明见下）　**文件** `rag/index.py`
 
 **症状**
 - 每次 `rag_search` 都重读并哈希全部文档，大语料下搜索延迟与磁盘 IO 高。
@@ -140,6 +140,8 @@
 - `dev/tests/test_hybrid_rag.py`、`test_rag_search.py` 全过。
 
 ---
+
+**修复说明** 每次全读语料造成 IO 放大。rag/index.py 按文件指纹复用正文哈希，分块缓存，未变索引绕过重建锁；rag/lexical.py 缓存分词。新增 HTML 和可选 PDF/docx 加载器，pyproject.toml documents extra，uv lock/uv sync --locked 已同步（新增 lxml/pypdf/python-docx 仅可选）。test_bug12_index.py 验证 1000 文件第二次零读取、单改只读一文件及 HTML 去脚本。最小版本保持变化请求同步更新全局 BM25 IDF，不使用陈旧后台索引。 验证：`uv run pytest dev/tests/test_bug12_index.py dev/tests/test_hybrid_rag.py dev/tests/test_rag_search.py -q（31 passed）；uv sync --locked 成功`。
 
 ## BUG-13 RAG 阈值未校准、质量回归默认跳过
 

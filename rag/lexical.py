@@ -1,4 +1,5 @@
 """Chinese/Latin tokenization and BM25, retaining genuine lexical matches only."""
+from functools import lru_cache
 import re
 import math
 import unicodedata
@@ -11,6 +12,7 @@ _TOKENIZER = jieba.Tokenizer()
 _TOKENIZER.tmp_dir = '/tmp'
 
 
+@lru_cache(maxsize=8192)
 def tokenize(text: str) -> list[str]:
     normalized = unicodedata.normalize('NFKC', text).casefold()
     return [token for token in _TOKENIZER.cut(normalized, HMM=False)

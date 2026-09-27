@@ -78,3 +78,13 @@ API embeddings 继续支持，不附加本地 BGE 专用查询指令。
 [archive/full_corpus](../dev/rag/archive/full_corpus/README.md)。
 它不属于默认 pytest，不参与工程测试，只有显式执行归档命令才运行。
 原始基线源码和固定查询完整保留；全量产物仍仅留本地，不代表已完成质量验收。
+
+## 文件增量更新与加载器
+
+文件缓存使用 size/mtime_ns/ctime_ns/inode 指纹，只有变化的文件重新读取并哈希；分块与分词使用有界缓存。
+未变的索引直接返回，不等待重建锁；变化请求构建完整新索引后原子替换，避免返回旧语料。
+最小版本仍需重算全局 BM25 IDF 和组合向量矩阵，首次或变化请求同步等待；不提供后台陈旧索引。
+原生支持 txt/md/html/htm（HTML 忽略 script/style）。PDF/Word 可运行 `uv sync --locked --extra documents` 安装可选解析器；
+缺失依赖时警告并跳过，解析错误仍明确失败。无 OCR、无网页抓取，原始资料不改写。
+
+补充：Linux inotify 文件事件用于捕获同尺寸、同时间戳的快速改写。事件能力缺失或队列溢出时保守重读，避免陈旧索引；统计指纹不是唯一失效依据。

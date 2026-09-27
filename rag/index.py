@@ -4,6 +4,10 @@ import fcntl
 import json
 import sqlite3
 from dataclasses import dataclass
+from collections import OrderedDict
+from functools import lru_cache
+from html.parser import HTMLParser
+from core.log import get_logger
 from pathlib import Path
 from threading import RLock
 
@@ -11,8 +15,47 @@ import numpy as np
 
 import config
 from rag.chunking import TextSplitter
+from rag.file_events import FileEvents
 from rag.embedding import get_embedding_model, artifact_signature, local_model_path
 from rag.lexical import BM25Index
+
+
+logger = get_logger(__name__)
+_document_cache = OrderedDict()
+_document_lock = RLock()
+_file_events = {}
+
+
+class TextHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.hidden = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {'script', 'style'}:
+            self.hidden += 1
+
+    def handle_endtag(self, tag):
+        if tag in {'script', 'style'}:
+            self.hidden = max(0, self.hidden - 1)
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def load_document(path: Path) -> str:
+    if path.suffix.lower() in {'.html', '.htm'}:
+        parser = TextHTMLParser()
+        parser.feed(path.read_text(encoding='utf-8'))
+        return '\n'.join(parser.parts)
+    if path.suffix.lower() == '.pdf':
+        from pypdf import PdfReader
+        return '\n'.join(page.extract_text() or '' for page in PdfReader(path).pages)
+    if path.suffix.lower() == '.docx':
+        from docx import Document
+        return '\n'.join(paragraph.text for paragraph in Document(path).paragraphs)
+    return path.read_text(encoding='utf-8')
 
 
 @dataclass
@@ -23,13 +66,48 @@ class DocLoader:
         root = Path(self.dir).resolve()
         if not root.is_dir():
             raise ValueError(f'DOC_DIR is not a directory: {root}')
-        return [
-            {'content': path.read_text(encoding='utf-8'),
-             'metadata': {'source': str(path), 'filename': path.relative_to(root).as_posix(),
-                          'doc_id': path.relative_to(root).as_posix()}}
-            for path in sorted(root.rglob('*'))
-            if path.is_file() and path.suffix.lower() in {'.txt', '.md'}
-        ]
+        documents = []
+        fingerprints = []
+        with _document_lock:
+            cache = _document_cache.setdefault(root, {})
+            events = _file_events.setdefault(root, None)
+            if events is None:
+                events = _file_events[root] = FileEvents()
+            changed = events.changed()
+            _document_cache.move_to_end(root)
+            while len(_document_cache) > 4:
+                evicted, _ = _document_cache.popitem(last=False)
+                _file_events.pop(evicted).close()
+            present = set()
+            for path in sorted(root.rglob('*')):
+                if not path.is_file() or path.suffix.lower() not in {'.txt', '.md', '.html', '.htm', '.pdf', '.docx'}:
+                    continue
+                stat = path.stat()
+                fingerprint = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+                present.add(path)
+                events.watch(path)
+                if changed is None or path in changed or path not in cache or cache[path][0] != fingerprint:
+                    try:
+                        content = load_document(path)
+                    except ImportError:
+                        logger.warning('缺少可选解析器，跳过 %s；PDF 需 pypdf，Word 需 python-docx', path)
+                        continue
+                    name = path.relative_to(root).as_posix()
+                    doc = {'content': content, 'metadata': {'source': str(path), 'filename': name, 'doc_id': name}}
+                    cache[path] = (fingerprint, doc, hashlib.sha256(content.encode()).hexdigest())
+                documents.append(cache[path][1])
+                fingerprints.append((str(path), cache[path][2]))
+            for deleted in cache.keys() - present:
+                del cache[deleted]
+        self.fingerprint = hashlib.sha256(json.dumps(fingerprints).encode()).hexdigest()
+        return documents
+
+
+@lru_cache(maxsize=4096)
+def split_document(content, parent_chars, child_chars):
+    splitter = TextSplitter(parent_chars, child_chars)
+    return tuple((text, start, end, tuple(splitter.pack_children(text)))
+                 for text, start, end in splitter.split_parents(content))
 
 
 def cached_embeddings(texts: list[str], model, progress=None) -> np.ndarray:
@@ -98,13 +176,13 @@ class RetrievalIndex:
             if doc_id in seen_docs:
                 raise ValueError(f'Duplicate document ID: {doc_id}')
             seen_docs.add(doc_id)
-            for pi, (text, start, end) in enumerate(splitter.split_parents(doc['content'])):
+            for pi, (text, start, end, children) in enumerate(split_document(doc['content'], config.RAG_PARENT_CHARS, config.RAG_CHILD_CHARS)):
                 parent_index = len(self.parents)
                 parent_id = json.dumps([doc_id, pi], ensure_ascii=False, separators=(',', ':'))
                 self.parents.append({'id': parent_id, 'document': text, 'metadata': {
                     **metadata, 'doc_id': doc_id, 'parent': pi, 'start': start, 'end': end,
                 }})
-                for ci, (child, a, b) in enumerate(splitter.pack_children(text)):
+                for ci, (child, a, b) in enumerate(children):
                     self.children.append({'content': child, 'parent_index': parent_index,
                                           'child': ci, 'start': start + a, 'end': start + b})
         self.by_id = {parent['id']: parent for parent in self.parents}
@@ -139,17 +217,17 @@ _cached_index = None
 def get_index() -> RetrievalIndex:
     """Read content to detect same-size/mtime edits; reuse all expensive work."""
     global _cached_key, _cached_index
-    documents = DocLoader(config.DOC_DIR).load()
-    digest = hashlib.sha256()
-    for doc in documents:
-        digest.update(json.dumps(doc, ensure_ascii=False, sort_keys=True).encode())
-    key = (str(config.DOC_DIR), digest.hexdigest(), config.RAG_PARENT_CHARS,
+    loader = DocLoader(config.DOC_DIR)
+    documents = loader.load()
+    key = (str(config.DOC_DIR), loader.fingerprint, config.RAG_PARENT_CHARS,
            config.RAG_CHILD_CHARS, config.EMBEDDING_MODEL_SOURCE,
            config.EMBEDDING_MODEL_URL, config.EMBEDDING_MODEL_NAME,
            config.EMBEDDING_MODEL_API_KEY, config.EMBEDDING_LOCAL_PATH,
            config.RAG_CACHE_DIR, config.RAG_BATCH_SIZE, config.RAG_THREADS)
     if config.EMBEDDING_MODEL_SOURCE.upper() == 'LOCAL':
         key += (artifact_signature(local_model_path()),)
+    if key == _cached_key:
+        return _cached_index
     with _lock:
         if key != _cached_key:
             index = RetrievalIndex(documents)
