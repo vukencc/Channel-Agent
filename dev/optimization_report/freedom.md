@@ -188,3 +188,7 @@
 ### FREE-05（完成）
 
 显式 MODEL_PARAMETERS/MODEL_PROFILES，默认请求等价；/model 持久化并发隔离预设。31 项模型/会话回归通过，未调用收费服务。详见 docs/optimization-progress.md。
+
+### FREE-13（完成）
+
+显式费用/速率额度默认 0 不限；原子账本预留、provider usage 结算、未知单价拒绝、超限检查点；27 项回归通过。估算不是账单硬上限。详见 docs/optimization-progress.md。

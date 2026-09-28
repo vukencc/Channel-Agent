@@ -17,6 +17,7 @@ from core.context import build_model_history, ContextBudgetError, prepare_model_
 from core.storage import SessionStore, finish_pending_tools
 from core.log import get_logger
 from core.model_settings import model_profile
+from core.budgets import BudgetLedger, BudgetExceeded, budget_scope
 from rag.assess import assess_rag
 from tools import TOOL_REGISTRY
 from tools.sandbox import ToolContext, tool_context, CancellationFlag
@@ -53,6 +54,7 @@ class SessionManager:
     def __init__(self, store: SessionStore, notify: Callable[[], None] = lambda: None, model=call_model):
         self.store, self.notify, self.model = store, notify, model
         self.sessions = {r['id']: Session(r) for r in store.list_metadata()}
+        self.budget_ledger = BudgetLedger(store.root) if (config.SESSION_COST_LIMIT or config.DAILY_COST_LIMIT or config.MODEL_REQUESTS_PER_MINUTE) else None
         self.pending_saves = set()
         self.tool_workers = set()
         self.read_slots = asyncio.Semaphore(config.TOOL_CONCURRENCY)
@@ -109,7 +111,7 @@ class SessionManager:
         session.record.update(status='queued', error='')
         session.record['messages'].append({'role': 'user', 'content': text})
         self.save(session)
-        session.task = asyncio.create_task(self._run(session))
+        session.task = asyncio.create_task(self._run_with_budget(session))
         def finish(task):
             if task.cancelled():
                 session.record['status'] = 'cancelled'
@@ -276,6 +278,10 @@ class SessionManager:
         session.record['model_profile'] = name or None
         self.save(session)
 
+    async def _run_with_budget(self, session):
+        with budget_scope(self.budget_ledger, session.id):
+            await self._run(session)
+
     async def _run(self, session):
         contexts = []
         recovered = False
@@ -399,6 +405,10 @@ class SessionManager:
                 raise asyncio.CancelledError
             if session.record['status'] != 'checkpoint':
                 session.record['status'] = 'idle'
+        except BudgetExceeded as exc:
+            session.record['status'] = 'checkpoint'
+            session.record['last_run']['stop_reason'] = 'cost_or_rate_budget'
+            session.record['messages'].append({'role': 'assistant', 'content': '[阶段已保存] ' + str(exc)})
         except ContextBudgetError as exc:
             session.record['status'] = 'checkpoint'
             session.record['last_run']['context'] = exc.metrics

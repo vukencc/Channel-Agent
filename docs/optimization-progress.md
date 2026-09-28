@@ -13,7 +13,7 @@
 - [x] P0：PERF-12 流式导出
 - [x] P0：FREE-03 文件工具
 - [x] P0：FREE-05 模型参数
-- [ ] P0：FREE-13 成本与速率预算
+- [x] P0：FREE-13 成本与速率预算
 - [ ] P0：FREE-16 提示词模板
 - [ ] P1：PERF-01 重排与缓存
 - [ ] P1：PERF-02 可选 ANN
@@ -117,3 +117,16 @@ response_format（text/json_object）、tool_choice（auto/none/required）。�
 不兼容这些 Chat Completions 参数的服务会明确报错，不自动删参数重试。不新增第三方依赖。
 失败测试 → 参数范围/未知字段校验、并发 profile 隔离、保存恢复及实际 SDK 入参捕获。
 验证：`uv run pytest dev/tests/test_free05_model_parameters.py dev/tests/test_llm_stream.py dev/tests/test_sessions.py -q`：31 passed。
+
+## FREE-13
+
+新增 `SESSION_COST_LIMIT=0`、`DAILY_COST_LIMIT=0`（美元）与 `MODEL_REQUESTS_PER_MINUTE=0`；0 表示不限。
+在 SessionManager 调用域内覆盖主模型、重试/备用请求、摘要和后台评估；不同会话共享状态目录的 UTC 日额度与滚动 60 秒速率。
+启用后原子持久化 `budget.json`，每个实际请求先预留输入估算 + 输出上限费用，锁内检查防止并发超发。
+仅有 provider usage 时结算退还差额；中断/无 usage 保留估算，不把未知费用记零；重启保留预留。
+费用上限要求目标模型正的输入/输出单价；未知价格阻止发送。不同 profile 模型无价时同样拒绝。
+超限保存 checkpoint，不执行额外模型/工具请求；后台任务明确失败降级。默认关闭时不创建账本。
+**这是本地估算/请求准入，不是服务商账单硬上限**：token 估算、服务商额外计费与隐藏推理可能有差异；本地 RAG CPU 不计美元。
+状态与停止原因写入账本、会话和原有运行日志；不替代工具操作确认/审计。无新依赖。
+验证：`uv run pytest dev/tests/test_free13_budgets.py dev/tests/test_llm_stream.py dev/tests/test_sessions.py -q`：27 passed。
+新增持久化/预留、速率恢复、未知单价拒绝和完整会话发送前拦截测试。

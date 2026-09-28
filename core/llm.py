@@ -21,6 +21,7 @@ from core.log import get_logger
 from core.context import estimate_tokens, request_tokens
 from core.messages import PackMessage
 from core.model_settings import active_profile
+from core.budgets import active_budget, reserve_request, settle_request
 from tools import all_schemas
 
 logger = get_logger(__name__)
@@ -105,6 +106,18 @@ def selected_model():
     return selected_profile().get('model', config.MODEL)
 
 
+def reserved_cost(history, schemas, endpoint, options):
+    if active_budget.get() is None:
+        return None
+    primary = endpoint['model'] == config.MODEL
+    input_price = endpoint.get('input_cost_per_million', config.INPUT_COST_PER_MILLION if primary else 0)
+    output_price = endpoint.get('output_cost_per_million', config.OUTPUT_COST_PER_MILLION if primary else 0)
+    if input_price <= 0 or output_price <= 0:
+        return None
+    output_tokens = options.get('max_tokens', config.MODEL_OUTPUT_CHARS)
+    return (request_tokens(history, schemas) * input_price + output_tokens * output_price) / 1e6
+
+
 # 连接类/限流/服务端错误，属于瞬时故障，可以重试
 _RETRYABLE = (
     openai.APIConnectionError,
@@ -167,10 +180,17 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
             options.setdefault('tool_choice', 'auto')
             if config.MODEL_STREAM_USAGE:
                 options['stream_options'] = {'include_usage': True}
-            return await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
-                model=endpoint['model'], **options, messages=history, stream=True,
-                tools=TOOL_SCHEMAS,
-                extra_headers={'x-opencode-session': session_id} if session_id else None)
+            ticket = await reserve_request(reserved_cost(history, TOOL_SCHEMAS, endpoint, options))
+            try:
+                stream = await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
+                    model=endpoint['model'], **options, messages=history, stream=True,
+                    tools=TOOL_SCHEMAS,
+                    extra_headers={'x-opencode-session': session_id} if session_id else None)
+                route['budget_ticket'] = ticket
+                return stream
+            except BaseException:
+                await settle_request(ticket, None)
+                raise
         try:
             # 有备用时为每个连接阶段预留时间；流开始后不自动换模型。
             async with asyncio.timeout(config.MODEL_CALL_TIMEOUT / len(endpoints)):
@@ -293,6 +313,8 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
         metrics.update(model=route['model'], fallbacks=route['fallbacks'],
             estimated_cost_usd=(metrics['input_tokens'] * input_price + metrics['output_tokens'] * output_price) / 1e6
             if input_price or output_price else None)
+        await settle_request(route.get('budget_ticket'), metrics['estimated_cost_usd']
+                             if metrics['tokens_source'] == 'provider' else None)
         _route.reset(route_token)
         metrics.update(total_s=round(time.monotonic() - started, 3), finish_reason=finish)
         metrics.setdefault('outcome', 'interrupted')
@@ -312,11 +334,15 @@ async def complete(prompt: str, *, session_id: str | None = None) -> str:
     供评估（LLM 当裁判）等内部用途使用：不打印、不参与会话历史。
     评估是可选后台工作，受独立总时限约束，不自动重试。
     """
+    ticket = None
     async def operation():
+        nonlocal ticket
         client = await asyncio.to_thread(get_client)
         options = model_options()
         options.pop('tool_choice', None)
         options.pop('parallel_tool_calls', None)
+        ticket = await reserve_request(reserved_cost([PackMessage('user', prompt)], None,
+                                                     {'model': config.MODEL}, options))
         return await client.with_options(
             timeout=config.ASSESS_TIMEOUT
         ).chat.completions.create(
@@ -327,6 +353,14 @@ async def complete(prompt: str, *, session_id: str | None = None) -> str:
             extra_headers={"x-opencode-session": session_id} if session_id else None,
         )
 
-    async with asyncio.timeout(config.ASSESS_TIMEOUT):
-        response = await _retry(operation, "评估调用", attempts=1)
-    return response.choices[0].message.content or ""
+    actual = None
+    try:
+        async with asyncio.timeout(config.ASSESS_TIMEOUT):
+            response = await _retry(operation, "评估调用", attempts=1)
+        usage = getattr(response, 'usage', None)
+        if usage and config.INPUT_COST_PER_MILLION > 0 and config.OUTPUT_COST_PER_MILLION > 0:
+            actual = (usage.prompt_tokens * config.INPUT_COST_PER_MILLION
+                      + usage.completion_tokens * config.OUTPUT_COST_PER_MILLION) / 1e6
+        return response.choices[0].message.content or ""
+    finally:
+        await settle_request(ticket, actual)

@@ -133,7 +133,7 @@ def validate_runtime_config() -> None:
     if url.scheme not in {'http', 'https'} or not url.hostname:
         errors.append('BASE_URL 必须是有效的 http/https 地址')
     for name, value in globals().items():
-        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION'}:
+        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE'}:
             if not math.isfinite(value) or value <= 0:
                 errors.append(f'{name} 必须大于 0 且有限')
     if not DOC_DIR or not DOC_DIR.is_dir() or not os.access(DOC_DIR, os.R_OK):
@@ -144,6 +144,9 @@ def validate_runtime_config() -> None:
         errors.append('WEB_SEARCH_CONFIRM 必须为 always 或 off')
     for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:
         if value < 0:
+            errors.append(f'{name} 不能为负数')
+    for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE'):
+        if globals()[name] < 0:
             errors.append(f'{name} 不能为负数')
     for endpoint in MODEL_FALLBACKS:
         if endpoint.get('base_url'):
@@ -198,6 +201,9 @@ ASSESS_INPUT_CHARS = env_int("ASSESS_INPUT_CHARS", 12000)
 ASSESS_CONTEXT_CHARS = env_int("ASSESS_CONTEXT_CHARS", 2000)
 
 RUN_HISTORY_LIMIT = env_int("RUN_HISTORY_LIMIT", 20)
+SESSION_COST_LIMIT = env_float('SESSION_COST_LIMIT', 0)
+DAILY_COST_LIMIT = env_float('DAILY_COST_LIMIT', 0)
+MODEL_REQUESTS_PER_MINUTE = env_int('MODEL_REQUESTS_PER_MINUTE', 0)
 
 # 只允许已声明的请求参数；不接受任意网络地址或安全策略覆盖。
 from core.model_settings import ModelParameters, ModelProfile
