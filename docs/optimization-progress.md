@@ -16,7 +16,7 @@
 - [x] P0：FREE-13 成本与速率预算
 - [x] P0：FREE-16 提示词模板
 - [x] P1：PERF-01 重排与缓存
-- [ ] P1：PERF-02 可选 ANN
+- [x] P1：PERF-02 可选 ANN
 - [ ] P1：PERF-03 增量持久化 BM25
 - [ ] P1：PERF-04 内存上限
 - [ ] P1：PERF-09 推理并发隔离
@@ -173,3 +173,20 @@ GPU 环境未实测，不宣称 GPU/fp16 性能或质量通过。候选缩减可
 基准命令：`uv run python -m dev.perf.benchmark rag --corpus .cache/rag/benchmark/corpus/corpus-00000-of-00001-8afe7b7a7eca49e3.parquet --output /tmp/agent-perf-results/perf01-after.json`；
 设置 `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 RERANK_LOCAL_PATH=.cache/rag/reranker HF_HUB_OFFLINE=1 HF_HOME=/tmp/agent-perf-hf`。
 验证：`uv run pytest dev/tests/test_perf01_rag_cache.py dev/tests/test_hybrid_rag.py -q`：28 passed。
+
+## PERF-02
+
+新增可选 `ann` extra（hnswlib 0.8.0）：`uv sync --locked --extra ann`；pyproject.toml/uv.lock 由 uv add 更新，uv lock --check 成功。
+默认 `RAG_VECTOR_BACKEND=exact`；显式 ann 且子块数达到 `RAG_ANN_MIN_CHILDREN=10000` 时使用 HNSW。
+`RAG_ANN_M=16`、`RAG_ANN_EF_CONSTRUCTION=200`、`RAG_ANN_EF_SEARCH=256`。
+索引按真实向量内容/形状/构建参数指纹持久化，文件锁 + 临时文件 + fsync + 原子发布。
+加载/搜索失败保留 exact 回退且写警告，trace.vector_backend 显示实际后端；基准若回退则失败，不计 ANN 通过。
+
+100,000 × 384 维随机单位向量，固定 seed=20260928、20 个独立随机查询：这是索引内核性能/近似召回测试，**不是语义检索质量集**。
+- exact：p50 **15.087ms**，p95 **15.758ms**，recall@50=1。
+- ANN ef=256：p50 **1.554ms**，p95 **1.774ms**，recall@50=**0.227**，首次含建索引 **24.766s**。
+- ANN ef=4096：p50 **14.002ms**，p95 **14.995ms**，recall@50=**0.932**，首次含建索引 **25.504s**。
+中位/p95 不含第一条建索引请求。低深度在该高维随机数据上损失大，不能当作 exact 等价替换；实际语料需另测召回。
+命令：`OPENBLAS_NUM_THREADS=1 uv run --extra ann python -m dev.perf.benchmark vector --output /tmp/agent-perf-results/perf02-after.json`，分别设 RAG_VECTOR_BACKEND 与 RAG_ANN_EF_SEARCH。
+验证：`uv run --extra ann pytest dev/tests/test_perf02_ann.py dev/tests/test_hybrid_rag.py -q`：28 passed；含真实持久化、内容失效及缺依赖明确回退。
+不安装 extra 时仅两项真实 ANN 测试标记依赖缺失；默认精确路径与回退测试照常运行，不伪报 ANN 通过。

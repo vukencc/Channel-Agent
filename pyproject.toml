@@ -19,6 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 documents = ["pypdf", "python-docx"]
+ann = [
+    "hnswlib>=0.8.0,<0.9",
+]
 
 [dependency-groups]
 dev = [

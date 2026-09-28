@@ -76,6 +76,7 @@ def rag_search(query: str, top_k: int | None = None, strictness: str = 'normal',
         trace.update({
             'query': query, 'threshold': threshold, 'strictness': strictness,
             'parent_count': len(index.parents), 'child_count': len(index.children),
+            'vector_backend': getattr(index, 'vector_backend', 'exact'),
             'timings_seconds': times,
             'stages': {name: [{**index.by_id[row['id']], **row, 'rank': rank}
                               for rank, row in enumerate(rows, 1)] for name, rows in stages.items()},

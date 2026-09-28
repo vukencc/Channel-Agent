@@ -203,6 +203,29 @@ class RetrievalIndex:
             self.query_cache.put(key, vector, config.RAG_QUERY_CACHE_SIZE)
         if self.vectors.shape[1] != len(vector):
             raise ValueError('Query/document embedding dimensions differ')
+        self.vector_backend = 'exact'
+        if config.RAG_VECTOR_BACKEND == 'ann' and len(self.children) >= config.RAG_ANN_MIN_CHILDREN:
+            try:
+                from rag.vector_backend import AnnIndex
+                if not hasattr(self, 'ann_index'):
+                    with _lock:
+                        if not hasattr(self, 'ann_index'):
+                            self.ann_index = AnnIndex(self.vectors, config.RAG_CACHE_DIR / 'ann')
+                k = min(len(self.children), max(limit * 4, config.RAG_ANN_EF_SEARCH))
+                while True:
+                    hits = self.ann_index.search(vector, k)
+                    scores = {}
+                    for child, score in hits:
+                        parent = int(self.parent_indexes[child])
+                        scores[parent] = max(scores.get(parent, -np.inf), score)
+                    if len(scores) >= min(limit, len(self.parents)) or k == len(self.children):
+                        break
+                    k = min(len(self.children), k * 2)
+                self.vector_backend = 'ann'
+                order = sorted(scores, key=lambda i: (-scores[i], i))[:limit]
+                return [{'id': self.parents[i]['id'], 'score': scores[i]} for i in order]
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning('ANN 不可用，显式回退 exact：%s', exc)
         child_scores = self.vectors @ vector
         parent_scores = np.full(len(self.parents), -np.inf, dtype=np.float32)
         np.maximum.at(parent_scores, self.parent_indexes, child_scores)
@@ -230,6 +253,8 @@ def get_index() -> RetrievalIndex:
            config.EMBEDDING_MODEL_URL, config.EMBEDDING_MODEL_NAME,
            config.EMBEDDING_MODEL_API_KEY, config.EMBEDDING_LOCAL_PATH,
            config.RAG_CACHE_DIR, config.RAG_BATCH_SIZE, config.RAG_THREADS)
+    key += (config.RAG_VECTOR_BACKEND, config.RAG_ANN_MIN_CHILDREN, config.RAG_ANN_M,
+            config.RAG_ANN_EF_CONSTRUCTION, config.RAG_ANN_EF_SEARCH)
     if config.EMBEDDING_MODEL_SOURCE.upper() == 'LOCAL':
         key += (artifact_signature(local_model_path()),)
     if key == _cached_key:

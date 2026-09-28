@@ -140,6 +140,8 @@ def validate_runtime_config() -> None:
         errors.append('DOC_DIR 必须是可读的知识库目录')
     if not SANDBOX_DIR or (SANDBOX_DIR.exists() and not SANDBOX_DIR.is_dir()):
         errors.append('SANDBOX_DIR 必须是目录路径')
+    if RAG_VECTOR_BACKEND not in {'exact', 'ann'}:
+        errors.append('RAG_VECTOR_BACKEND 必须是 exact/ann')
     if RAG_RERANK_DEVICE not in {'cpu', 'cuda', 'mps', 'auto'}:
         errors.append('RAG_RERANK_DEVICE 必须是 cpu/cuda/mps/auto')
     if RAG_RERANK_DTYPE not in {'fp32', 'fp16'}:
@@ -229,6 +231,11 @@ RAG_RERANK_DEVICE = os.getenv('RAG_RERANK_DEVICE', 'cpu')
 RAG_RERANK_DTYPE = os.getenv('RAG_RERANK_DTYPE', 'fp32')
 RAG_RERANK_CACHE_SIZE = env_int('RAG_RERANK_CACHE_SIZE', 0)
 RAG_QUERY_CACHE_SIZE = env_int('RAG_QUERY_CACHE_SIZE', 0)
+RAG_VECTOR_BACKEND = os.getenv('RAG_VECTOR_BACKEND', 'exact')
+RAG_ANN_MIN_CHILDREN = env_int('RAG_ANN_MIN_CHILDREN', 10000)
+RAG_ANN_M = env_int('RAG_ANN_M', 16)
+RAG_ANN_EF_CONSTRUCTION = env_int('RAG_ANN_EF_CONSTRUCTION', 200)
+RAG_ANN_EF_SEARCH = env_int('RAG_ANN_EF_SEARCH', 256)
 try:
     RAG_RERANK_BY_BREADTH = json.loads(os.getenv('RAG_RERANK_BY_BREADTH', '{}'))
     if (not isinstance(RAG_RERANK_BY_BREADTH, dict)

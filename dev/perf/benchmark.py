@@ -33,7 +33,7 @@ def sessions(count, megabytes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export', 'rag'])
+    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export', 'rag', 'vector'])
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
@@ -45,7 +45,8 @@ def main():
                                    context() if args.case == 'context' else
                                    quota() if args.case == 'quota' else
                                    audit(args.baseline_ref) if args.case == 'audit' else
-                                   rag(args.corpus, args.output) if args.case == 'rag' else export())}
+                                   rag(args.corpus, args.output) if args.case == 'rag' else
+                                   vector(args.output) if args.case == 'vector' else export())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({key: value for key, value in result.items() if key != 'traces'}))
@@ -202,6 +203,42 @@ def rag(corpus, output):
     return {'documents': len(documents), 'queries': len(manifest['queries']), 'build_seconds': build,
             'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
             'rounds': summaries, 'traces': traces}
+
+
+def vector(output):
+    """随机单位向量用于索引内核开销/近似召回，不代表语义检索质量。"""
+    import numpy as np
+    import config
+    from rag.index import RetrievalIndex
+    from rag.result_cache import ResultCache
+    rng = np.random.default_rng(20260928)
+    vectors = rng.normal(size=(100000, 384)).astype(np.float32)
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    queries = rng.normal(size=(20, 384)).astype(np.float32)
+    queries /= np.linalg.norm(queries, axis=1, keepdims=True)
+    class QueryInput:
+        def embed_queries(self, texts):
+            return np.asarray([queries[int(text)] for text in texts])
+    index = RetrievalIndex.__new__(RetrievalIndex)
+    index.children = range(len(vectors))
+    index.parents = [{'id': str(i)} for i in range(len(vectors))]
+    index.parent_indexes = np.arange(len(vectors), dtype=np.int32)
+    index.vectors, index.model, index.query_cache = vectors, QueryInput(), ResultCache()
+    config.RAG_CACHE_DIR = output.parent / (output.stem + '-cache')
+    elapsed, recall = [], []
+    for i, query in enumerate(queries):
+        reference = set(np.argsort(-(vectors @ query), kind='stable')[:50].tolist())
+        start = time.perf_counter()
+        rows = index.dense(str(i), 50)
+        elapsed.append(time.perf_counter() - start)
+        recall.append(len(reference & {int(row['id']) for row in rows}) / 50)
+    if config.RAG_VECTOR_BACKEND == 'ann' and index.vector_backend != 'ann':
+        raise RuntimeError('ANN 基准实际回退到 exact，不能记作 ANN 通过')
+    return {'children': len(vectors), 'dimensions': 384, 'queries': len(queries),
+            'seed': 20260928, 'backend': getattr(index, 'vector_backend', 'exact'),
+            'requested_backend': getattr(config, 'RAG_VECTOR_BACKEND', 'exact'),
+            'first_seconds': elapsed[0], 'p50_seconds': statistics.median(elapsed[1:]),
+            'p95_seconds': float(np.percentile(elapsed[1:], 95)), 'recall_at_50': statistics.mean(recall)}
 
 
 if __name__ == '__main__':

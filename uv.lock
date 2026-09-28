@@ -32,6 +32,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+ann = [
+    { name = "hnswlib" },
+]
 documents = [
     { name = "pypdf" },
     { name = "python-docx" },
@@ -47,6 +50,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastembed", specifier = ">=0.8.1" },
+    { name = "hnswlib", marker = "extra == 'ann'", specifier = ">=0.8.0,<0.9" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "jieba", specifier = ">=0.42.1" },
     { name = "numpy", specifier = ">=2.5.3" },
@@ -60,7 +64,7 @@ requires-dist = [
     { name = "sentence-transformers", specifier = ">=6.1.0" },
     { name = "tavily-python", specifier = ">=0.8.0,<0.9" },
 ]
-provides-extras = ["documents"]
+provides-extras = ["documents", "ann"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -430,6 +434,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/98/b7/8c59a66d15205024662f1d66968136f13893f96df1ddc5087e2e281fc95f/hf_xet-1.6.0-cp38-abi3-win_amd64.whl", hash = "sha256:fb4fadde1b2b70bf4c0c14a6dccbe7194b1c28947fefd5bbe3fed9d940676c3b", size = 4033128, upload-time = "2026-08-03T22:33:10.171Z" },
     { url = "https://files.pythonhosted.org/packages/73/63/ca511b6f802f28cf3489b280fe77475bcca8de85e81a6299d7916b5b5555/hf_xet-1.6.0-cp38-abi3-win_arm64.whl", hash = "sha256:3dc3e35441ba395006af5aaacc40ef2e603c51ef46c3530b9156185f00935ea3", size = 3859359, upload-time = "2026-08-03T22:33:11.725Z" },
 ]
+
+[[package]]
+name = "hnswlib"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cf/7a/1a9b1405f2eb59515f06c3074750b03e0e96edf7fee0f6dd6df81d9c21d7/hnswlib-0.8.0.tar.gz", hash = "sha256:cb6d037eedebb34a7134e7dc78966441dfd04c9cf5ee93911be911ced951c44c", size = 36206, upload-time = "2023-12-03T04:16:17.55Z" }
 
 [[package]]
 name = "httpcore"

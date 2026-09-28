@@ -211,3 +211,7 @@
 ### PERF-01（完成，缓存热查询收益）
 
 固定公开 343 文档/10 查询两轮：首次 p50 5.998842 → 6.779045s，重复 p50 5.954295 → 0.001340s。开启有界结果缓存；默认不变。四阶段结果完全一致，质量无退化，GPU 未验证。详见 docs/optimization-progress.md 与 docs/perf-rag-comparison.md。
+
+### PERF-02（完成，可选近似检索）
+
+100k×384 固定随机向量：exact p50 15.087ms，ANN ef256 1.554ms/recall@50 .227；ef4096 14.002ms/.932。默认 exact 不变；真实 hnswlib 持久化及回退测试通过。质量取舍与测量口径见 docs/optimization-progress.md。
