@@ -33,13 +33,14 @@ def sessions(count, megabytes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case', choices=['sessions', 'context'])
+    parser.add_argument('case', choices=['sessions', 'context', 'quota'])
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     result = {'case': args.case, **(sessions(args.count, args.megabytes)
-                                   if args.case == 'sessions' else context())}
+                                   if args.case == 'sessions' else
+                                   context() if args.case == 'context' else quota())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps(result))
@@ -58,6 +59,42 @@ def context():
         elapsed.append(time.perf_counter() - start)
     return {'messages': len(messages), 'seconds': elapsed,
             'median_seconds': statistics.median(elapsed), 'metrics': metrics}
+
+
+def quota():
+    import threading
+    from tools import command
+    from tools.sandbox import ToolContext, tool_context
+    with tempfile.TemporaryDirectory(prefix='agent-quota-') as directory:
+        root = Path(directory) / 'workspace'
+        root.mkdir()
+        for i in range(3000):
+            (root / str(i)).write_text('x')
+        original = command.check_workspace_quota
+        calls = 0
+        scan_seconds = 0
+        def checked():
+            nonlocal calls, scan_seconds
+            calls += 1
+            start = time.perf_counter()
+            try:
+                return original()
+            finally:
+                scan_seconds += time.perf_counter() - start
+        command.check_workspace_quota = checked
+        try:
+            with tool_context(ToolContext(root, Path(directory) / 'audit.jsonl',
+                                          lambda *_: True, threading.Event())):
+                start, cpu = time.perf_counter(), time.process_time()
+                result = command.run_command('python3 -c "import os,time; '
+                    "[(os.write(1,b'x'*8192),time.sleep(.005)) for _ in range(100)]\"")
+                if not result.startswith('[退出码] 0'):
+                    raise RuntimeError('真实沙箱基准失败：' + result[:1000])
+                return {'seconds': time.perf_counter() - start,
+                        'cpu_seconds': time.process_time() - cpu,
+                        'scan_seconds': scan_seconds, 'scans': calls, 'files': 3000}
+        finally:
+            command.check_workspace_quota = original
 
 
 if __name__ == '__main__':

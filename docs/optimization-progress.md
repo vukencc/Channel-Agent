@@ -8,7 +8,7 @@
 
 - [x] P0：PERF-05 会话懒加载
 - [x] P0：PERF-06 上下文单次序列化
-- [ ] P0：PERF-07 配额节流
+- [x] P0：PERF-07 配额节流
 - [ ] P0：PERF-08 审计句柄
 - [ ] P0：PERF-12 流式导出
 - [ ] P0：FREE-03 文件工具
@@ -62,3 +62,14 @@ ASCII 计数使用标准库 C 编码实现；摘要输入在预算处停止序�
 验证：`uv run pytest dev/tests/test_context.py dev/tests/test_perf06_context.py dev/tests/test_bug08_summary.py dev/tests/test_sessions.py -q`。
 新增测试先确认未修改消息序列化 9 次，优化后 1 次；原始记录不可变测试保持通过。
 无新增配置/依赖；无模型调用，token 为本地估算，不是服务商账单。
+
+## PERF-07
+
+命令配额扫描按单调时钟节流，输出到达不再重复触发全目录遍历；开始、确认后、结束检查保留。
+`COMMAND_QUOTA_INTERVAL=0.1` 保留既有采样频率；显式改 1 秒可进一步降 IO，但会扩大超额发现窗口。
+单文件 rlimit、超额终止及审计均保留。配额仍是采样检测，不是文件系统硬配额。
+真实 Bubblewrap 基准：3,000 个文件，100 次 8 KiB 输出，间隔 5 ms。
+墙钟 **1.776154 → 0.582655 秒**；父进程 CPU **1.775906 → 0.132174 秒**；扫描 **104 → 7 次**，
+扫描耗时 **1.771452 → 0.127973 秒**。默认参数下测量，无主机执行回退。
+验证：`uv run pytest dev/tests/test_perf07_quota.py dev/tests/test_command.py dev/tests/test_bug04_limits.py -q`：26 passed。
+测量命令：`uv run python -m dev.perf.benchmark quota --output /tmp/agent-perf-results/perf07-after.json`。

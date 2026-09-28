@@ -68,6 +68,7 @@ def run_command(command: str, reason: str = "") -> str:
             start_new_session=True,
         )
         deadline = time.monotonic() + config.COMMAND_TIMEOUT
+        next_quota_check = time.monotonic() + config.COMMAND_QUOTA_INTERVAL
         buffers = {proc.stdout: bytearray(), proc.stderr: bytearray()}
         clipped = set()
         # Drain both pipes continuously, retaining only a bounded UTF-8 prefix.
@@ -80,7 +81,9 @@ def run_command(command: str, reason: str = "") -> str:
                     if cancellation_requested():
                         audit("cancelled", action="run_command", command=command)
                         return "[已取消] 命令及其子进程已终止。"
-                    check_workspace_quota()
+                    if time.monotonic() >= next_quota_check:
+                        check_workspace_quota()
+                        next_quota_check = time.monotonic() + config.COMMAND_QUOTA_INTERVAL
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired(isolated, config.COMMAND_TIMEOUT)
