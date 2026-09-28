@@ -58,7 +58,7 @@ jobs:
           python-version: '3.12'
           enable-cache: true
       - run: uv sync --locked
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cache/rag
           key: rag-models-v1-${{ hashFiles('dev/rag/prepare_assets.py', 'dev/rag/inputs/quality.json') }}
