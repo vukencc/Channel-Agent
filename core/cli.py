@@ -400,7 +400,7 @@ def main():
         parser.exit(1, str(exc) + '\n')
     try:
         if args.list:
-            for record in store.load_all():
+            for record in store.list_metadata():
                 print(record['id'][:8], record['status'], record['title'])
             for error in store.errors:
                 print('无法读取：', error)

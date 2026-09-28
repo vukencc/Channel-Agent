@@ -51,7 +51,7 @@ class Session:
 class SessionManager:
     def __init__(self, store: SessionStore, notify: Callable[[], None] = lambda: None, model=call_model):
         self.store, self.notify, self.model = store, notify, model
-        self.sessions = {r['id']: Session(r) for r in store.load_all()}
+        self.sessions = {r['id']: Session(r) for r in store.list_metadata()}
         self.pending_saves = set()
         self.tool_workers = set()
         self.read_slots = asyncio.Semaphore(config.TOOL_CONCURRENCY)

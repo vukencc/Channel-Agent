@@ -33,6 +33,46 @@ def finish_pending_tools(messages: list[dict]):
                          'content': '[中断] 执行结果未知，请先检查文件状态，勿自动重放操作。'})
 
 
+class LazyRecord(dict):
+    """元数据可直接访问；首次读取消息时才执行完整校验与中断恢复。"""
+
+    def __init__(self, metadata, loader):
+        super().__init__(metadata)
+        self.loader = loader
+        self._load_lock = threading.RLock()
+
+    def materialize(self):
+        with self._load_lock:
+            if self.loader is not None:
+                record = self.loader()
+                dict.clear(self)
+                dict.update(self, record)
+                self.loader = None
+        return self
+
+    def __getitem__(self, key):
+        if key == 'messages':
+            self.materialize()
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if key == 'messages':
+            self.materialize()
+        return super().get(key, default)
+
+    def __setitem__(self, key, value):
+        self.materialize()
+        super().__setitem__(key, value)
+
+    def update(self, *args, **kwargs):
+        self.materialize()
+        super().update(*args, **kwargs)
+
+    def pop(self, *args):
+        self.materialize()
+        return super().pop(*args)
+
+
 class SessionStore:
     def __init__(self, root: Path, workspace_root: Path | None = None):
         self.root = root.resolve()
@@ -92,6 +132,8 @@ class SessionStore:
 
     def save_async(self, record: dict):
         """只复制小型元数据；消息追加后不可修改，计数界定本次快照。"""
+        if isinstance(record, LazyRecord):
+            record.materialize()
         record['updated_at'] = now()
         snapshot = copy.deepcopy({key: value for key, value in record.items() if key != 'messages'})
         snapshot['messages'] = record['messages']
@@ -100,6 +142,8 @@ class SessionStore:
         return asyncio.get_running_loop().run_in_executor(self.writer, self.save, snapshot)
 
     def save(self, record: dict):
+        if isinstance(record, LazyRecord):
+            record.materialize()
         directory = self.directory(record['id'])
         directory.mkdir(exist_ok=True, mode=0o700)
         if not (directory / 'memory.md').exists():
@@ -183,31 +227,60 @@ class SessionStore:
         self.save(record)
         return record
 
-    def load_all(self) -> list[dict]:
+    def load_record(self, path: Path) -> dict:
+        record = self.read_record(path)
+        if not isinstance(record, dict):
+            raise ValueError('会话文件必须是 JSON 对象')
+        if (record.get('version') not in {1, 2} or record['id'] != path.parent.name
+                or self.directory(record['id']) != path.parent
+                or not isinstance(record['messages'], list)
+                or not record['messages'] or record['messages'][0]['role'] != 'system'
+                or not isinstance(record['title'], str)):
+            raise ValueError('无效会话格式')
+        for message in record['messages']:
+            if not isinstance(message, dict) or message.get('role') not in {'system', 'user', 'assistant', 'tool'}:
+                raise ValueError('无效消息角色')
+        if record['status'] not in {'idle', 'error', 'cancelled', 'interrupted', 'checkpoint'}:
+            record['status'] = 'interrupted'
+            record['error'] = '上次任务被中断；已恢复已保存内容，不会自动重放工具。'
+            finish_pending_tools(record['messages'])
+            self.save(record)
+        return record
+
+    def list_metadata(self) -> list[dict]:
+        """只读索引；旧版单文件格式仍需解析，访问前不迁移或恢复。"""
         records = []
         for path in sorted(self.root.glob('*/session.json')):
             try:
-                record = self.read_record(path)
-                if not isinstance(record, dict):
-                    raise ValueError('会话文件必须是 JSON 对象')
-                if (record.get('version') not in {1, 2} or record['id'] != path.parent.name
+                record = json.loads(path.read_text(encoding='utf-8'))
+                if (not isinstance(record, dict) or record.get('version') not in {1, 2}
+                        or record['id'] != path.parent.name
                         or self.directory(record['id']) != path.parent
-                        or not isinstance(record['messages'], list)
-                        or not record['messages'] or record['messages'][0]['role'] != 'system'
                         or not isinstance(record['title'], str)):
                     raise ValueError('无效会话格式')
-                for message in record['messages']:
-                    if not isinstance(message, dict) or message.get('role') not in {'system', 'user', 'assistant', 'tool'}:
-                        raise ValueError('无效消息角色')
-                if record['status'] not in {'idle', 'error', 'cancelled', 'interrupted', 'checkpoint'}:
-                    record['status'] = 'interrupted'
-                    record['error'] = '上次任务被中断；已恢复已保存内容，不会自动重放工具。'
-                    finish_pending_tools(record['messages'])
-                    self.save(record)
-                records.append(record)
+                if record['version'] == 2:
+                    if (record['message_count'] < 1 or record['message_bytes'] < 1
+                            or record['system_message']['role'] != 'system'):
+                        raise ValueError('无效消息索引')
+                else:
+                    if not record['messages'] or record['messages'][0]['role'] != 'system':
+                        raise ValueError('无效会话格式')
+                    record['message_count'] = len(record['messages'])
+                    record.pop('messages')
+                records.append(LazyRecord(record, lambda path=path: self.load_record(path)))
             except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
                 self.errors.append(f'{path.parent.name}: {exc}')
         return sorted(records, key=lambda r: r['updated_at'])
+
+    def load_all(self) -> list[dict]:
+        """兼容需要全量历史的调用者；交互启动与列表使用 list_metadata。"""
+        records = []
+        for record in self.list_metadata():
+            try:
+                records.append(record.materialize())
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                self.errors.append(f'{record["id"]}: {exc}')
+        return records
 
     def memory_path(self, identifier: str) -> Path:
         self.directory(identifier)
