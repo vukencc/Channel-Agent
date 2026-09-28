@@ -73,6 +73,8 @@ class SessionManager:
         self.closing = False
         from core.command_jobs import CommandJobs
         self.command_jobs = CommandJobs(store) if config.ENABLE_COMMAND_JOBS else None
+        from core.agent_tasks import AgentTasks
+        self.agent_tasks = AgentTasks(self) if config.ENABLE_AGENT_TASKS else None
         self.read_slots = asyncio.Semaphore(config.TOOL_CONCURRENCY)
         # 显式启用后，重推理不占文件工具的线程与并发额度。
         self.rag_slots = asyncio.Semaphore(config.RAG_INFERENCE_CONCURRENCY) if config.RAG_INFERENCE_CONCURRENCY else None
@@ -171,6 +173,8 @@ class SessionManager:
         return False
 
     def cancel(self, session):
+        if self.agent_tasks is not None:
+            self.agent_tasks.cancel_owner(session.id)
         if session.summary_task and not session.summary_task.done():
             session.summary_task.cancel()
         if session.task is not None and not session.task.done() and session.record["status"] != "stopping":
@@ -222,7 +226,7 @@ class SessionManager:
             context = ToolContext(self.store.workspace(session.id), directory / 'audit.jsonl',
                                   lambda prompt, timeout: self._confirm(session, loop, prompt, timeout),
                                   tool_cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
-                                  tool_call_id=call['id'], job_manager=self.command_jobs, permission_policy=self.permission_override or session.record.get('permission_policy'))
+                                  tool_call_id=call['id'], job_manager=self.command_jobs, agent_tasks=self.agent_tasks, event_loop=loop, permission_policy=self.permission_override or session.record.get('permission_policy'))
             with tool_context(context):
                 names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                 if names is not None and name not in names:
@@ -440,7 +444,7 @@ class SessionManager:
         self.save(session)
 
     async def _run_with_budget(self, session):
-        with budget_scope(self.budget_ledger, session.id), limits_scope(session.record):
+        with budget_scope(self.budget_ledger, session.record.get('budget_owner_id', session.id)), limits_scope(session.record):
             await self._run(session)
 
     async def _run(self, session):
@@ -615,6 +619,8 @@ class SessionManager:
 
     async def shutdown(self):
         self.closing = True
+        if self.agent_tasks is not None:
+            self.agent_tasks.stop()
         if self.command_jobs is not None:
             self.command_jobs.stop()
         for task in self.fork_tasks:
@@ -636,6 +642,8 @@ class SessionManager:
         await asyncio.gather(*list(self.summary_tasks), return_exceptions=True)
         if self.tool_workers:
             await asyncio.gather(*list(self.tool_workers), return_exceptions=True)
+        if self.agent_tasks is not None:
+            await self.agent_tasks.close()
         if self.command_jobs is not None:
             await asyncio.to_thread(self.command_jobs.close)
         if self.rag_executor:

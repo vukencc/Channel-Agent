@@ -116,6 +116,9 @@ RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)
 # Durable user conversations and memory, separate from disposable model caches.
 AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", ".agent")
 MAX_CONCURRENT_AGENTS = env_int("MAX_CONCURRENT_AGENTS", 4)
+ENABLE_AGENT_TASKS = env_bool('ENABLE_AGENT_TASKS', False)
+AGENT_TASK_CONCURRENCY = env_int('AGENT_TASK_CONCURRENCY', 2)
+AGENT_TASK_MAX_ACTIVE = env_int('AGENT_TASK_MAX_ACTIVE', 16)
 ENABLE_SESSION_BUDGETS = env_bool('ENABLE_SESSION_BUDGETS', False)
 MODEL_RECOVERY_LIMIT = env_int('MODEL_RECOVERY_LIMIT', 1)
 MAX_TOOL_ROUNDS = env_int("MAX_TOOL_ROUNDS", 24)
@@ -164,6 +167,8 @@ def validate_runtime_config() -> None:
         validate_network_config()
     except ValueError as exc:
         errors.append(str(exc))
+    if ENABLE_AGENT_TASKS and not ENABLE_SESSION_BUDGETS:
+        errors.append('ENABLE_AGENT_TASKS 需要 ENABLE_SESSION_BUDGETS')
     if not 0 <= MODEL_RECOVERY_LIMIT <= 3:
         errors.append('MODEL_RECOVERY_LIMIT 必须在 0..3 之间')
     if WEB_SEARCH_CONFIRM not in {'always', 'off'}:

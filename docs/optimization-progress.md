@@ -30,7 +30,7 @@
 - [x] P1：FREE-10 分支与重发
 - [x] P2：FREE-02 网络与长任务设计、实现
 - [x] P2：FREE-06 会话预算设计、实现
-- [ ] P2：FREE-11 后台任务与子代理设计、实现
+- [x] P2：FREE-11 后台任务与子代理设计、实现
 - [ ] P2：FREE-12 多模态设计、实现
 - [ ] P2：FREE-14 可观测命令设计、实现
 - [ ] P2：FREE-15 跨平台设计、实现
@@ -408,3 +408,11 @@ JSON 替换当前覆盖集，default 清空。预设仅缩放轮次和输出上�
 允许覆盖：MAX_TOOL_ROUNDS 1..256，MAX_TOOL_CALLS_PER_ROUND 1..32，MODEL_INPUT_CHARS 512..1048576，MODEL_INPUT_TOKENS 128..262144，MODEL_OUTPUT_CHARS 1..1048576，TOOL_TIMEOUT (0,3600] 秒，MODEL_RECOVERY_LIMIT 0..3。未覆盖项保留既有环境值；工具独立时限和会话时限取更小值（仅显式覆盖时）。新增全局 MODEL_RECOVERY_LIMIT 默认 1，0 禁止自动恢复；恢复不得重放工具。
 
 采用 ContextVar，不修改全局配置，线程继承调用上下文。失败测试首先 4 failed；覆盖并行不同轮次、持久化、恢复 0/2、非法安全字段拒绝、实际上下文预算拒绝及 CLI。未新增依赖。
+
+## FREE-11（P2：持久任务队列与一层子代理）
+
+`ENABLE_AGENT_TASKS=false`，启用时必须同时打开会话预算；`AGENT_TASK_CONCURRENCY=2` 限制运行子代理数，`AGENT_TASK_MAX_ACTIVE=16` 限制运行+排队任务。无新增依赖。
+新增 delegate/task_status/cancel_agent_task，CLI `/tasks` 查看最近 20 项、`/tasks cancel ID` 取消。delegate 必须逐次确认，任务文本最多 16000 字符，tool_names 显式取父会话子集，max_rounds 默认 6 且不得超过父会话，delay_seconds 默认 0、最多 86400。子代理不能继续委派或启动长命令。
+子会话拥有空工作区、独立记忆与上下文；继承有效权限/模型/预算，费用归父会话账本，模型调用仍共用总并发限额。任务状态、错误、有限结果存于 state-dir/agent-tasks/；完整对话在对应子会话。查询工具通过正常工具结果配对返回，owner 不匹配拒绝；启动/完成/工具取消审计不含任务正文（确认审计仍含用户需审阅的详情）。
+进程退出、父会话取消均停止子任务并等待写操作收尾；重启将未完成项标为 interrupted，不自动重放。延时调度只在主进程存活时有效；headless 结束时也会取消子任务，因此需在主任务内查询完成结果。cron/webhook/跨进程服务不在本版范围。
+失败测试先运行 3 failed；之后测试独立会话、权限/工具/预算/成本归属、并发限制、取消、重启、确认拒绝和真实线程桥接。模型响应仅在单元测试中使用明确测试桩；未将测试桩当真实模型质量验收。

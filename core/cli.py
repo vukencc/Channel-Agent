@@ -29,6 +29,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /switch ID前缀       切换会话（也可点击左侧）
 /model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
 /tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
+/tasks [cancel ID]  查看当前会话委派任务或取消（启用子代理后）
 /config [JSON|预设]  查看或设置会话预算；default 恢复全局默认
 /policy 档位         readonly/standard/trusted；default 恢复环境默认；无参数查看
 /memory scope 范围   启用管理后选择 session/project/global/default；add/search/edit 使用 JSON
@@ -400,6 +401,17 @@ class AgentCLI:
                         self.manager.set_tool_names(session, names)
                     names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                     self.notice = '当前工具子集：' + ('全部' if names is None else ', '.join(names) or '无工具')
+                elif command == '/tasks':
+                    queue = self.manager.agent_tasks
+                    if queue is None:
+                        raise ValueError('请显式开启 ENABLE_AGENT_TASKS')
+                    if argument:
+                        verb, _, identifier = argument.partition(' ')
+                        if verb != 'cancel':
+                            raise ValueError('用法：/tasks 或 /tasks cancel ID')
+                        queue.cancel(session.id, identifier.strip())
+                    rows = [{'id': row['id'], 'child_id': row['child_id'], 'status': row['status'], 'error': row['error']} for row in queue.records.values() if row['owner'] == session.id][-20:]
+                    self.notice = json.dumps(rows, ensure_ascii=False, indent=2)
                 elif command == '/config':
                     from core.session_limits import effective_limits
                     if argument:

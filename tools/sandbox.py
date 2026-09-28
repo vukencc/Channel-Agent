@@ -63,6 +63,8 @@ class ToolContext:
     tool_call_id: str = ""
     permission_policy: str | None = None
     job_manager: object | None = None
+    agent_tasks: object | None = None
+    event_loop: object | None = None
 
 
 _context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)
