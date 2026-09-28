@@ -5,7 +5,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
-    image: ai-agent-startup:${TAG:-v0.2.0}
+    image: ai-agent-startup:${TAG:-v0.2.1}
     stdin_open: true
     tty: true
     env_file: [../.env]
@@ -13,8 +13,9 @@ services:
       - agent-state:/data/state
       - agent-sandbox:/data/sandbox
       - agent-rag:/data/rag-cache
-    # 需要 run_command 沙箱时放开（先运行 dev/ci_sandbox_probe.py 验证）：
-    # security_opt: ["seccomp=unconfined"]
+    # 容器内 run_command 沙箱需要放开 seccomp（默认已开启，保证开包即用）。
+    # 若不需要命令工具，可注释掉以恢复更严格的默认隔离。
+    security_opt: ["seccomp=unconfined"]
     deploy:
       resources:
         limits:
