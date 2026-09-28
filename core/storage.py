@@ -4,6 +4,7 @@ import copy
 import concurrent.futures
 import shutil
 import threading
+import hashlib
 
 import config
 import fcntl
@@ -306,54 +307,130 @@ class SessionStore:
                 self.errors.append(f'{record["id"]}: {exc}')
         return records
 
-    def memory_path(self, identifier: str) -> Path:
+    def memory_path(self, identifier: str, namespace: str | None = None) -> Path:
         self.directory(identifier)
+        if namespace is not None:
+            if not config.ENABLE_MEMORY_MANAGEMENT:
+                raise ValueError('命名空间需要 ENABLE_MEMORY_MANAGEMENT=true')
+            if namespace == 'session':
+                return self.directory(identifier) / 'memory.md'
+            if namespace == 'global':
+                return self.root / 'memory' / 'global.md'
+            if namespace == 'project':
+                key = hashlib.sha256(str(self.workspace_root).encode()).hexdigest()[:16]
+                return self.root / 'memory' / f'project-{key}.md'
+            raise ValueError('记忆命名空间必须为 session/project/global')
         return self.root / 'shared-memory.md' if config.MEMORY_SHARED else self.directory(identifier) / 'memory.md'
 
-    def memory(self, identifier: str) -> str:
-        path = self.memory_path(identifier)
+    def memory(self, identifier: str, namespace: str | None = None) -> str:
+        path = self.memory_path(identifier, namespace)
         return path.read_text(encoding='utf-8') if path.exists() else ''
 
-    def memory_entries(self, identifier: str) -> list[dict]:
+    def memory_entries(self, identifier: str, namespace: str | None = None) -> list[dict]:
         from core.memory import parse_entries
-        return parse_entries(self.memory(identifier))
+        return parse_entries(self.memory(identifier, namespace))
 
-    def memory_for_model(self, identifier: str, query: str = '') -> str:
+    def memory_for_model(self, identifier: str, query: str = '', namespace: str | None = None) -> str:
         from core.memory import parse_entries, select_memory
-        path = self.memory_path(identifier)
+        path = self.memory_path(identifier, namespace)
         if not path.exists():
             return ''
         with path.open(encoding='utf-8') as stream:
             text = stream.read(config.MEMORY_MAX_CHARS * 8)
         return select_memory(parse_entries(text), query)
 
-    def remember(self, identifier: str, text: str, source: str = 'manual', tags=None):
-        from core.memory import render_entries
+    def remember(self, identifier: str, text: str, source: str = 'manual', tags=None, *, namespace=None, expires_at=None):
+        from core.memory import render_entries, MemoryPatch
         text = text.strip()
         if not text:
             raise ValueError('记忆不能为空')
         with self._memory_lock:
-            entries = self.memory_entries(identifier)
+            entries = self.memory_entries(identifier, namespace)
             if any(entry['text'].strip() == text for entry in entries):
                 return
             if sum(len(entry['text']) for entry in entries) + len(text) > config.MEMORY_MAX_CHARS:
                 raise ValueError('记忆超过 MEMORY_MAX_CHARS，请先整理或删除旧记忆')
             if len(entries) >= 64:
                 raise ValueError('记忆最多 64 条，请先删除不再需要的条目')
-            entries.append({'id': uuid.uuid4().hex[:12], 'text': text, 'created_at': now(),
-                            'source': source, 'tags': tags or []})
-            path = self.memory_path(identifier)
+            entry = {'id': uuid.uuid4().hex[:12], 'text': text, 'created_at': now(), 'source': source, 'tags': tags or []}
+            if config.ENABLE_MEMORY_MANAGEMENT:
+                entry.update(MemoryPatch(text=text, source=source, tags=tags or [], expires_at=expires_at).model_dump(mode='json', exclude_none=True))
+            elif expires_at is not None:
+                raise ValueError('到期管理需要 ENABLE_MEMORY_MANAGEMENT=true')
+            entries.append(entry)
+            if config.ENABLE_MEMORY_MANAGEMENT:
+                self._validate_memory_entries(entries)
+            path = self.memory_path(identifier, namespace)
             path.parent.mkdir(parents=True, exist_ok=True)
             self.atomic_write(path, render_entries(entries))
+            if config.ENABLE_MEMORY_MANAGEMENT:
+                self._audit_memory(identifier, 'memory_add', namespace, entry['id'])
 
-    def remove_memory(self, identifier: str, entry_id: str):
+    def remove_memory(self, identifier: str, entry_id: str, namespace=None):
         from core.memory import render_entries
         with self._memory_lock:
-            entries = self.memory_entries(identifier)
+            entries = self.memory_entries(identifier, namespace)
             remaining = [entry for entry in entries if entry['id'] != entry_id]
             if len(remaining) == len(entries):
                 raise ValueError('记忆 ID 不存在')
-            self.atomic_write(self.memory_path(identifier), render_entries(remaining))
+            self.atomic_write(self.memory_path(identifier, namespace), render_entries(remaining))
+            if config.ENABLE_MEMORY_MANAGEMENT:
+                self._audit_memory(identifier, 'memory_remove', namespace, entry_id)
+
+    def _validate_memory_entries(self, entries):
+        from core.memory import render_entries
+        if (len(entries) > 64 or sum(len(entry['text']) for entry in entries) > config.MEMORY_MAX_CHARS
+                or len(render_entries(entries)) > config.MEMORY_MAX_CHARS * 8):
+            raise ValueError('记忆超过 64 条或 MEMORY_MAX_CHARS/元数据上限；请显式整理旧条目')
+
+    def _audit_memory(self, identifier, event, namespace, entry_id):
+        from core.audit_writer import append_audit
+        from core.log import get_logger
+        try:
+            append_audit(self.directory(identifier) / 'audit.jsonl', json.dumps({
+                'ts': now(), 'event': event, 'session_id': identifier,
+                'namespace': namespace or 'default', 'entry_id': entry_id}, ensure_ascii=False), sync=config.AUDIT_SYNC)
+        except OSError as exc:
+            get_logger(__name__).warning('记忆审计写入失败：%s', exc)
+
+    def search_memory(self, identifier, query='', *, tags=None, source=None, include_expired=False, namespace=None):
+        from core.memory import filter_entries, MemoryQuery, BM25Index
+        if not config.ENABLE_MEMORY_MANAGEMENT:
+            raise ValueError('请显式开启 ENABLE_MEMORY_MANAGEMENT')
+        filters = MemoryQuery(query=query, tags=tags or [], source=source, include_expired=include_expired)
+        entries = filter_entries(self.memory_entries(identifier, namespace), tags=filters.tags,
+                                 source=filters.source, include_expired=filters.include_expired)
+        if not filters.query:
+            return entries
+        ranking = BM25Index([entry['text'] for entry in entries]).search(filters.query, len(entries))
+        return [{**entries[index], 'score': score} for index, score in ranking]
+
+    def edit_memory(self, identifier, entry_id, patch: dict, *, namespace=None):
+        from core.memory import MemoryPatch, render_entries
+        if not config.ENABLE_MEMORY_MANAGEMENT:
+            raise ValueError('请显式开启 ENABLE_MEMORY_MANAGEMENT')
+        changes = MemoryPatch.model_validate(patch).model_dump(mode='json', exclude_unset=True)
+        if not changes:
+            raise ValueError('修改内容不能为空')
+        with self._memory_lock:
+            entries = self.memory_entries(identifier, namespace)
+            for entry in entries:
+                if entry['id'] == entry_id:
+                    entry.update(changes, updated_at=now())
+                    break
+            else:
+                raise ValueError('记忆 ID 不存在')
+            self._validate_memory_entries(entries)
+            self.atomic_write(self.memory_path(identifier, namespace), render_entries(entries))
+            self._audit_memory(identifier, 'memory_edit', namespace, entry_id)
+
+    def clear_memory(self, identifier, namespace=None):
+        with self._memory_lock:
+            path = self.memory_path(identifier, namespace)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.atomic_write(path, '')
+            if config.ENABLE_MEMORY_MANAGEMENT:
+                self._audit_memory(identifier, 'memory_clear', namespace, '')
 
     def export(self, record: dict, format: str = 'md') -> Path:
         return self._export_stream(record, iter(record['messages']), format)
@@ -390,11 +467,11 @@ class SessionStore:
                                 seen = True
                             stream.write('\n  ]' if seen else ']')
                         else:
-                            write_value(self.memory(record['id']) if key == 'memory' else record[key], 2)
+                            write_value(self.memory(record['id'], record.get('memory_namespace')) if key == 'memory' else record[key], 2)
                     stream.write('\n}')
                 else:
                     stream.write(f'# {record["title"]}\n\n会话：{record["id"]}\n\n## 记忆\n')
-                    stream.write(self.memory(record['id']))
+                    stream.write(self.memory(record['id'], record.get('memory_namespace')))
                     for message in messages:
                         stream.write('\n\n## ' + message['role'] + '\n' + str(message.get('content') or ''))
                         if message.get('tool_calls'):

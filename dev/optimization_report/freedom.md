@@ -214,3 +214,8 @@ TOOL_ROOTS 默认空；显式 @名称/路径用于 read/list/stat/glob，rag_sea
 RAG_SOURCES 显式配置只读命名库与可选三档阈值；工具支持有界 top_k、带时区 updated_after（文件 mtime）。
 过滤在两路候选截断前生效，过滤向量查询用 exact；双库倒排命名空间与内容隔离，无全局 DOC_DIR 切换。默认单库输出保持。
 完整回归 269 passed，真实命名库/过滤及原完整 RAG 3 passed；未实现可选 URL 导入或按库模型切换，范围见 docs/optimization-progress.md。
+
+### FREE-08（完成：显式记忆管理）
+
+ENABLE_MEMORY_MANAGEMENT 默认关闭；命名空间、标签/来源搜索、到期排除与确认后原子编辑已实现。到期不删除、容量不放宽、候选不自动采纳。
+CLI scope/add/search/edit 及原记忆命令遵循所选空间，导出/持久化与并发文件锁保持。专项 10 passed，完整回归 274 passed；配置与状态目录内命名空间边界见 docs/optimization-progress.md。

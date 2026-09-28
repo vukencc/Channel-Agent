@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import logging
+import json
 import time
 from pathlib import Path
 
@@ -27,6 +28,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
 /tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
 /policy 档位         readonly/standard/trusted；default 恢复环境默认；无参数查看
+/memory scope 范围   启用管理后选择 session/project/global/default；add/search/edit 使用 JSON
 /rename 名称         重命名当前会话
 /prompt 指令         设置当前 Agent 的系统指令（空闲时）
 /remember 内容       保存当前会话的长期记忆
@@ -279,11 +281,49 @@ class AgentCLI:
         self._ui_jobs.add(task)
         task.add_done_callback(self._ui_jobs.discard)
 
+    def memory_command(self, session, argument):
+        """显式管理用户记忆；修改/删除仍由当前会话的确认流程处理。"""
+        from core.memory import MemoryPatch, MemoryQuery
+        verb, _, payload = argument.partition(' ')
+        payload = payload.strip()
+        namespace = session.record.get('memory_namespace')
+        if not config.ENABLE_MEMORY_MANAGEMENT and argument != 'scope default':
+            raise ValueError('请先显式开启 ENABLE_MEMORY_MANAGEMENT')
+        if verb == 'scope':
+            if (session.confirmation or self.pending_forget == session.id
+                    or getattr(self, 'pending_memory_remove', (None,))[0] == session.id
+                    or getattr(self, 'pending_memory_edit', (None,))[0] == session.id):
+                raise ValueError('请先处理当前待确认操作，再切换记忆空间')
+            if payload:
+                self.manager.set_memory_namespace(session, None if payload == 'default' else payload)
+            self.notice = '记忆空间：' + str(session.record.get('memory_namespace') or 'default')
+        elif verb == 'search':
+            values = json.loads(payload) if payload.startswith('{') else {'query': payload}
+            query = MemoryQuery.model_validate(values).model_dump()
+            self.disk_job(lambda: self.store.search_memory(session.id, namespace=namespace, **query),
+                          lambda rows: json.dumps(rows, ensure_ascii=False, indent=2))
+        elif verb == 'add':
+            values = MemoryPatch.model_validate_json(payload).model_dump(mode='json', exclude_unset=True)
+            if not values.get('text'):
+                raise ValueError('add JSON 必须包含非空 text')
+            self.disk_job(lambda: self.store.remember(session.id, namespace=namespace, **values),
+                          lambda _: '记忆已保存，使用 /memory 查看条目 ID。')
+        elif verb == 'edit':
+            if session.confirmation:
+                raise ValueError('请先处理工具确认')
+            entry_id, _, raw = payload.partition(' ')
+            values = MemoryPatch.model_validate_json(raw).model_dump(mode='json', exclude_unset=True)
+            if not values:
+                raise ValueError('edit JSON 不能为空')
+            self.pending_memory_edit = (session.id, entry_id, values, namespace)
+            self.notice = f'确认修改记忆 {entry_id}：{json.dumps(values, ensure_ascii=False)}？输入 /yes 或 /no。'
+
     def handle(self, value):
         if not value:
             return
         try:
             session = self.active
+            namespace = session.record.get('memory_namespace')
             if value.startswith('//') or not value.startswith('/'):
                 if session.confirmation:
                     raise ValueError('当前会话正在等待确认，请 /yes 或 /no；也可切换其他会话')
@@ -329,34 +369,44 @@ class AgentCLI:
                 elif command == '/remember':
                     if not argument:
                         raise ValueError('请输入要记住的内容')
-                    self.disk_job(lambda: self.store.remember(session.id, argument),
+                    self.disk_job(lambda: self.store.remember(session.id, argument, namespace=namespace),
                                   lambda _: '记忆已保存，下次模型请求时生效。')
+                elif command == '/memory' and argument.partition(' ')[0] in {'scope', 'add', 'search', 'edit'}:
+                    self.memory_command(session, argument)
                 elif command == '/memory' and argument.startswith('rm '):
                     if session.confirmation:
                         raise ValueError('请先处理工具确认')
-                    self.pending_memory_remove = (session.id, argument[3:].strip())
+                    self.pending_memory_remove = (session.id, argument[3:].strip(), namespace)
                     self.notice = '确认删除指定记忆？输入 /yes 或 /no。'
                 elif command == '/memory' and argument == 'candidates':
                     self.disk_job(lambda: (self.store.directory(session.id) / 'memory-candidates.json').read_text(),
                                   lambda text: '候选尚未注入；用 /remember 内容 明确采纳：\n' + text)
                 elif command == '/memory':
-                    self.disk_job(lambda: self.store.memory(session.id),
-                                  lambda text: f'记忆文件：{self.store.directory(session.id) / "memory.md"}\n' + (text or '（空）'))
+                    self.disk_job(lambda: self.store.memory(session.id, namespace),
+                                  lambda text: f'记忆文件：{self.store.memory_path(session.id, namespace)}\n' + (text or '（空）'))
                 elif command == '/forget':
                     if session.confirmation:
                         raise ValueError('请先处理工具确认')
                     self.pending_forget = session.id
+                    self.pending_forget_namespace = namespace
                 elif command in {'/yes', '/no'}:
                     if session.confirmation:
                         self.manager.decide(session, command == '/yes')
+                    elif getattr(self, 'pending_memory_edit', (None,))[0] == session.id:
+                        _, entry_id, patch, edit_namespace = self.pending_memory_edit
+                        self.pending_memory_edit = (None,)
+                        if command == '/yes':
+                            self.disk_job(lambda: self.store.edit_memory(session.id, entry_id, patch, namespace=edit_namespace),
+                                          lambda _: '记忆条目已原子更新。')
                     elif getattr(self, 'pending_memory_remove', (None,))[0] == session.id:
-                        _, entry_id = self.pending_memory_remove
+                        _, entry_id, remove_namespace = self.pending_memory_remove
                         self.pending_memory_remove = (None,)
                         if command == '/yes':
-                            self.disk_job(lambda: self.store.remove_memory(session.id, entry_id), lambda _: '记忆条目已删除。')
+                            self.disk_job(lambda: self.store.remove_memory(session.id, entry_id, remove_namespace), lambda _: '记忆条目已删除。')
                     elif self.pending_forget == session.id:
                         if command == '/yes':
-                            self.disk_job(lambda: self.store.atomic_write(self.store.memory_path(session.id), ''), lambda _: '记忆已清空。')
+                            forget_namespace = getattr(self, 'pending_forget_namespace', None)
+                            self.disk_job(lambda: self.store.clear_memory(session.id, forget_namespace), lambda _: '记忆已清空。')
                         self.pending_forget = None
                     else:
                         raise ValueError('当前会话没有待确认操作')

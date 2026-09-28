@@ -1,9 +1,64 @@
 """可读条目文件和有界相关记忆选择；兼容旧 Markdown。"""
 import hashlib
 import json
+from datetime import datetime, timezone
+from typing import Annotated
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import config
 from rag.lexical import BM25Index
+
+
+Tag = Annotated[str, Field(min_length=1, max_length=32)]
+
+
+class MemoryPatch(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    text: str | None = Field(default=None, min_length=1)
+    tags: list[Tag] | None = Field(default=None, max_length=8)
+    source: str | None = Field(default=None, min_length=1, max_length=64)
+    expires_at: datetime | None = None
+
+    @field_validator('text', 'tags', 'source')
+    @classmethod
+    def no_explicit_null(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError('文本、标签与来源不能显式为空值')
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator('expires_at')
+    @classmethod
+    def expiry_timezone(cls, value):
+        if value is not None and value.tzinfo is None:
+            raise ValueError('过期时间必须带时区')
+        return value
+
+
+class MemoryQuery(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    query: str = ''
+    tags: list[Tag] = Field(default_factory=list, max_length=8)
+    source: str | None = None
+    include_expired: bool = False
+
+
+def filter_entries(entries, *, tags=None, source=None, include_expired=False):
+    selected = []
+    for entry in entries:
+        if tags and not set(tags).issubset(entry.get('tags', [])):
+            continue
+        if source is not None and entry.get('source') != source:
+            continue
+        if not include_expired and entry.get('expires_at'):
+            try:
+                expiry = datetime.fromisoformat(entry['expires_at'])
+                if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+                    continue
+            except (TypeError, ValueError):
+                # 损坏的到期元数据不作为有效事实注入；原始文件不删除。
+                continue
+        selected.append(entry)
+    return selected
 
 
 def parse_entries(text: str) -> list[dict]:
@@ -28,6 +83,8 @@ def render_entries(entries: list[dict]) -> str:
 
 
 def select_memory(entries: list[dict], query: str) -> str:
+    if config.ENABLE_MEMORY_MANAGEMENT:
+        entries = filter_entries(entries)
     if not entries:
         return ''
     ranking = BM25Index([entry['text'] for entry in entries]).search(query, config.MEMORY_TOP_K) if query else []

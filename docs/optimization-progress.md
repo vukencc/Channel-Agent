@@ -25,7 +25,7 @@
 - [x] P1：FREE-01 命名只读工具根
 - [x] P1：FREE-04 权限档位与范围白名单
 - [x] P1：FREE-07 多知识库与过滤
-- [ ] P1：FREE-08 记忆管理
+- [x] P1：FREE-08 显式记忆管理
 - [ ] P1：FREE-09 headless
 - [ ] P1：FREE-10 分支与重发
 - [ ] P2：FREE-02 网络与长任务设计、实现
@@ -330,3 +330,19 @@ RAG 使用显式根参数与独立磁盘词法命名空间，不修改全局 DOC
 `uv run pytest -m 'not integration' -q`：**269 passed, 2 skipped, 5 deselected，9.10s**。
 真实本地模型：`RUN_RAG_INTEGRATION=1 uv run pytest dev/tests/test_free07_sources.py dev/tests/test_rag_integration.py -m integration -q`：**3 passed，17.36s**。
 真实工程用例使用原知识库临时副本，验证 top_k/命名库/时间过滤；原有四阶段/阈值后置测试保留，不是新质量评测或阈值搜索。
+
+## FREE-08
+
+`ENABLE_MEMORY_MANAGEMENT=false` 默认旧路径/隔离/容量/人工采纳不变。开启后可用：
+- `/memory scope session|project|global|default`：选择并持久化命名空间；default 沿用 MEMORY_SHARED 原配置。
+- `/memory add {"text":"事实","tags":["project"],"source":"manual","expires_at":"2100-01-01T00:00:00Z"}`。
+- `/memory search 关键词` 或 JSON `{"query":"关键词","tags":["project"],"source":"manual","include_expired":false}`。
+- `/memory edit ID {"text":"修订内容"}`，展示变更后 `/yes` 才原子更新；`expires_at:null` 可取消到期设置。
+session 使用会话文件，project 在同一状态目录内按工作区根哈希分组，global 为同一状态目录共享，**不是跨状态目录/跨进程全局服务**。
+scope 不复制或迁移旧记忆，切换仅改变当前会话读取目标；/remember、删除、清空和导出均使用所选空间。
+开启管理后到期/到期元数据无效的条目不注入、不出现在默认搜索，但原文保留，过期条目仍计容量，不自动删除。
+64 条与 MEMORY_MAX_CHARS 上限保持；标签最多 8 个、每个 32 字符，序列化元数据另有有界校验。
+新管理写入附记忆审计（不记录正文），沿用原子写与文件锁；未实现自动采纳或时间衰减排序，不改变人工采纳语义。
+先失败测试覆盖缺少命名空间、到期、搜索/编辑；补充 CLI 编辑拒绝/确认、导出/恢复与开关隔离。
+验证：`uv run pytest dev/tests/test_free08_memory_management.py dev/tests/test_bug14_memory.py dev/tests/test_cli.py -q`：**10 passed**；
+完整 `uv run pytest -m 'not integration' -q`：**274 passed, 2 skipped, 5 deselected，8.38s**。无新依赖。
