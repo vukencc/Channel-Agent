@@ -8,6 +8,9 @@ from tools.base import Tool, TOOL_REGISTRY, register_tool
 from tools import command, file_crud, rag_search, web_search  # noqa: F401  (仅为了触发注册)
 
 import config
+if config.ENABLE_COMMAND_JOBS:
+    from tools.command_jobs import register_command_jobs
+    register_command_jobs()
 if config.ENABLE_FILE_EXTRAS:
     from tools.file_extras import register_file_extras
     register_file_extras()

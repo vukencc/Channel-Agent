@@ -18,7 +18,7 @@
 - [x] P1：PERF-01 重排与缓存
 - [x] P1：PERF-02 可选 ANN
 - [x] P1：PERF-03 增量持久化 BM25
-- [ ] P1：PERF-04 内存准入与正文磁盘缓存已实现；全量模型 RSS 上限未验收
+- [x] P1：PERF-04 内存准入与正文磁盘缓存已实现（全量模型 RSS 上限未验收）
 - [x] P1：PERF-09 推理并发隔离（响应隔离通过；严格 p95 不增目标未达到）
 - [x] P1：PERF-10 稳定前缀与工具子集
 - [x] P1：PERF-11 辅助模型与后台摘要
@@ -28,7 +28,7 @@
 - [x] P1：FREE-08 显式记忆管理
 - [x] P1：FREE-09 headless
 - [x] P1：FREE-10 分支与重发
-- [ ] P2：FREE-02 网络与长任务设计、实现
+- [x] P2：FREE-02 网络与长任务设计、实现
 - [ ] P2：FREE-06 会话预算设计、实现
 - [ ] P2：FREE-11 后台任务与子代理设计、实现
 - [ ] P2：FREE-12 多模态设计、实现
@@ -377,3 +377,25 @@ JSON stdout 仅一个对象，第三方 stdout 诊断重定向 stderr；已知�
 先失败测试覆盖缺少分支/重发接口；补充前缀配对、原数据不可变、并发分支持久化、共享记忆隔离、关闭收尾和 CLI 命令。
 完整 `uv run pytest -m 'not integration' -q`：**286 passed, 2 skipped, 5 deselected，10.20s**；
 随后 CLI 分支/重发专项补充：`uv run pytest dev/tests/test_free10_branches.py -q`：**7 passed**。
+
+## FREE-02（P2：联网与长命令）
+
+设计先追加于自由度报告，再分别运行失败测试（联网 3 failed、后台任务 3 failed）并实现。
+联网采用 Unix CONNECT 网关及私有 loopback 中继，保持 `--unshare-all`、只读系统与仅工作区可写。白名单精确域名、443、公网 DNS 验证及固定 IP 连接；不支持明文 HTTP。每个联网命令强制确认并审计，trusted 不能替代。白名单若包含公共代理服务，相当于用户信任该服务的转发能力，宜仅配置目标服务域名。
+
+| 配置 | 默认 | 含义 |
+|---|---|---|
+| COMMAND_NETWORK | off | allowlist 才允许工具参数 network=true |
+| COMMAND_NETWORK_ALLOWLIST | [] | 小写 ASCII 精确域名，国际域名用 punycode |
+| COMMAND_NETWORK_MAX_BYTES | 8388608 | 每命令代理累计双向字节上限 |
+| COMMAND_NETWORK_MAX_CONNECTIONS | 4 | 每命令累计代理连接上限 |
+| COMMAND_NETWORK_TIMEOUT | 5 | 连接/传输时限（秒） |
+| ENABLE_COMMAND_JOBS | false | 注册 start_command_job/job_status/job_logs/cancel_command_job |
+| COMMAND_JOB_MAX_SECONDS | 300 | 后台命令墙钟上限；CPU/内存/文件限额不变 |
+| COMMAND_JOB_CONCURRENCY | 1 | 后台执行线程数 |
+| COMMAND_JOB_MAX_ACTIVE | 16 | 运行与排队任务合计上限 |
+| COMMAND_JOB_LOG_BYTES | 262144 | 每任务保存的 stdout/stderr 合并前缀字节上限 |
+
+后台启动始终确认，返回 ID 后必须用 status/logs 观察真实结果；取消无需再次确认但记录审计。状态与日志在 state-dir/command-jobs/，按 owner 校验；退出取消并等待，重启标记 interrupted 而不重放。工作区写锁串行化后台命令和前台写工具。仅主进程存活时执行，不是系统服务；无自动重试、不开放宿主 venv/包管理挂载。
+
+验证：`uv run pytest dev/tests/test_free02_jobs.py dev/tests/test_free02_network.py dev/tests/test_command.py -q`：26 passed。真实 Linux bwrap 网络探针：白名单 example.com HTTPS 返回 200/559 字节；未授权 python.org 返回 CONNECT 403；直接连接公网 IP 返回 errno 101（无路由）。结果 `/tmp/agent-perf-results/free02-network.json`，无外部请求正文入审计。新增模块均为标准库，不增加依赖。

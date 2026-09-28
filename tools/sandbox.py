@@ -62,6 +62,7 @@ class ToolContext:
     turn_id: str = ""
     tool_call_id: str = ""
     permission_policy: str | None = None
+    job_manager: object | None = None
 
 
 _context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)
@@ -235,7 +236,7 @@ def _trusted_rule(action: str, paths: list[str] | None, command: str | None) -> 
 
 
 def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[str] | None = None,
-                   command: str | None = None) -> bool:
+                   command: str | None = None, force_confirmation: bool = False) -> bool:
     """
     风险操作确认：由策略判定为风险后调用。
 
@@ -250,7 +251,7 @@ def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[st
         audit('confirm', action=action, detail=detail, reason=reason, allowed=False,
               decision_source='readonly_policy' if policy == 'readonly' else 'cancelled')
         return False
-    if policy == 'trusted':
+    if policy == 'trusted' and not force_confirmation:
         try:
             rule = _trusted_rule(action, paths, command)
         except (ValueError, SandboxError):
@@ -275,7 +276,7 @@ def check_command(command: str) -> list[str]:
     return ["/bin/sh", "-c", command]
 
 
-def isolated_command(argv: list[str]) -> list[str]:
+def isolated_command(argv: list[str], *, network_socket: Path | None = None) -> list[str]:
     """Minimal Linux filesystem, private processes/network, writable workspace only.
 
     Never fall back to executing on the host if isolation is unavailable.
@@ -292,11 +293,23 @@ def isolated_command(argv: list[str]) -> list[str]:
             command += ["--symlink", os.readlink(path), str(path)]
         elif path.is_dir():
             command += ["--ro-bind", str(path), str(path)]
+    if network_socket is not None:
+        relay = Path(__file__).with_name('network_relay.py')
+        command += ['--dir', '/run/agent-network', '--ro-bind', str(network_socket),
+                    '/run/agent-network/proxy.sock', '--ro-bind', str(relay), '/run/agent-network/relay.py']
+        certificates = Path('/etc/ssl/certs')
+        if certificates.is_dir():
+            command += ['--ro-bind', str(certificates), str(certificates)]
+        argv = ['/usr/bin/python3', '/run/agent-network/relay.py', *argv]
     command += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                 "--bind", str(sandbox_root()), "/workspace", "--chdir", "/workspace",
                 "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
                 "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
-                "--setenv", "LANG", "C.UTF-8", "--", *argv]
+                "--setenv", "LANG", "C.UTF-8"]
+    if network_socket is not None:
+        for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+            command += ['--setenv', name, 'http://127.0.0.1:8877']
+    command += ['--', *argv]
     launcher = shutil.which('prlimit', path='/usr/bin:/bin')
     if not launcher:
         raise SandboxError('需要 prlimit 资源限制；拒绝无配额执行')

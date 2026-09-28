@@ -8,6 +8,7 @@ import os
 import signal
 import time
 import selectors
+from contextlib import nullcontext
 
 import config
 from pydantic import BaseModel, Field
@@ -38,14 +39,23 @@ class RunCommandArgs(BaseModel):
         description="要执行的命令，例如 ls -la、python3 -c 'print(1+1)' 或 sh -c 'ls | head'"
     )
     reason: str = Field(default="", description="说明执行目的，会显示在确认提示里")
+    network: bool = Field(default=False, description="显式请求白名单 HTTPS 网络，必须逐次确认；默认断网")
 
 
 @register_tool(RunCommandArgs, name="run_command")
-def run_command(command: str, reason: str = "") -> str:
+def run_command(command: str, reason: str = "", network: bool = False) -> str:
     """
     在沙箱目录内执行一条命令。
     """
     try:
+        if network:
+            from tools.network_proxy import validate_network_config
+            if config.COMMAND_NETWORK != 'allowlist':
+                raise SandboxError('联网命令未启用')
+            try:
+                validate_network_config()
+            except ValueError as exc:
+                raise SandboxError(str(exc)) from exc
         check_workspace_quota()
         argv = check_command(command)
         isolated = isolated_command(argv)
@@ -53,8 +63,24 @@ def run_command(command: str, reason: str = "") -> str:
         audit("blocked", action="run_command", command=command, reason=str(exc))
         return f"[已拦截] {exc}"
 
-    if not ask_permission("run_command", command, reason, command=command):
+    detail = command + (f'\n联网白名单：{config.COMMAND_NETWORK_ALLOWLIST}' if network else '')
+    if not ask_permission("run_command", detail, reason, command=command, force_confirmation=network):
         return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
+
+    from tools.network_proxy import NetworkProxy
+    try:
+        with NetworkProxy() if network else nullcontext() as proxy:
+            if proxy is not None:
+                isolated = isolated_command(argv, network_socket=proxy.path)
+            return _execute(command, reason, argv, isolated)
+    except (OSError, ValueError, SandboxError) as exc:
+        audit('blocked', action='run_command', reason=str(exc))
+        return f'[已拦截] 命令隔离初始化失败：{exc}'
+
+
+def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None) -> str:
+    """共享执行器；调用方必须先完成确认。后台任务也使用相同配额及进程组清理。"""
+    timeout = config.COMMAND_TIMEOUT if timeout is None else timeout
 
     try:
         check_workspace_quota()
@@ -67,7 +93,7 @@ def run_command(command: str, reason: str = "") -> str:
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        deadline = time.monotonic() + config.COMMAND_TIMEOUT
+        deadline = time.monotonic() + timeout
         next_quota_check = time.monotonic() + config.COMMAND_QUOTA_INTERVAL
         buffers = {proc.stdout: bytearray(), proc.stderr: bytearray()}
         clipped = set()
@@ -86,12 +112,14 @@ def run_command(command: str, reason: str = "") -> str:
                         next_quota_check = time.monotonic() + config.COMMAND_QUOTA_INTERVAL
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise subprocess.TimeoutExpired(isolated, config.COMMAND_TIMEOUT)
+                        raise subprocess.TimeoutExpired(isolated, timeout)
                     for key, _ in selector.select(min(.1, remaining)):
                         data = os.read(key.fileobj.fileno(), 8192)
                         if not data:
                             selector.unregister(key.fileobj)
                             continue
+                        if on_output is not None:
+                            on_output(data)
                         buffer = buffers[key.fileobj]
                         room = max(0, limit - len(buffer))
                         buffer.extend(data[:room])
@@ -116,8 +144,8 @@ def run_command(command: str, reason: str = "") -> str:
         return f"[已拦截] {exc}"
     except subprocess.TimeoutExpired:
         audit("timeout", action="run_command", command=command,
-              timeout=config.COMMAND_TIMEOUT)
-        return f"[超时] 命令超过 {config.COMMAND_TIMEOUT:g} 秒未结束，已终止。请检查死循环或拆分长任务。"
+              timeout=timeout)
+        return f"[超时] 命令超过 {timeout:g} 秒未结束，已终止。请检查死循环或拆分长任务。"
     except FileNotFoundError:
         audit("failed", action="run_command", command=command, error="命令不存在")
         return f"[失败] 找不到命令：{argv[0]}"

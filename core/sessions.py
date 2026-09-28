@@ -70,6 +70,8 @@ class SessionManager:
         self.summary_tasks = set()
         self.fork_tasks = set()
         self.closing = False
+        from core.command_jobs import CommandJobs
+        self.command_jobs = CommandJobs(store) if config.ENABLE_COMMAND_JOBS else None
         self.read_slots = asyncio.Semaphore(config.TOOL_CONCURRENCY)
         # 显式启用后，重推理不占文件工具的线程与并发额度。
         self.rag_slots = asyncio.Semaphore(config.RAG_INFERENCE_CONCURRENCY) if config.RAG_INFERENCE_CONCURRENCY else None
@@ -219,7 +221,7 @@ class SessionManager:
             context = ToolContext(self.store.workspace(session.id), directory / 'audit.jsonl',
                                   lambda prompt, timeout: self._confirm(session, loop, prompt, timeout),
                                   tool_cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
-                                  tool_call_id=call['id'], permission_policy=self.permission_override or session.record.get('permission_policy'))
+                                  tool_call_id=call['id'], job_manager=self.command_jobs, permission_policy=self.permission_override or session.record.get('permission_policy'))
             with tool_context(context):
                 names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                 if names is not None and name not in names:
@@ -227,6 +229,9 @@ class SessionManager:
                     return '[拒绝] 工具不在当前会话工具子集中。'
                 if session.cancelled.is_set():
                     return '[已取消] 工具尚未执行。'
+                if self.command_jobs is not None and tool.concurrency == 'serial':
+                    with self.command_jobs.guard(context.root, tool_cancelled):
+                        return tool.run(call['function']['arguments'])
                 return tool.run(call['function']['arguments'])
         isolated_rag = name == 'rag_search' and self.rag_executor is not None
         slots = self.rag_slots if isolated_rag else self.read_slots if tool.concurrency == 'read' else None
@@ -595,6 +600,8 @@ class SessionManager:
 
     async def shutdown(self):
         self.closing = True
+        if self.command_jobs is not None:
+            self.command_jobs.stop()
         for task in self.fork_tasks:
             task.cancel()
         await asyncio.gather(*list(self.fork_tasks), return_exceptions=True)
@@ -614,6 +621,8 @@ class SessionManager:
         await asyncio.gather(*list(self.summary_tasks), return_exceptions=True)
         if self.tool_workers:
             await asyncio.gather(*list(self.tool_workers), return_exceptions=True)
+        if self.command_jobs is not None:
+            await asyncio.to_thread(self.command_jobs.close)
         if self.rag_executor:
             self.rag_executor.shutdown(wait=True)
         await self.flush()

@@ -77,6 +77,16 @@ SANDBOX_DIR = env_path("SANDBOX_DIR", "crud_tests")   # 文件/命令操作的�
 CONFIRM_TIMEOUT = env_float("CONFIRM_TIMEOUT", 30.0)  # 风险操作确认等待秒数，超时视为拒绝
 COMMAND_TIMEOUT = env_float("COMMAND_TIMEOUT", 10.0)  # 单条命令最长执行秒数
 COMMAND_QUOTA_INTERVAL = env_float("COMMAND_QUOTA_INTERVAL", 0.1)  # 保持原 0.1s 采样间隔，避免输出触发额外扫描
+ENABLE_COMMAND_JOBS = env_bool('ENABLE_COMMAND_JOBS', False)
+COMMAND_JOB_MAX_SECONDS = env_float('COMMAND_JOB_MAX_SECONDS', 300)
+COMMAND_JOB_CONCURRENCY = env_int('COMMAND_JOB_CONCURRENCY', 1)
+COMMAND_JOB_MAX_ACTIVE = env_int('COMMAND_JOB_MAX_ACTIVE', 16)
+COMMAND_JOB_LOG_BYTES = env_int('COMMAND_JOB_LOG_BYTES', 262144)
+COMMAND_NETWORK = os.getenv('COMMAND_NETWORK', 'off').strip().lower()
+COMMAND_NETWORK_ALLOWLIST = json.loads(os.getenv('COMMAND_NETWORK_ALLOWLIST', '[]'))
+COMMAND_NETWORK_MAX_BYTES = env_int('COMMAND_NETWORK_MAX_BYTES', 8 * 1024 * 1024)
+COMMAND_NETWORK_MAX_CONNECTIONS = env_int('COMMAND_NETWORK_MAX_CONNECTIONS', 4)
+COMMAND_NETWORK_TIMEOUT = env_float('COMMAND_NETWORK_TIMEOUT', 5.0)
 AUDIT_SYNC = env_bool("AUDIT_SYNC", False)  # 默认保持内核追加；开启后每事件 fsync
 TOOL_MAX_OUTPUT = env_int("TOOL_MAX_OUTPUT", 20000)   # 工具输出（命令/文件内容）最大字符数，超出截断
 FILE_READ_CHARS = env_int("FILE_READ_CHARS", 6000)
@@ -147,6 +157,11 @@ def validate_runtime_config() -> None:
         errors.append('RAG_RERANK_DEVICE 必须是 cpu/cuda/mps/auto')
     if RAG_RERANK_DTYPE not in {'fp32', 'fp16'}:
         errors.append('RAG_RERANK_DTYPE 必须是 fp32/fp16')
+    from tools.network_proxy import validate_network_config
+    try:
+        validate_network_config()
+    except ValueError as exc:
+        errors.append(str(exc))
     if WEB_SEARCH_CONFIRM not in {'always', 'off'}:
         errors.append('WEB_SEARCH_CONFIRM 必须为 always 或 off')
     for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:

@@ -231,3 +231,15 @@ CLI scope/add/search/edit 及原记忆命令遵循所选空间，导出/持久�
 显式 ENABLE_SESSION_BRANCHES；/branch、/resend、/retry 创建新会话，原日志/工作区不改写，截断点必须保持完整工具配对。
 空工作区有明确上下文说明，记忆为独立快照，权限/工具配置继承；侧栏展示 parent_id，关闭等待快照线程。
 完整回归 286 passed，后续专项 7 passed；本版不复制/共享工作区，详细边界见 docs/optimization-progress.md。
+
+### FREE-02 实施前设计（P2）
+
+默认保留 10 秒、Bubblewrap --unshare-all、断网与逐次确认。联网命令必须同时开启 COMMAND_NETWORK=allowlist、配置精确域名白名单，并由单次工具参数 network=true 请求；每次联网单独确认，trusted 规则不能代替。
+不移除网络命名空间：主进程提供有界 Unix socket CONNECT 代理；沙箱只读挂载该 socket 和纯标准库中继脚本，在私有 loopback 提供 HTTP 代理。命令无直连外网路由。
+仅允许白名单域名的 443 端口；解析后拒绝非公网 IP，连接固定已验证 IP，防止 DNS 重绑定；不代理明文 HTTP、不跟随任意主机、不记录请求正文。限制连接数、字节数与等待时间，退出关闭代理；沙箱能力不足时拒绝。
+长任务使用显式 ENABLE_COMMAND_JOBS 与 start/status/logs/cancel 工具，复用相同命令引擎、确认、配额与进程组回收。状态/有界日志按会话保存，重启标记中断而不重放命令；任务占用所属工作区写锁，前台写工具排队，读工具可查看进度。
+验收先写拒绝/绕过/跨会话/取消/恢复测试，再实际验证网络代理与 bwrap；环境网络失败必须作为限制记录，不能替换为模拟通过。
+
+### FREE-02（完成：受限联网与持久长命令最小版本）
+
+按以上设计实现；默认 10 秒断网不变，后台工具默认关闭。新增测试先复现 6 项失败，专项合计 26 passed；实际 bwrap 白名单 HTTPS 200，非白名单 CONNECT 403，直连 errno 101。跨 owner、取消、超时、日志上限、写锁及恢复不重放均已验证。配置/边界与结果路径见 docs/optimization-progress.md；项目/venv 挂载保持关闭，跨平台后端另见 FREE-15。
