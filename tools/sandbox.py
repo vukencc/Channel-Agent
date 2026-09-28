@@ -14,6 +14,8 @@ import select
 import sys
 from pathlib import Path
 from typing import Callable
+from functools import lru_cache
+import time
 
 import config
 from core.log import get_logger
@@ -21,6 +23,18 @@ from core.audit_writer import append_audit
 
 logger = get_logger(__name__)
 _audit_encoder = json.JSONEncoder(ensure_ascii=False)
+_audit_keys = frozenset({'session_id', 'turn_id', 'tool_call_id', 'ts', 'event'})
+
+
+@lru_cache(maxsize=64)
+def _audit_second(second):
+    return datetime.datetime.fromtimestamp(second).isoformat(timespec='seconds')
+
+
+@lru_cache(maxsize=64)
+def _audit_prefix(session_id, turn_id, tool_call_id, stamp, event):
+    return _audit_encoder.encode({'session_id': session_id, 'turn_id': turn_id,
+        'tool_call_id': tool_call_id, 'ts': stamp, 'event': event})
 
 # 确认实现可被替换（测试或自定义 UI）；返回 True 表示允许执行
 confirmer: Callable[[str, float], bool] | None = None
@@ -118,19 +132,18 @@ def _audit_path() -> Path:
 def audit(event: str, **fields) -> None:
     """写一条审计记录（文件 + 日志）。审计写入失败不影响主流程。"""
     context = _context.get()
-    record = {
-        "session_id": context.root.name if context else None,
-        "turn_id": context.turn_id if context else None,
-        "tool_call_id": context.tool_call_id if context else None,
-        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
-        "event": event,
-        **fields,
-    }
-    line = _audit_encoder.encode(record)
+    prefix = _audit_prefix(context.root.name if context else None,
+        context.turn_id if context else None, context.tool_call_id if context else None,
+        _audit_second(int(time.time())), event)
+    if not _audit_keys.isdisjoint(fields):
+        # 兼容既有调用方显式覆盖公共字段的行为。
+        line = _audit_encoder.encode({**json.loads(prefix), **fields})
+    else:
+        line = prefix[:-1] + ', ' + _audit_encoder.encode(fields)[1:] if fields else prefix
     logger.info("[审计] %s", line)
 
     try:
-        append_audit(_audit_path(), line, sync=config.AUDIT_SYNC)
+        append_audit(context.audit_path if context else config.AUDIT_LOG, line, sync=config.AUDIT_SYNC)
     except OSError as exc:
         logger.warning("审计日志写入失败：%s", exc)
 

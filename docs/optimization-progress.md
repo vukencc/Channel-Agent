@@ -9,7 +9,7 @@
 - [x] P0：PERF-05 会话懒加载
 - [x] P0：PERF-06 上下文单次序列化
 - [x] P0：PERF-07 配额节流
-- [ ] P0：PERF-08 审计句柄（实现与回归完成，50% 性能目标未达）
+- [x] P0：PERF-08 审计句柄（补充优化与五次复测已达标）
 - [x] P0：PERF-12 流式导出
 - [x] P0：FREE-03 文件工具
 - [x] P0：FREE-05 模型参数
@@ -141,3 +141,15 @@ RAG_RETRY_LIMIT=2 参数化提示词中的重试建议（不是新的强制重�
 完整离线回归：222 passed, 3 deselected（6.98s）；随后新增快照专项 3 passed。
 验证命令：`uv run pytest -m 'not integration' -q`；`uv run pytest dev/tests/test_free16_prompt_templates.py -q`。
 无新依赖。
+
+## PERF-08 补充验收
+
+继续保留每事件 inode 校验；缓存最多 64 组公共审计字段及秒级格式化时间，动态字段仍逐条编码和内核追加。
+补充优化前/后单次 **0.076666 → 0.069936 秒**。随后扩大为 5 次、每次 10,000 事件并逐条核对编号的复测：
+- 历史提交 3ae9a2a 的真实 audit/_audit_path 函数：0.200208、0.172234、0.156593、0.153286、0.145653s，中位 **0.156593s**。
+- 当前实现：0.075105、0.049811、0.047309、0.044647、0.043507s，中位 **0.047309s**，减少 **69.79%**。
+历史实现从 Git 解析并执行，不是模拟输出；未改写工作树回退。早期未达标的实测仍保留，不能混用单次与五次中位口径。
+命令：`uv run python -m dev.perf.benchmark audit --baseline-ref 3ae9a2a --output /tmp/agent-perf-results/perf08-five-before.json`；
+去掉 `--baseline-ref` 输出 after 文件。微基准为临时目录，无 fsync，不能推断 HDD/WSL 全部部署环境增益。
+验证：`uv run pytest dev/tests/test_perf08_audit.py dev/tests/test_file_crud.py dev/tests/test_command.py -q`：49 passed。
+新增秒边界与覆盖公共字段兼容测试；日志格式与每条写入安全语义保持。

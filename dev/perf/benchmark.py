@@ -37,12 +37,13 @@ def main():
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline-ref', help='审计复测可直接使用指定 Git 提交中的原始实现')
     args = parser.parse_args()
     result = {'case': args.case, **(sessions(args.count, args.megabytes)
                                    if args.case == 'sessions' else
                                    context() if args.case == 'context' else
                                    quota() if args.case == 'quota' else
-                                   audit() if args.case == 'audit' else export())}
+                                   audit(args.baseline_ref) if args.case == 'audit' else export())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps(result))
@@ -99,19 +100,36 @@ def quota():
             command.check_workspace_quota = original
 
 
-def audit():
+def audit(baseline_ref=None):
     import threading
-    from tools.sandbox import ToolContext, tool_context, audit as write_audit
-    with tempfile.TemporaryDirectory(prefix='agent-audit-') as directory:
-        root = Path(directory)
-        with tool_context(ToolContext(root, root / 'audit.jsonl', lambda *_: True, threading.Event())):
-            start = time.perf_counter()
-            for i in range(10000):
-                write_audit('benchmark', number=i)
-            elapsed = time.perf_counter() - start
-        lines = (root / 'audit.jsonl').read_text().splitlines()
-        assert len(lines) == 10000
-        return {'seconds': elapsed, 'events': len(lines)}
+    from tools import sandbox
+    write_audit = sandbox.audit
+    if baseline_ref:
+        import ast
+        import re
+        import subprocess
+        if not re.fullmatch(r'[0-9a-f]{7,40}', baseline_ref):
+            raise ValueError('基线必须是明确的 Git commit hash')
+        source = subprocess.check_output(['git', 'show', baseline_ref + ':tools/sandbox.py'], text=True)
+        tree = ast.parse(source)
+        definitions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                       and node.name in {'audit', '_audit_path'}]
+        namespace = dict(vars(sandbox))
+        exec(compile(ast.Module(body=definitions, type_ignores=[]), '<historical-audit>', 'exec'), namespace)
+        write_audit = namespace['audit']
+    samples = []
+    for _ in range(5):
+        with tempfile.TemporaryDirectory(prefix='agent-audit-') as directory:
+            root = Path(directory)
+            with sandbox.tool_context(sandbox.ToolContext(root, root / 'audit.jsonl', lambda *_: True, threading.Event())):
+                start = time.perf_counter()
+                for i in range(10000):
+                    write_audit('benchmark', number=i)
+                samples.append(time.perf_counter() - start)
+            lines = (root / 'audit.jsonl').read_text().splitlines()
+            assert [json.loads(line)['number'] for line in lines] == list(range(10000))
+    return {'seconds': samples, 'median_seconds': statistics.median(samples),
+            'events_per_sample': 10000, 'baseline_ref': baseline_ref}
 
 
 def export():

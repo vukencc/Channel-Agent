@@ -42,3 +42,14 @@ def test_audit_handle_cache_is_bounded_and_lines_complete(tmp_path):
         assert len(_handles) <= 64
     finally:
         close_audit_handles()
+
+
+def test_cached_prefix_keeps_overrides_and_second_changes(sandbox_env, monkeypatch):
+    monkeypatch.setattr(sandbox.time, 'time', lambda: 1000.1)
+    sandbox.audit('test', index=1)
+    monkeypatch.setattr(sandbox.time, 'time', lambda: 1001.1)
+    sandbox.audit('test', index=2, session_id='override')
+    rows = [json.loads(line) for line in sandbox.config.AUDIT_LOG.read_text().splitlines()]
+    assert rows[0]['ts'] != rows[1]['ts']
+    assert rows[0]['session_id'] is None
+    assert rows[1]['session_id'] == 'override'
