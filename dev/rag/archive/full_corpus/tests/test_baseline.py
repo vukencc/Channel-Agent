@@ -1,14 +1,14 @@
 """Archived baseline compatibility check; run explicitly only."""
 import os
 import pytest
-import config
-from rag.index import get_index
+from ai_agent_startup import config
+from ai_agent_startup.rag.index import get_index
 pytestmark = pytest.mark.skipif(os.getenv("RUN_RAG_INTEGRATION") != "1", reason="Requires local models")
 
 @pytest.fixture
 def actual_corpus(monkeypatch, tmp_path):
-    from rag.embedding import local_model_path
-    from rag.rerank import local_reranker_path
+    from ai_agent_startup.rag.embedding import local_model_path
+    from ai_agent_startup.rag.rerank import local_reranker_path
     monkeypatch.setattr(config, 'EMBEDDING_LOCAL_PATH', local_model_path())
     monkeypatch.setattr(config, 'RERANK_LOCAL_PATH', local_reranker_path())
     monkeypatch.setattr(config, 'RAG_CACHE_DIR', tmp_path / 'model-cache')
@@ -21,7 +21,7 @@ def test_baseline_adapter_matches_frozen_original_cosine_search(actual_corpus):
     import importlib.util
     import sys
     from dev.rag.archive.full_corpus.evaluate import Baseline
-    from rag.index import DocLoader
+    from ai_agent_startup.rag.index import DocLoader
     baseline = Baseline(DocLoader(config.DOC_DIR).load())
     path = config.PROJECT_ROOT / 'dev/rag/archive/full_corpus/baseline/tool.py'
     spec = importlib.util.spec_from_file_location('frozen_tool', path)

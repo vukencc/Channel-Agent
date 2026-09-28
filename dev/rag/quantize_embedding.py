@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from onnxruntime.quantization import QuantType, quantize_dynamic
 from onnx import TensorProto
-from rag.embedding import local_model_path
+from ai_agent_startup.rag.embedding import local_model_path
 
 source = local_model_path()
 if not source:

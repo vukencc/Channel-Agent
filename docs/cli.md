@@ -2,9 +2,9 @@
 
 ```bash
 uv sync --locked
-uv run main.py
-uv run main.py --state-dir /path/to/private-state
-uv run main.py --list
+uv run ai-agent-startup
+uv run ai-agent-startup --state-dir /path/to/private-state
+uv run ai-agent-startup --list
 ```
 
 需要交互终端；隔离命令仍要求 Linux + Bubblewrap。API、模型、RAG 与工具配置沿用 `.env`。
@@ -136,7 +136,7 @@ RAG 自动评分在后台执行，回答完成后可立即继续同一会话；�
 
 后台评估使用独立的 ASSESS_CONCURRENCY 池（默认 1），不占前台模型容量。
 
-审计配置：CLI 的审计按会话写入 `AGENT_STATE_DIR/<id>/audit.jsonl`；`AUDIT_LOG` 仅用于无会话 ToolContext 的独立工具调用。默认提示词统一位于 `core/prompts.py`。测试路径为 `dev/tests/`。
+审计配置：CLI 的审计按会话写入 `AGENT_STATE_DIR/<id>/audit.jsonl`；`AUDIT_LOG` 仅用于无会话 ToolContext 的独立工具调用。默认提示词统一位于 `src/ai_agent_startup/core/prompts.py`。测试路径为 `tests/`。
 
 ## 增量持久化（v2）
 

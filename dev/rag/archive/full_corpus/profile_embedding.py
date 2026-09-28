@@ -11,9 +11,9 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 import pyarrow.parquet as pq
 
-import config
-from rag.chunking import TextSplitter
-from rag.embedding import get_embedding_model
+from ai_agent_startup import config
+from ai_agent_startup.rag.chunking import TextSplitter
+from ai_agent_startup.rag.embedding import get_embedding_model
 
 splitter = TextSplitter()
 source = next((ROOT / '.cache/rag/benchmark/corpus').glob('corpus-*.parquet'))

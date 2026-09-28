@@ -3,7 +3,7 @@ from typing import List
 import httpx
 import numpy as np
 
-import config
+from ai_agent_startup import config
 
 # 本地模型名（与之前下载并缓存的一致）
 LOCAL_MODEL_NAME = "BAAI/bge-small-zh-v1.5"

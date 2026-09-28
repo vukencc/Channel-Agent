@@ -20,10 +20,10 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 import pyarrow.parquet as pq
 
-import config
-from rag.embedding import get_embedding_model
-from rag.index import RetrievalIndex, cached_embeddings
-from rag.tool import rag_search
+from ai_agent_startup import config
+from ai_agent_startup.rag.embedding import get_embedding_model
+from ai_agent_startup.rag.index import RetrievalIndex, cached_embeddings
+from ai_agent_startup.rag.tool import rag_search
 
 ARCHIVE = Path(__file__).resolve().parent
 REPORT = ROOT / '.cache/reports/rag/full-corpus'

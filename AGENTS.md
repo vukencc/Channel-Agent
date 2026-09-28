@@ -2,11 +2,8 @@
 
 ## Project Structure & Module Organization
 
-- `main.py` starts the interactive, streaming agent; `config.py` loads environment settings.
-- `core/` contains the agent loop, model calls, message structures, and logging.
-- `tools/` provides tool registration, web/RAG search, file operations, and sandboxed commands.
-- `rag/` handles document chunking, embeddings, retrieval, and answer assessment. Knowledge-base documents live in `data/raw/`.
-- `dev/tests/` contains pytest tests and shared fixtures. `crud_tests/` is the runtime tool sandbox, not the test suite; `logs/` holds generated logs.
+- `src/ai_agent_startup/` is the application package: `main.py` (console entry), `config.py`, `core/` (agent loop, model calls, sessions, persistence), `tools/` (registration, file operations, sandbox), `rag/` (chunking, embeddings, retrieval, reranking). Knowledge-base documents live in `data/raw/`.
+- `tests/` contains pytest tests and shared fixtures. `dev/` holds diagnostics, performance benchmarks, RAG data preparation and historical reports. `crud_tests/` is the runtime tool sandbox, not the test suite; `logs/` holds generated logs.
 
 ## Build, Test, and Development Commands
 
@@ -14,25 +11,25 @@ Use Python 3.12+ and run commands from the repository root:
 
 - `uv sync --locked`: install locked dependencies, including the development group.
 - `cp .env.example .env`: create local configuration if `.env` does not already exist; populate model credentials and service settings.
-- `uv run main.py`: launch the interactive agent.
+- `uv run ai-agent-startup`: launch the interactive agent.
 - `uv run pytest`: run the full test suite.
-- `uv run pytest dev/tests/test_command.py -q`: run focused command-tool tests.
+- `uv run pytest tests/test_command.py -q`: run focused command-tool tests.
 
-This is a script application (`tool.uv.package = false`); no packaging build step is configured.
+Installable application (`hatchling` + `[project.scripts]`); the console entry is `ai-agent-startup`, and `uv run pytest` uses the installed package.
 
 ## Coding Style & Naming Conventions
 
 Follow existing Python style: four-space indentation, `snake_case` modules/functions/variables, `PascalCase` classes, and uppercase configuration constants. Use type hints for new interfaces and concise docstrings for non-obvious behavior. No formatter or linter is configured in `pyproject.toml`.
 
-Define new tools in `tools/<name>.py` using a Pydantic argument model and `register_tool`; import the module in `tools/__init__.py` to register it. Keep tool-specific behavior outside the generic agent loop.
+Define new tools in `src/ai_agent_startup/tools/<name>.py` using a Pydantic argument model and `register_tool`; import the module in `src/ai_agent_startup/tools/__init__.py` to register it. Keep tool-specific behavior outside the generic agent loop.
 
 ## Testing Guidelines
 
-Name files `dev/tests/test_<feature>.py` and functions `test_<behavior>`. Use pytest fixtures, `tmp_path`, and `monkeypatch`; reuse `sandbox_env` for isolated file/command tests. Mock external services where practical. Cover relevant validation failures, retry behavior, sandbox boundaries, denied confirmations, and timeouts. No minimum coverage threshold is configured.
+Name files `tests/test_<feature>.py` and functions `test_<behavior>`. Use pytest fixtures, `tmp_path`, and `monkeypatch`; reuse `sandbox_env` for isolated file/command tests. Mock external services where practical. Cover relevant validation failures, retry behavior, sandbox boundaries, denied confirmations, and timeouts. No minimum coverage threshold is configured.
 
 ## Commit & Pull Request Guidelines
 
-`main` is the protected template branch. Start new work from the current baseline tag (`git switch -c feat/<topic> v0.1.0`); do not push directly to `main`. Use concise prefixes such as `feat:`, `fix:`, `perf:`, `docs:`, `ci:`, `chore:`. PRs should explain the behavior change, link relevant issues, list validation commands/results, and identify configuration or dependency changes. Update `uv.lock` alongside dependency edits. Release/tagging steps live in `docs/release.md`; container usage in `docs/docker.md`.
+`main` is the protected template branch. Start new work from the current baseline tag (`git switch -c feat/<topic> <tag>`); do not push directly to `main`. Use concise prefixes such as `feat:`, `fix:`, `perf:`, `docs:`, `ci:`, `chore:`. PRs should explain the behavior change, link relevant issues, list validation commands/results, and identify configuration or dependency changes. Update `uv.lock` alongside dependency edits. Release/tagging steps live in `docs/release.md`; container usage in `docs/docker.md`.
 
 ## Security & Configuration
 

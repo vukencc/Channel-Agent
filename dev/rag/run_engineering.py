@@ -8,11 +8,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-import config
-from rag.embedding import get_embedding_model, local_model_path
-from rag.index import RetrievalIndex
-from rag.rerank import local_reranker_path
-from rag.tool import rag_search
+from ai_agent_startup import config
+from ai_agent_startup.rag.embedding import get_embedding_model, local_model_path
+from ai_agent_startup.rag.index import RetrievalIndex
+from ai_agent_startup.rag.rerank import local_reranker_path
+from ai_agent_startup.rag.tool import rag_search
 from dev.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, load_inputs
 
 

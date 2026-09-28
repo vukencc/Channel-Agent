@@ -5,14 +5,14 @@
 ```bash
 uv sync --locked
 cp .env.example .env   # 仅在 .env 不存在时；填写模型凭据
-uv run main.py         # 交互式全屏 CLI
+uv run ai-agent-startup         # 交互式全屏 CLI
 ```
 
 无图形终端时使用 headless 入口（默认拒绝一切待确认操作）：
 
 ```bash
-uv run main.py --prompt "把 hello 保存到 hello.txt 并读回" --json
-uv run main.py --platform        # 平台/沙箱能力说明
+uv run ai-agent-startup --prompt "把 hello 保存到 hello.txt 并读回" --json
+uv run ai-agent-startup --platform        # 平台/沙箱能力说明
 ```
 
 ## 分支模型
@@ -47,7 +47,7 @@ chore: 更新依赖锁定
 
 ```bash
 uv run pytest -m 'not integration' -q          # 离线回归，必须全绿
-uv run pytest dev/tests/test_context.py -q     # 针对性回归
+uv run pytest tests/test_context.py -q          # 针对性回归
 uv run python dev/ci_sandbox_probe.py          # Linux：真实 Bubblewrap/prlimit 探测
 ```
 

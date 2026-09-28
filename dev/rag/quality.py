@@ -43,10 +43,10 @@ def main():
         if source.resolve().is_relative_to(args.output.resolve()):
             parser.error('输出目录不能包含输入')
     import pyarrow.parquet as pq
-    import config
-    from rag.index import RetrievalIndex
-    from rag.tool import rag_search
-    from rag.embedding import get_embedding_model
+    from ai_agent_startup import config
+    from ai_agent_startup.rag.index import RetrievalIndex
+    from ai_agent_startup.rag.tool import rag_search
+    from ai_agent_startup.rag.embedding import get_embedding_model
     manifest = json.loads(args.manifest.read_text())
     with args.corpus.open('rb') as stream:
         if hashlib.file_digest(stream, 'sha256').hexdigest() != manifest['corpus_sha256']:

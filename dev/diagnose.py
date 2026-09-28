@@ -14,10 +14,10 @@ import hashlib
 import shutil
 from pathlib import Path
 
-import config
-from core import llm
-from core.sessions import SessionManager
-from core.storage import SessionStore
+from ai_agent_startup import config
+from ai_agent_startup.core import llm
+from ai_agent_startup.core.sessions import SessionManager
+from ai_agent_startup.core.storage import SessionStore
 
 
 async def run_live(output: Path, runs: int, effort: str, thinking: str, replay: Path | None = None):

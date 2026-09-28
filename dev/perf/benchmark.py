@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 def sessions(count, megabytes):
-    from core.storage import SessionStore
-    from core.sessions import SessionManager
+    from ai_agent_startup.core.storage import SessionStore
+    from ai_agent_startup.core.sessions import SessionManager
     with tempfile.TemporaryDirectory(prefix='agent-perf-') as directory:
         store = SessionStore(Path(directory) / 'state', Path(directory) / 'workspace')
         try:
@@ -55,7 +55,7 @@ def main():
 
 
 def context():
-    from core.context import build_model_history
+    from ai_agent_startup.core.context import build_model_history
     messages = [{'role': 'system', 'content': '基准'}]
     for i in range(5000):
         messages += [{'role': 'user', 'content': f'问题 {i}'},
@@ -71,8 +71,8 @@ def context():
 
 def quota():
     import threading
-    from tools import command
-    from tools.sandbox import ToolContext, tool_context
+    from ai_agent_startup.tools import command
+    from ai_agent_startup.tools.sandbox import ToolContext, tool_context
     with tempfile.TemporaryDirectory(prefix='agent-quota-') as directory:
         root = Path(directory) / 'workspace'
         root.mkdir()
@@ -107,7 +107,7 @@ def quota():
 
 def audit(baseline_ref=None):
     import threading
-    from tools import sandbox
+    from ai_agent_startup.tools import sandbox
     write_audit = sandbox.audit
     if baseline_ref:
         import ast
@@ -139,7 +139,7 @@ def audit(baseline_ref=None):
 
 def export():
     import tracemalloc
-    from core.storage import SessionStore
+    from ai_agent_startup.core.storage import SessionStore
     with tempfile.TemporaryDirectory(prefix='agent-export-') as directory:
         store = SessionStore(Path(directory) / 'state', Path(directory) / 'workspace')
         try:
@@ -163,9 +163,9 @@ def export():
 def rag(corpus, output):
     import hashlib
     import pyarrow.parquet as pq
-    import config
-    from rag.index import RetrievalIndex
-    from rag.tool import rag_search
+    from ai_agent_startup import config
+    from ai_agent_startup.rag.index import RetrievalIndex
+    from ai_agent_startup.rag.tool import rag_search
     from dev.rag.quality import metrics
     manifest_path = Path('dev/rag/inputs/quality.json')
     manifest = json.loads(manifest_path.read_text())
@@ -210,9 +210,9 @@ def rag(corpus, output):
 def vector(output):
     """随机单位向量用于索引内核开销/近似召回，不代表语义检索质量。"""
     import numpy as np
-    import config
-    from rag.index import RetrievalIndex
-    from rag.result_cache import ResultCache
+    from ai_agent_startup import config
+    from ai_agent_startup.rag.index import RetrievalIndex
+    from ai_agent_startup.rag.result_cache import ResultCache
     rng = np.random.default_rng(20260928)
     vectors = rng.normal(size=(100000, 384)).astype(np.float32)
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -244,13 +244,13 @@ def vector(output):
 
 
 def bm25(output):
-    import config
-    from rag.lexical import BM25Index, tokenize
+    from ai_agent_startup import config
+    from ai_agent_startup.rag.lexical import BM25Index, tokenize
     texts = [f'文档 {i} 苹果 服务 检索 独立记录 {i % 97}' for i in range(20000)]
     identifiers = [str(i) for i in range(len(texts))]
     def build():
         if getattr(config, 'RAG_BM25_PERSIST', False):
-            from rag.lexical_store import PersistentBM25
+            from ai_agent_startup.rag.lexical_store import PersistentBM25
             return PersistentBM25(output.with_suffix('.sqlite'), texts, identifiers)
         return BM25Index(texts)
     tokenize.cache_clear()
@@ -276,8 +276,8 @@ def memory(corpus):
     """10 万真实语料文件的加载/分块 RSS；准备在子进程，模型推理不计入此项。"""
     import subprocess
     import sys
-    import config
-    from rag.index import DocLoader, split_document
+    from ai_agent_startup import config
+    from ai_agent_startup.rag.index import DocLoader, split_document
     with tempfile.TemporaryDirectory(prefix='agent-memory-') as directory:
         root = Path(directory)
         docs = root / 'docs'
