@@ -11,7 +11,7 @@
 - [x] P0：PERF-07 配额节流
 - [ ] P0：PERF-08 审计句柄（实现与回归完成，50% 性能目标未达）
 - [x] P0：PERF-12 流式导出
-- [ ] P0：FREE-03 文件工具
+- [x] P0：FREE-03 文件工具
 - [ ] P0：FREE-05 模型参数
 - [ ] P0：FREE-13 成本与速率预算
 - [ ] P0：FREE-16 提示词模板
@@ -96,3 +96,13 @@ v1 继续兼容，但旧单 JSON 格式本身仍需完整解析。峰值由最�
 验证：`uv run pytest -m 'not integration' -q`：**203 passed, 3 deselected**，5.71 秒。
 `uv sync --locked` 成功；所有运行目录通过环境变量重定向 `/tmp/agent-optimization-validation/`。
 无新增配置/依赖；未启用压缩格式。
+
+## FREE-03
+
+`ENABLE_FILE_EXTRAS=false`；设 true 后注册 Pydantic 参数模型的 mkdir/move/copy/stat/glob。
+mkdir 可显式创建父目录；move/copy 支持普通文件，目标必须不存在，不隐式递归搬移目录。
+move 使用 Linux renameat2(RENAME_NOREPLACE)，不支持时明确拒绝；copy 临时写入 + fsync + 原子无覆盖发布。
+stat/glob 只读并审计；glob 不进入链接目录，有结果/字符上限。写操作检查路径、配额并逐次确认，确认后重新校验源和目标。
+无新依赖；不增加删除目录能力。取消/拒绝、越界、目标竞争和配额测试均使用临时目录。
+验证：`uv run pytest dev/tests/test_free03_file_extras.py dev/tests/test_file_crud.py -q`：30 passed。
+本项功能测试不调用模型；不提供虚构性能指标。
