@@ -215,3 +215,7 @@
 ### PERF-02（完成，可选近似检索）
 
 100k×384 固定随机向量：exact p50 15.087ms，ANN ef256 1.554ms/recall@50 .227；ef4096 14.002ms/.932。默认 exact 不变；真实 hnswlib 持久化及回退测试通过。质量取舍与测量口径见 docs/optimization-progress.md。
+
+### PERF-03（完成）
+
+20k 文本：增量 API 0.760130 → 0.000915s，清空分词缓存重启 0.730567 → 0.021477s，首次构造 1.258509 → 1.758474s。SQLite/WAL 旧读快照、真实完整 RAG 2 项与混合回归 28 项通过。全量元数据校对仍 O(N)，见 docs/optimization-progress.md。

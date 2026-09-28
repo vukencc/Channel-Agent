@@ -33,7 +33,7 @@ def sessions(count, megabytes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export', 'rag', 'vector'])
+    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export', 'rag', 'vector', 'bm25'])
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
@@ -46,7 +46,8 @@ def main():
                                    quota() if args.case == 'quota' else
                                    audit(args.baseline_ref) if args.case == 'audit' else
                                    rag(args.corpus, args.output) if args.case == 'rag' else
-                                   vector(args.output) if args.case == 'vector' else export())}
+                                   vector(args.output) if args.case == 'vector' else
+                                   bm25(args.output) if args.case == 'bm25' else export())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({key: value for key, value in result.items() if key != 'traces'}))
@@ -239,6 +240,35 @@ def vector(output):
             'requested_backend': getattr(config, 'RAG_VECTOR_BACKEND', 'exact'),
             'first_seconds': elapsed[0], 'p50_seconds': statistics.median(elapsed[1:]),
             'p95_seconds': float(np.percentile(elapsed[1:], 95)), 'recall_at_50': statistics.mean(recall)}
+
+
+def bm25(output):
+    import config
+    from rag.lexical import BM25Index, tokenize
+    texts = [f'文档 {i} 苹果 服务 检索 独立记录 {i % 97}' for i in range(20000)]
+    identifiers = [str(i) for i in range(len(texts))]
+    def build():
+        if getattr(config, 'RAG_BM25_PERSIST', False):
+            from rag.lexical_store import PersistentBM25
+            return PersistentBM25(output.with_suffix('.sqlite'), texts, identifiers)
+        return BM25Index(texts)
+    tokenize.cache_clear()
+    start = time.perf_counter()
+    index = build()
+    initial = time.perf_counter() - start
+    texts[100] += ' 唯一增量内容'
+    start = time.perf_counter()
+    index = index.with_updates({'100': texts[100]}, []) if hasattr(index, 'with_updates') else build()
+    changed = time.perf_counter() - start
+    after = index.search('唯一增量内容', 10)
+    tokenize.cache_clear()
+    start = time.perf_counter()
+    restored = build()
+    restart = time.perf_counter() - start
+    assert restored.search('唯一增量内容', 10) == after
+    return {'documents': len(texts), 'initial_seconds': initial,
+            'one_update_seconds': changed, 'warm_restart_seconds': restart,
+            'persistent': getattr(config, 'RAG_BM25_PERSIST', False), 'matches': after}
 
 
 if __name__ == '__main__':

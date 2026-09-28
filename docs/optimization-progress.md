@@ -17,7 +17,7 @@
 - [x] P0：FREE-16 提示词模板
 - [x] P1：PERF-01 重排与缓存
 - [x] P1：PERF-02 可选 ANN
-- [ ] P1：PERF-03 增量持久化 BM25
+- [x] P1：PERF-03 增量持久化 BM25
 - [ ] P1：PERF-04 内存上限
 - [ ] P1：PERF-09 推理并发隔离
 - [ ] P1：PERF-10 稳定前缀与工具子集
@@ -190,3 +190,19 @@ GPU 环境未实测，不宣称 GPU/fp16 性能或质量通过。候选缩减可
 命令：`OPENBLAS_NUM_THREADS=1 uv run --extra ann python -m dev.perf.benchmark vector --output /tmp/agent-perf-results/perf02-after.json`，分别设 RAG_VECTOR_BACKEND 与 RAG_ANN_EF_SEARCH。
 验证：`uv run --extra ann pytest dev/tests/test_perf02_ann.py dev/tests/test_hybrid_rag.py -q`：28 passed；含真实持久化、内容失效及缺依赖明确回退。
 不安装 extra 时仅两项真实 ANN 测试标记依赖缺失；默认精确路径与回退测试照常运行，不伪报 ANN 通过。
+
+## PERF-03
+
+`RAG_BM25_PERSIST=false` 默认保留内存后端；显式开启后用 SQLite 文档指纹/词频/倒排表，仅更新变化条目的分词和 postings。
+计数/总长度增量维护，查询时按当前快照计算正 IDF，不全量重写词典。WAL + 独立只读事务让旧对象继续读旧快照。
+首次扫描仍需 O(N) 校对父块 ID/内容指纹；没有声称整个 RAG 重建已为常数时间，也未启用后台自动建库。
+
+20,000 条确定性文本（词法算法性能工作负载，非语义质量集）：
+- 首次构造 **1.258509 → 1.758474s**（增加持久化成本）。
+- 单条增量更新 API **0.760130 → 0.000915s**（默认为全量重建，对照持久后端 with_updates）。
+- 清空分词缓存后的重启 **0.730567 → 0.021477s**；匹配 ID=100，分数 24.38032100453355 完全一致。
+基准：`RAG_BM25_PERSIST=true uv run python -m dev.perf.benchmark bm25 --output /tmp/agent-perf-results/perf03-after.json`。
+单元验证：`RAG_BM25_PERSIST=true uv run pytest dev/tests/test_perf03_lexical_store.py dev/tests/test_hybrid_rag.py -q`：28 passed。
+新增存储重启无重新分词、旧读快照、删词、与原公式/排名完全相同测试；保留所有现有混合检索测试。
+不新增依赖，使用 Python 标准库 sqlite3。全部索引写临时目录。
+真实完整链路：本地模型 + RAG_BM25_PERSIST=true + RUN_RAG_INTEGRATION=1，`uv run pytest dev/tests/test_rag_integration.py -q`：**2 passed，14.78s**，含四阶段结果与阈值仅后置过滤校验。

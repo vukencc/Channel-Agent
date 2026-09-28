@@ -190,7 +190,14 @@ class RetrievalIndex:
         self.parent_indexes = np.array([child['parent_index'] for child in self.children], dtype=np.int32)
         self.model = get_embedding_model() if self.children else None
         self.vectors = cached_embeddings([row['content'] for row in self.children], self.model, progress)
-        self.lexical = BM25Index([parent['document'] for parent in self.parents])
+        if config.RAG_BM25_PERSIST:
+            from rag.lexical_store import PersistentBM25
+            namespace = hashlib.sha256(json.dumps([str(config.DOC_DIR.resolve()), config.RAG_PARENT_CHARS,
+                                                   config.RAG_CHILD_CHARS, 'jieba-bm25-v1']).encode()).hexdigest()
+            self.lexical = PersistentBM25(config.RAG_CACHE_DIR / 'lexical' / f'{namespace}.sqlite',
+                [parent['document'] for parent in self.parents], [parent['id'] for parent in self.parents])
+        else:
+            self.lexical = BM25Index([parent['document'] for parent in self.parents])
         self.query_cache = ResultCache()
 
     def dense(self, query: str, limit: int) -> list[dict]:
@@ -254,7 +261,7 @@ def get_index() -> RetrievalIndex:
            config.EMBEDDING_MODEL_API_KEY, config.EMBEDDING_LOCAL_PATH,
            config.RAG_CACHE_DIR, config.RAG_BATCH_SIZE, config.RAG_THREADS)
     key += (config.RAG_VECTOR_BACKEND, config.RAG_ANN_MIN_CHILDREN, config.RAG_ANN_M,
-            config.RAG_ANN_EF_CONSTRUCTION, config.RAG_ANN_EF_SEARCH)
+            config.RAG_ANN_EF_CONSTRUCTION, config.RAG_ANN_EF_SEARCH, config.RAG_BM25_PERSIST)
     if config.EMBEDDING_MODEL_SOURCE.upper() == 'LOCAL':
         key += (artifact_signature(local_model_path()),)
     if key == _cached_key:
