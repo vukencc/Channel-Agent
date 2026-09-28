@@ -37,8 +37,16 @@ def resolve_destination(authority: str) -> tuple[str, list[tuple]]:
     if host not in config.COMMAND_NETWORK_ALLOWLIST:
         raise PermissionError('域名不在白名单内')
     addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
-        raise PermissionError('拒绝非公网 DNS 结果')
+    def public_unicast(address):
+        value = ipaddress.ip_address(address)
+        if not value.is_global or value.is_multicast or value.is_reserved or value.is_unspecified:
+            return False
+        # IPv6 过渡地址可能嵌入不同作用域的 IPv4，保守拒绝隧道转换。
+        if isinstance(value, ipaddress.IPv6Address) and (value.sixtofour is not None or value.teredo is not None):
+            return False
+        return True
+    if not addresses or any(not public_unicast(row[4][0]) for row in addresses):
+        raise PermissionError('拒绝非公网单播或 IPv6 过渡 DNS 结果')
     return host, addresses
 
 

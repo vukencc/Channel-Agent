@@ -33,3 +33,14 @@ def test_trusted_rule_cannot_replace_per_network_confirmation(sandbox_env, monke
         {'tool': 'run_command', 'path_prefix': None, 'command_prefix': ['printf']}])
     monkeypatch.setattr(sandbox, 'confirmer', lambda *_: False)
     assert '取消' in run_command('printf network', network=True)
+
+
+@pytest.mark.parametrize('address', ['224.0.0.1', 'ff0e::1', '2002:7f00:1::1'])
+def test_non_unicast_and_transition_dns_addresses_are_not_public_destinations(monkeypatch, address):
+    from tools.network_proxy import resolve_destination
+    monkeypatch.setattr(config, 'COMMAND_NETWORK_ALLOWLIST', ['example.com'])
+    family = socket.AF_INET6 if ':' in address else socket.AF_INET
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda *args, **kwargs: [
+        (family, socket.SOCK_STREAM, 6, '', (address, 443))])
+    with pytest.raises(PermissionError):
+        resolve_destination('example.com:443')

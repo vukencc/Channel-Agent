@@ -293,3 +293,7 @@ Docker/Podman 后端仅设计：必须专用镜像、非特权非 root、只挂�
 ### FREE-15（完成最小适配：平台诊断与锁；原生非 Linux 未验收）
 
 移除存储/RAG/ANN 的直接 fcntl 依赖，统一 POSIX/Windows 锁接口；非 Linux 命令提前拒绝，--platform 无凭据/状态即可说明能力。新增专项 4 passed；全量非集成 315 passed、2 skipped；本机 Bubblewrap + prlimit 实际探针通过。Windows 仅适配契约测试、macOS 无原生测试，不宣称跨平台验收通过；容器后端仅设计。详见 docs/platform-design.md。
+
+### FREE-02 交付前安全补充
+
+新增测试复现公网判定包含组播（2 failed），修复为严格公网单播并拒绝 IPv6 过渡地址。专项 29 passed，真实白名单 HTTPS 复测 200；设计的网络/确认边界保持收紧。

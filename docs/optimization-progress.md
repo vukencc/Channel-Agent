@@ -444,3 +444,7 @@ JSON 替换当前覆盖集，default 清空。预设仅缩放轮次和输出上�
 无新增配置/依赖。核心存储、向量缓存和 ANN 统一 `core.file_lock`：POSIX flock 行为保留，Windows 使用首字节 msvcrt 互斥，未知平台拒绝无锁运行。初始化锁异常关闭描述符；RAG 锁文件改追加打开避免截断锁字节。
 非 Linux 命令在探测启动器前明确拒绝，提示 Linux/WSL2，不回退宿主执行。新增 `/platform`、`--platform` 只读说明，后者无需凭据/状态目录；静态信息始终标记隔离尚需实际探针验证。平台矩阵与 Docker/Podman 设计见 platform-design.md；容器后端未实现。
 失败测试先 3 failed。真实 Linux 子进程竞争验证第二写者拒绝、解锁后成功；非 Linux 拒绝用平台模拟；Windows msvcrt 仅契约测试，不称原生验收。真实 `uv run python dev/ci_sandbox_probe.py` 另行执行。无 Windows/macOS 原生环境，完整文件/推理/终端兼容仍是明确限制。
+
+### FREE-02 交付前复查
+
+补充失败测试发现 `ipaddress.is_global` 对 IPv4/IPv6 组播也可能为真；代理改为只允许公网单播，额外拒绝保留/未指定/6to4/Teredo 过渡地址。先复现 2 failed，再运行命令/联网/任务专项 29 passed；实际白名单 HTTPS 复测 200/559 字节，结果 `/tmp/agent-perf-results/free02-network-final.json`。没有放宽任何出网条件。
