@@ -202,3 +202,9 @@
 TOOL_ROOTS 默认空；显式 @名称/路径用于 read/list/stat/glob，rag_search(source='@名称') 使用受边界限制的索引。
 全部写工具拒绝只读根；从只读根复制到工作区仍需确认；不挂载到命令沙箱。文件/命令专项 63 passed，真实 bwrap 探针与真实命名根 RAG 测试通过。
 完整回归 258 passed，2 项可选 ANN 跳过、4 项集成未启用。配置与实现范围见 docs/optimization-progress.md。
+
+### FREE-04（完成：权限档位与范围规则）
+
+默认 standard 逐次确认；readonly 拒绝风险操作，trusted 仅使用显式工具/路径或简单命令 argv 前缀预先确认规则。
+范围匹配后仍受原路径/只读根/沙箱/配额约束，规则放行审计；/policy 持久化会话档位，运行中不可切换。
+真实沙箱与 shell 组合拒绝测试通过；263 项完整回归通过，随后并发档位隔离专项 6 passed。未增加整轮无限授权，详见 docs/optimization-progress.md。

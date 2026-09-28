@@ -214,6 +214,17 @@ MODEL_REQUESTS_PER_MINUTE = env_int('MODEL_REQUESTS_PER_MINUTE', 0)
 
 # 只允许已声明的请求参数；不接受任意网络地址或安全策略覆盖。
 from core.model_settings import ModelParameters, ModelProfile
+from core.permissions import PermissionRule
+TOOL_PERMISSION_POLICY = os.getenv('TOOL_PERMISSION_POLICY', 'standard')
+if TOOL_PERMISSION_POLICY not in {'readonly', 'standard', 'trusted'}:
+    raise ValueError('TOOL_PERMISSION_POLICY 必须为 readonly/standard/trusted')
+try:
+    _permission_rules = json.loads(os.getenv('TOOL_PERMISSION_RULES', '[]'))
+    if not isinstance(_permission_rules, list):
+        raise ValueError
+    TOOL_PERMISSION_RULES = [PermissionRule.model_validate(value).model_dump() for value in _permission_rules]
+except (ValueError, TypeError):
+    raise ValueError('TOOL_PERMISSION_RULES 必须为有效的工具/路径或命令 argv 前缀规则数组') from None
 try:
     MODEL_PARAMETERS = ModelParameters.model_validate_json(os.getenv('MODEL_PARAMETERS', '{}')).model_dump(exclude_none=True)
     _profiles = json.loads(os.getenv('MODEL_PROFILES', '{}'))

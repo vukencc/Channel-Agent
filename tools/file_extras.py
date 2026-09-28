@@ -52,7 +52,7 @@ def mkdir(path: str, parents: bool = False, reason: str = '') -> str:
         check_workspace_quota()
         if target.exists():
             raise SandboxError('目标已存在，不覆盖')
-        if not ask_permission('mkdir', path, reason):
+        if not ask_permission('mkdir', path, reason, paths=[path]):
             return '[已取消] 未创建目录。'
         if cancellation_requested() or resolve_path(path, write=True) != target:
             raise SandboxError('已取消或路径发生变化')
@@ -94,7 +94,8 @@ def _transfer(action, source, destination, reason):
         usage = check_workspace_quota()
         if action == 'copy' and usage + identity[2] > config.WORKSPACE_LIMIT_MB * 1024 ** 2:
             raise SandboxError('复制后将超过 WORKSPACE_LIMIT_MB 配额')
-        if not ask_permission(action, f'{source} → {destination}', reason):
+        if not ask_permission(action, f'{source} → {destination}', reason,
+                              paths=[source, destination] if action == 'move' else [destination]):
             return '[已取消] 文件未变更。'
         if (cancellation_requested() or resolve_path(source, write=action == 'move') != src or resolve_path(destination, write=True) != dst
                 or _identity(src) != identity or dst.exists() or dst.is_symlink()):

@@ -95,7 +95,7 @@ def create_file(path: str, content: str = "", reason: str = "") -> str:
     if target.exists():
         return f"[失败] 文件已存在，未覆盖：{path}"
 
-    if not ask_permission("create_file", f"{path}（{len(content)} 字符）", reason):
+    if not ask_permission("create_file", f"{path}（{len(content)} 字符）", reason, paths=[path]):
         return "[已取消] 用户未确认（拒绝或确认超时），文件未创建。"
 
     try:
@@ -180,7 +180,7 @@ def edit_file(path: str, old_text: str, new_text: str, reason: str = "") -> str:
         return f"[失败] old_text 必须非空且唯一匹配，实际匹配 {count} 处；请重新读取目标片段并扩大锚点，文件未修改。"
     if old_text == new_text:
         return "[未修改] 新旧片段相同。"
-    if not ask_permission('edit_file', f'{path}（替换 {len(old_text)} → {len(new_text)} 字符）', reason):
+    if not ask_permission('edit_file', f'{path}（替换 {len(old_text)} → {len(new_text)} 字符）', reason, paths=[path]):
         return "[已取消] 用户未确认，文件未修改。"
     temporary = None
     try:
@@ -226,7 +226,7 @@ def update_file(path: str, content: str = "", reason: str = "") -> str:
         audit('blocked', action='update_file', path=path, reason='large_file_requires_edit')
         return '[已拦截] 原文件超过单页读取上限，禁止全文覆盖；请分页 read_file 后使用 edit_file 局部替换，原文件未修改。'
 
-    if not ask_permission("update_file", f"{path}（{len(content)} 字符）", reason):
+    if not ask_permission("update_file", f"{path}（{len(content)} 字符）", reason, paths=[path]):
         return "[已取消] 用户未确认（拒绝或确认超时），文件未修改。"
 
     try:
@@ -256,7 +256,7 @@ def delete_file(path: str, reason: str = "") -> str:
     if not target.is_file():
         return f"[失败] 文件不存在（目录不支持删除）：{path}"
 
-    if not ask_permission("delete_file", path, reason):
+    if not ask_permission("delete_file", path, reason, paths=[path]):
         return "[已取消] 用户未确认（拒绝或确认超时），文件未删除。"
 
     try:
@@ -325,7 +325,7 @@ def append_file(path: str, content: str, expected_chars: int, reason: str = '') 
         if actual != expected_chars:
             audit('blocked', action='append_file', path=path, expected=expected_chars, actual=actual)
             return f'[已拦截] 文件字符偏移不匹配：当前 {actual}，请求 {expected_chars}；请先读取核对。'
-        if not ask_permission('append_file', f'{path}，偏移 {actual}，新增 {len(content)} 字符', reason):
+        if not ask_permission('append_file', f'{path}，偏移 {actual}，新增 {len(content)} 字符', reason, paths=[path]):
             return '[已取消] 用户未确认，文件未修改。'
         if resolve_path(path, write=True) != target or target.read_bytes() != before:
             return '[已拦截] 确认期间文件已变化，请重新读取。'

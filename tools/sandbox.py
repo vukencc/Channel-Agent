@@ -61,6 +61,7 @@ class ToolContext:
     cancelled: Event
     turn_id: str = ""
     tool_call_id: str = ""
+    permission_policy: str | None = None
 
 
 _context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)
@@ -106,6 +107,8 @@ def path_scope(user_path: str, *, write: bool = False) -> tuple[Path, Path, str]
     """额外根显式使用 @name/；未配置时完全沿用相对工作区路径。"""
     if not user_path or not user_path.strip():
         raise SandboxError('路径不能为空')
+    if write and current_policy() == 'readonly':
+        raise SandboxError('当前权限档位为 readonly，只允许读取')
     candidate = Path(user_path)
     if candidate.is_absolute():
         raise SandboxError(f'不允许绝对路径：{user_path}')
@@ -205,7 +208,34 @@ def confirm(prompt: str, timeout: float) -> bool:
         return False
 
 
-def ask_permission(action: str, detail: str, reason: str = "") -> bool:
+def current_policy() -> str:
+    context = _context.get()
+    policy = context.permission_policy if context and context.permission_policy is not None else config.TOOL_PERMISSION_POLICY
+    if policy not in {'readonly', 'standard', 'trusted'}:
+        raise SandboxError('无效权限策略，拒绝执行')
+    return policy
+
+
+def _trusted_rule(action: str, paths: list[str] | None, command: str | None) -> int | None:
+    from core.permissions import PermissionRule, simple_command_tokens
+    for index, value in enumerate(config.TOOL_PERMISSION_RULES):
+        rule = PermissionRule.model_validate(value)
+        if rule.tool != action:
+            continue
+        if action == 'run_command' and command is not None:
+            tokens = simple_command_tokens(command)
+            if tokens is not None and tokens[:len(rule.command_prefix)] == rule.command_prefix:
+                return index
+        elif paths:
+            root = sandbox_root()
+            targets = [resolve_path(path, write=True).relative_to(root) for path in paths]
+            if all(target.is_relative_to(Path(rule.path_prefix)) for target in targets):
+                return index
+    return None
+
+
+def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[str] | None = None,
+                   command: str | None = None) -> bool:
     """
     风险操作确认：由策略判定为风险后调用。
 
@@ -214,6 +244,22 @@ def ask_permission(action: str, detail: str, reason: str = "") -> bool:
     prompt = f"[风险操作] {action}：{detail}"
     if reason:
         prompt += f"\n  理由：{reason}"
+
+    policy = current_policy()
+    if policy == 'readonly' or cancellation_requested():
+        audit('confirm', action=action, detail=detail, reason=reason, allowed=False,
+              decision_source='readonly_policy' if policy == 'readonly' else 'cancelled')
+        return False
+    if policy == 'trusted':
+        try:
+            rule = _trusted_rule(action, paths, command)
+        except (ValueError, SandboxError):
+            audit('confirm', action=action, detail=detail, reason=reason, allowed=False, decision_source='invalid_rule')
+            return False
+        if rule is not None:
+            audit('confirm', action=action, detail=detail, reason=reason, allowed=True,
+                  decision_source='trusted_rule', rule=rule)
+            return True
 
     allowed = confirm(prompt, config.CONFIRM_TIMEOUT)
     audit("confirm", action=action, detail=detail, reason=reason, allowed=allowed)

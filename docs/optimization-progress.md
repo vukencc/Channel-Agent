@@ -23,7 +23,7 @@
 - [x] P1：PERF-10 稳定前缀与工具子集
 - [x] P1：PERF-11 辅助模型与后台摘要
 - [x] P1：FREE-01 命名只读工具根
-- [ ] P1：FREE-04 权限策略
+- [x] P1：FREE-04 权限档位与范围白名单
 - [ ] P1：FREE-07 多知识库与过滤
 - [ ] P1：FREE-08 记忆管理
 - [ ] P1：FREE-09 headless
@@ -299,3 +299,18 @@ RAG 使用显式根参数与独立磁盘词法命名空间，不修改全局 DOC
 真实 `uv run python dev/ci_sandbox_probe.py` 通过，额外目录在命令内不可见；不是模拟 bwrap 输出。
 真实模型：`RUN_RAG_INTEGRATION=1 uv run pytest dev/tests/test_free01_roots.py -m integration -q`：**1 passed，9.78s**。
 使用原有知识库的临时副本，校验命名根完整 RAG 和外部链接排除，不以该工程用例宣称检索质量提升。
+
+## FREE-04
+
+`TOOL_PERMISSION_POLICY=standard` 默认逐次确认；readonly 拒绝写路径/风险操作，trusted 仅采用用户显式规则作为预先确认。
+`TOOL_PERMISSION_RULES=[]`：Pydantic 校验，文件规则如 `{"tool":"create_file","path_prefix":"notes"}`，
+命令规则如 `{"tool":"run_command","command_prefix":["printf"]}`。无规则/未匹配仍逐次确认；不支持隐式全部批准。
+文件规则比较解析后的工作区相对路径组件（notes 不匹配 notes-other），命令按 argv 比较且排除 shell 组合、插值、重定向、多行。
+规则只决定确认方式，不放宽路径、额外根只读、Bubblewrap、断网或资源限制。匹配放行审计 decision_source=trusted_rule 与规则序号。
+`/policy readonly|standard|trusted` 持久化当前会话，`/policy default` 恢复环境配置；任务运行中不能更改。
+没有启用 `/approve all` 这种整轮不限范围授权；本项提供可完整使用的档位与逐工具范围规则。
+
+先失败测试复现无 readonly 约束/无规则/无持久化接口；文件/命令针对性 **63 passed, 1 deselected**，其中真实沙箱执行 printf 规则。
+完整 `uv run pytest -m 'not integration' -q`：**263 passed, 2 skipped, 4 deselected，8.26s**。
+随后补充两会话 readonly/trusted 并发隔离，`uv run pytest dev/tests/test_free04_permissions.py -q`：**6 passed**。
+无新依赖；权限变更由用户 CLI/配置完成，模型工具参数不能自行提升档位。

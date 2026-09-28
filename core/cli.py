@@ -26,6 +26,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /switch ID前缀       切换会话（也可点击左侧）
 /model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
 /tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
+/policy 档位         readonly/standard/trusted；default 恢复环境默认；无参数查看
 /rename 名称         重命名当前会话
 /prompt 指令         设置当前 Agent 的系统指令（空闲时）
 /remember 内容       保存当前会话的长期记忆
@@ -304,6 +305,11 @@ class AgentCLI:
                         self.manager.set_tool_names(session, names)
                     names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                     self.notice = '当前工具子集：' + ('全部' if names is None else ', '.join(names) or '无工具')
+                elif command == '/policy':
+                    if argument:
+                        self.manager.set_permission_policy(session, None if argument == 'default' else argument)
+                    policy = session.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY
+                    self.notice = f'当前权限策略：{policy}；预先确认规则 {len(config.TOOL_PERMISSION_RULES)} 条。trusted 未匹配规则时仍需逐次确认。'
                 elif command == '/switch':
                     matches = [key for key in self.manager.sessions if key.startswith(argument)]
                     if not argument or len(matches) != 1:

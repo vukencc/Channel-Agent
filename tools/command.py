@@ -53,7 +53,7 @@ def run_command(command: str, reason: str = "") -> str:
         audit("blocked", action="run_command", command=command, reason=str(exc))
         return f"[已拦截] {exc}"
 
-    if not ask_permission("run_command", command, reason):
+    if not ask_permission("run_command", command, reason, command=command):
         return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
 
     try:

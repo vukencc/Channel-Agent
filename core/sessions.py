@@ -205,7 +205,7 @@ class SessionManager:
             context = ToolContext(self.store.workspace(session.id), directory / 'audit.jsonl',
                                   lambda prompt, timeout: self._confirm(session, loop, prompt, timeout),
                                   tool_cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
-                                  tool_call_id=call['id'])
+                                  tool_call_id=call['id'], permission_policy=session.record.get('permission_policy'))
             with tool_context(context):
                 names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                 if names is not None and name not in names:
@@ -346,6 +346,14 @@ class SessionManager:
             raise ValueError('请等待当前任务结束再切换工具子集')
         schemas = filter_schemas(TOOL_SCHEMAS, names)
         session.record['tool_names'] = None if names is None else [row['function']['name'] for row in schemas]
+        self.save(session)
+
+    def set_permission_policy(self, session, policy: str | None):
+        if session.busy:
+            raise ValueError('请等待当前任务结束再修改权限策略')
+        if policy not in {None, 'readonly', 'standard', 'trusted'}:
+            raise ValueError('权限策略必须为 readonly/standard/trusted')
+        session.record['permission_policy'] = policy
         self.save(session)
 
     def set_model_profile(self, session, name):
