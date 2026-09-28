@@ -12,13 +12,13 @@ uv run ai-agent-startup
 
 ## 模板与分支开发
 
-本仓库作为模板基线维护：`main` 保持可用，历史版本用注解 tag 冻结（当前 `v0.1.0`）。
+本仓库作为模板基线维护：`main` 保持可用，历史版本用注解 tag 冻结（当前 `v0.2.0`）。
 
 ```bash
 # 从基线开启一个新方向
-git switch -c feat/<topic> v0.1.0
+git switch -c feat/<topic> v0.2.0
 # 并行开发（不来回切分支）
-git worktree add ../ai-agent-<topic> v0.1.0 -b feat/<topic>
+git worktree add ../ai-agent-<topic> v0.2.0 -b feat/<topic>
 ```
 
 较大分歧方向可在 GitHub 上用「Use this template」新建独立仓库（只复制默认分支内容）。

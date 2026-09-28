@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 FROM python:3.12-slim-bookworm
 
 # 固定 uv 版本；升级时同步修改此版本并重新验证。
@@ -9,6 +8,14 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PYTHONUNBUFFERED=1
+
+# 构建参数：镜像源与 torch 后端。默认 CPU 版 torch，镜像显著更小；
+# GPU 环境可加 --build-arg UV_TORCH_BACKEND=cu126；国内网络可换 UV_INDEX_URL。
+ARG UV_INDEX_URL=https://pypi.org/simple
+ARG UV_TORCH_BACKEND=cpu
+ENV UV_DEFAULT_INDEX=${UV_INDEX_URL} \
+    UV_TORCH_BACKEND=${UV_TORCH_BACKEND} \
+    UV_HTTP_TIMEOUT=300
 
 # 命令沙箱依赖：bubblewrap + prlimit（util-linux）；容器内可用性见 docs/docker.md。
 RUN apt-get update \
