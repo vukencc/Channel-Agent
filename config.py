@@ -116,6 +116,8 @@ RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)
 # Durable user conversations and memory, separate from disposable model caches.
 AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", ".agent")
 MAX_CONCURRENT_AGENTS = env_int("MAX_CONCURRENT_AGENTS", 4)
+ENABLE_SESSION_BUDGETS = env_bool('ENABLE_SESSION_BUDGETS', False)
+MODEL_RECOVERY_LIMIT = env_int('MODEL_RECOVERY_LIMIT', 1)
 MAX_TOOL_ROUNDS = env_int("MAX_TOOL_ROUNDS", 24)
 
 # 持久记忆写入上限；旧文件只限制注入，不改写。
@@ -144,7 +146,7 @@ def validate_runtime_config() -> None:
     if url.scheme not in {'http', 'https'} or not url.hostname:
         errors.append('BASE_URL 必须是有效的 http/https 地址')
     for name, value in globals().items():
-        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY', 'AUX_TIMEOUT', 'AUX_CONCURRENCY', 'MEMORY_CONCURRENCY', 'AUX_INPUT_COST_PER_MILLION', 'AUX_OUTPUT_COST_PER_MILLION'}:
+        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY', 'AUX_TIMEOUT', 'AUX_CONCURRENCY', 'MEMORY_CONCURRENCY', 'AUX_INPUT_COST_PER_MILLION', 'AUX_OUTPUT_COST_PER_MILLION', 'MODEL_RECOVERY_LIMIT'}:
             if not math.isfinite(value) or value <= 0:
                 errors.append(f'{name} 必须大于 0 且有限')
     if not DOC_DIR or not DOC_DIR.is_dir() or not os.access(DOC_DIR, os.R_OK):
@@ -162,6 +164,8 @@ def validate_runtime_config() -> None:
         validate_network_config()
     except ValueError as exc:
         errors.append(str(exc))
+    if not 0 <= MODEL_RECOVERY_LIMIT <= 3:
+        errors.append('MODEL_RECOVERY_LIMIT 必须在 0..3 之间')
     if WEB_SEARCH_CONFIRM not in {'always', 'off'}:
         errors.append('WEB_SEARCH_CONFIRM 必须为 always 或 off')
     for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:

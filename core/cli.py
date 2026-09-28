@@ -29,6 +29,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /switch ID前缀       切换会话（也可点击左侧）
 /model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
 /tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
+/config [JSON|预设]  查看或设置会话预算；default 恢复全局默认
 /policy 档位         readonly/standard/trusted；default 恢复环境默认；无参数查看
 /memory scope 范围   启用管理后选择 session/project/global/default；add/search/edit 使用 JSON
 /branch [编号]       启用分支后复制截至该消息的历史到新会话；system=0，默认末尾
@@ -207,6 +208,10 @@ class AgentCLI:
             idle = time.monotonic() - s.last_model_event_at
             if s.last_model_event_at and idle >= 5:
                 elapsed += f' · 等待后续数据 {idle:.0f}s / 空闲上限 {config.SESSION_TIMEOUT:g}s'
+        if config.ENABLE_SESSION_BUDGETS:
+            remaining = s.record.get('last_run', {}).get('budget', {}).get('rounds_remaining')
+            if remaining is not None:
+                elapsed += f' · 剩余模型轮次 {remaining}'
         return [('class:status', f'{s.id[:8]} | {LABELS.get(s.record["status"], "")} {s.phase}{elapsed} | 上下文 {len(s.record["messages"])} 条 | Ctrl+Q 退出')]
 
     def select(self, identifier):
@@ -395,6 +400,11 @@ class AgentCLI:
                         self.manager.set_tool_names(session, names)
                     names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                     self.notice = '当前工具子集：' + ('全部' if names is None else ', '.join(names) or '无工具')
+                elif command == '/config':
+                    from core.session_limits import effective_limits
+                    if argument:
+                        self.manager.set_limits(session, json.loads(argument) if argument.startswith('{') else argument)
+                    self.notice = json.dumps(effective_limits(session.record), ensure_ascii=False, indent=2)
                 elif command == '/policy':
                     if argument:
                         self.manager.set_permission_policy(session, None if argument == 'default' else argument)

@@ -54,7 +54,7 @@ def fork_record(store, source: dict, through: int | None = None) -> dict:
     record['messages'] = prefix
     record['branch'] = {'parent_id': source['id'], 'through': through}
     record['memory_namespace'] = 'session'
-    for field in ('model_profile', 'tool_names', 'permission_policy'):
+    for field in ('model_profile', 'tool_names', 'permission_policy', 'budget_overrides'):
         if field in source:
             record[field] = copy.deepcopy(source[field])
     if len(json.dumps(record, ensure_ascii=False).encode()) > config.SESSION_MAX_MB * 1024 ** 2:

@@ -4,6 +4,7 @@ import hashlib
 import json
 
 import config
+from core.session_limits import limit as session_limit
 
 
 def estimate_tokens(text: str) -> int:
@@ -57,7 +58,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
         return chars - ascii_chars + (ascii_chars + 3) // 4 + schema_tokens
     original_tokens = exact_tokens(before, sum(ascii_sizes) if messages else 2)
     dirty = set()
-    limit = config.MODEL_INPUT_CHARS - schema_chars
+    limit = session_limit('MODEL_INPUT_CHARS') - schema_chars
     def metrics():
         return {'original_chars': before, 'sent_chars': current_chars,
                 'original_tokens': original_tokens,
@@ -109,7 +110,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
     current_tokens = sum(tokens) + 1 + schema_tokens
 
     def over_budget():
-        return current_chars > budget or current_tokens > config.MODEL_INPUT_TOKENS - 100
+        return current_chars > budget or current_tokens > session_limit('MODEL_INPUT_TOKENS') - 100
 
     for i, message in enumerate(history):
         if not over_budget():
@@ -149,7 +150,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
         chars, ascii_chars = append_context_notice(history, notice)
         current_chars += chars
         current_ascii += ascii_chars
-    if current_chars > limit or exact_tokens(current_chars, current_ascii) > config.MODEL_INPUT_TOKENS:
+    if current_chars > limit or exact_tokens(current_chars, current_ascii) > session_limit('MODEL_INPUT_TOKENS'):
         raise ContextBudgetError(metrics())
     return history, metrics()
 

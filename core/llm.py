@@ -17,6 +17,7 @@ import openai
 from openai import AsyncOpenAI
 
 import config
+from core.session_limits import limit as session_limit
 from core.log import get_logger
 from core.context import estimate_tokens, request_tokens
 from core.messages import PackMessage
@@ -115,7 +116,7 @@ def reserved_cost(history, schemas, endpoint, options):
     output_price = endpoint.get('output_cost_per_million', config.OUTPUT_COST_PER_MILLION if primary else 0)
     if input_price <= 0 or output_price <= 0:
         return None
-    output_tokens = options.get('max_tokens', config.MODEL_OUTPUT_CHARS)
+    output_tokens = options.get('max_tokens', session_limit('MODEL_OUTPUT_CHARS'))
     return (request_tokens(history, schemas) * input_price + output_tokens * output_price) / 1e6
 
 
@@ -270,7 +271,7 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                     if tc.function and tc.function.arguments:
                         call['arguments'].append(tc.function.arguments)
                         metrics['argument_chars'] += len(tc.function.arguments)
-                if sum(metrics[key] for key in ('content_chars', 'reasoning_chars', 'argument_chars')) > config.MODEL_OUTPUT_CHARS:
+                if sum(metrics[key] for key in ('content_chars', 'reasoning_chars', 'argument_chars')) > session_limit('MODEL_OUTPUT_CHARS'):
                     raise ModelResponseError('模型单次输出超过字符上限，未执行工具；请拆分为小步骤。')
                 if emit and elapsed - progress_at >= .25:
                     if delta.tool_calls:

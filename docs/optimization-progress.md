@@ -29,7 +29,7 @@
 - [x] P1：FREE-09 headless
 - [x] P1：FREE-10 分支与重发
 - [x] P2：FREE-02 网络与长任务设计、实现
-- [ ] P2：FREE-06 会话预算设计、实现
+- [x] P2：FREE-06 会话预算设计、实现
 - [ ] P2：FREE-11 后台任务与子代理设计、实现
 - [ ] P2：FREE-12 多模态设计、实现
 - [ ] P2：FREE-14 可观测命令设计、实现
@@ -399,3 +399,12 @@ JSON stdout 仅一个对象，第三方 stdout 诊断重定向 stderr；已知�
 后台启动始终确认，返回 ID 后必须用 status/logs 观察真实结果；取消无需再次确认但记录审计。状态与日志在 state-dir/command-jobs/，按 owner 校验；退出取消并等待，重启标记 interrupted 而不重放。工作区写锁串行化后台命令和前台写工具。仅主进程存活时执行，不是系统服务；无自动重试、不开放宿主 venv/包管理挂载。
 
 验证：`uv run pytest dev/tests/test_free02_jobs.py dev/tests/test_free02_network.py dev/tests/test_command.py -q`：26 passed。真实 Linux bwrap 网络探针：白名单 example.com HTTPS 返回 200/559 字节；未授权 python.org 返回 CONNECT 403；直接连接公网 IP 返回 errno 101（无路由）。结果 `/tmp/agent-perf-results/free02-network.json`，无外部请求正文入审计。新增模块均为标准库，不增加依赖。
+
+## FREE-06（P2：会话预算）
+
+`ENABLE_SESSION_BUDGETS=false` 默认沿用全局配置；启用后 `/config {"MAX_TOOL_ROUNDS":12,"MODEL_RECOVERY_LIMIT":0}` 或 `/config conservative|standard|aggressive|default`。
+JSON 替换当前覆盖集，default 清空。预设仅缩放轮次和输出上限，其他值保持全局默认；每个会话持久保存、运行时禁止修改、分支继承。CLI 状态栏显示剩余模型轮次。仅用户 CLI 可设置，不增加模型修改配置工具；不需要写工具确认，不改权限或审计安全策略。
+
+允许覆盖：MAX_TOOL_ROUNDS 1..256，MAX_TOOL_CALLS_PER_ROUND 1..32，MODEL_INPUT_CHARS 512..1048576，MODEL_INPUT_TOKENS 128..262144，MODEL_OUTPUT_CHARS 1..1048576，TOOL_TIMEOUT (0,3600] 秒，MODEL_RECOVERY_LIMIT 0..3。未覆盖项保留既有环境值；工具独立时限和会话时限取更小值（仅显式覆盖时）。新增全局 MODEL_RECOVERY_LIMIT 默认 1，0 禁止自动恢复；恢复不得重放工具。
+
+采用 ContextVar，不修改全局配置，线程继承调用上下文。失败测试首先 4 failed；覆盖并行不同轮次、持久化、恢复 0/2、非法安全字段拒绝、实际上下文预算拒绝及 CLI。未新增依赖。
