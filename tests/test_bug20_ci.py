@@ -16,3 +16,10 @@ def test_ci_runs_locked_offline_suite_and_probes_real_sandbox():
 def test_runner_context_is_not_used_in_job_env():
     text = Path('.github/workflows/tests.yml').read_text()
     assert '${{ runner.' not in text.split('steps:', 1)[0]
+
+
+def test_release_workflow_points_at_docker_directory():
+    """Dockerfile 位于 docker/ 子目录，构建步骤必须显式指定 file。"""
+    text = Path('.github/workflows/release.yml').read_text()
+    assert 'file: docker/Dockerfile' in text
+    assert 'context: .' in text
