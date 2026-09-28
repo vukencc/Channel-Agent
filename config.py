@@ -133,7 +133,7 @@ def validate_runtime_config() -> None:
     if url.scheme not in {'http', 'https'} or not url.hostname:
         errors.append('BASE_URL 必须是有效的 http/https 地址')
     for name, value in globals().items():
-        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY'}:
+        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY', 'AUX_TIMEOUT', 'AUX_CONCURRENCY', 'MEMORY_CONCURRENCY', 'AUX_INPUT_COST_PER_MILLION', 'AUX_OUTPUT_COST_PER_MILLION'}:
             if not math.isfinite(value) or value <= 0:
                 errors.append(f'{name} 必须大于 0 且有限')
     if not DOC_DIR or not DOC_DIR.is_dir() or not os.access(DOC_DIR, os.R_OK):
@@ -151,9 +151,9 @@ def validate_runtime_config() -> None:
     for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:
         if value < 0:
             errors.append(f'{name} 不能为负数')
-    for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY'):
-        if globals()[name] < 0:
-            errors.append(f'{name} 不能为负数')
+    for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY', 'AUX_TIMEOUT', 'AUX_CONCURRENCY', 'MEMORY_CONCURRENCY', 'AUX_INPUT_COST_PER_MILLION', 'AUX_OUTPUT_COST_PER_MILLION'):
+        if not math.isfinite(globals()[name]) or globals()[name] < 0:
+            errors.append(f'{name} 必须为非负有限数字')
     for endpoint in MODEL_FALLBACKS:
         if endpoint.get('base_url'):
             parsed = urlparse(endpoint['base_url'])
@@ -240,6 +240,18 @@ RAG_BM25_PERSIST = env_bool('RAG_BM25_PERSIST', False)
 RAG_MEMORY_LIMIT_MB = env_int('RAG_MEMORY_LIMIT_MB', 0)
 RAG_INFERENCE_CONCURRENCY = env_int('RAG_INFERENCE_CONCURRENCY', 0)
 MODEL_STABLE_PREFIX = env_bool('MODEL_STABLE_PREFIX', False)
+AUX_MODEL = os.getenv('AUX_MODEL', '').strip()
+AUX_TIMEOUT = env_float('AUX_TIMEOUT', 0)
+AUX_CONCURRENCY = env_int('AUX_CONCURRENCY', 0)
+MEMORY_CONCURRENCY = env_int('MEMORY_CONCURRENCY', 0)
+SUMMARY_CONCURRENCY = env_int('SUMMARY_CONCURRENCY', 1)
+CONTEXT_SUMMARY_BACKGROUND = env_bool('CONTEXT_SUMMARY_BACKGROUND', False)
+AUX_INPUT_COST_PER_MILLION = env_float('AUX_INPUT_COST_PER_MILLION', 0)
+AUX_OUTPUT_COST_PER_MILLION = env_float('AUX_OUTPUT_COST_PER_MILLION', 0)
+try:
+    AUX_MODEL_PARAMETERS = ModelParameters.model_validate_json(os.getenv('AUX_MODEL_PARAMETERS', '{}')).model_dump(exclude_none=True)
+except ValueError:
+    raise ValueError('AUX_MODEL_PARAMETERS 参数无效') from None
 try:
     MODEL_TOOL_NAMES = json.loads(os.getenv('MODEL_TOOL_NAMES', 'null'))
     if MODEL_TOOL_NAMES is not None and (not isinstance(MODEL_TOOL_NAMES, list)

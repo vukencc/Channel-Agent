@@ -21,7 +21,7 @@
 - [ ] P1：PERF-04 内存准入与正文磁盘缓存已实现；全量模型 RSS 上限未验收
 - [x] P1：PERF-09 推理并发隔离（响应隔离通过；严格 p95 不增目标未达到）
 - [x] P1：PERF-10 稳定前缀与工具子集
-- [ ] P1：PERF-11 辅助模型
+- [x] P1：PERF-11 辅助模型与后台摘要
 - [ ] P1：FREE-01 多工具根
 - [ ] P1：FREE-04 权限策略
 - [ ] P1：FREE-07 多知识库与过滤
@@ -262,3 +262,24 @@ usage 保留输入总 tokens，另记录服务商提供的 cached_input_tokens�
 优化后加 `MODEL_STABLE_PREFIX=true` 与 `--tool-names read_file,rag_search`，其余配置相同。
 新增三项测试先失败，补充并发选择隔离与摘要/淘汰后前缀稳定；完整回归 `uv run pytest -m 'not integration' -q`：**243 passed, 3 deselected，8.43s**。
 无新依赖或新模型；本测试费用单价未配置，费用显示未知，不将其记为零。
+
+## PERF-11
+
+`AUX_MODEL=` 默认主模型，同 BASE_URL；`AUX_MODEL_PARAMETERS={}` 可覆盖已支持采样参数。
+`AUX_TIMEOUT=0` 沿用 ASSESS_TIMEOUT，`AUX_CONCURRENCY=0` 不增设辅助总额度；正整数启用独立辅助额度，主模型不占此额度。
+`MEMORY_CONCURRENCY=0` 保留与评估共享，正整数分离记忆提取；`SUMMARY_CONCURRENCY=1` 限制后台摘要。
+`CONTEXT_SUMMARY_BACKGROUND=false` 默认同步摘要不变；开启后缓存未命中不等待模型，保留真实淘汰说明，
+后台按内容哈希生成有界摘要，后续相同淘汰历史可复用；新轮/停止/关闭取消任务，不把摘要写入原始对话。
+不同内容键不会错用旧摘要；后台失败不阻断对话。代价是首次请求缺少该摘要，不能宣称语义质量等价。
+`AUX_INPUT_COST_PER_MILLION=0`、`AUX_OUTPUT_COST_PER_MILLION=0`：美元/百万 token，未知；同主模型可继承主单价。
+费用预算启用时不同模型未知价格在发送前拒绝；所有辅助调用沿用账本，没有预算/确认豁免。无新依赖、未下载新模型。
+
+真实既有 deepseek-v4.1-flash + 固定合成超长历史，前/后各一次：
+- 前台摘要准备 **3.373845 → 0.002345s**。
+- 摘要真实完成 **3.373847 → 5.304836s**；生成本身没有变快，本轮网络调用反而更慢。
+- 前台状态 applied → pending，等后台完成后第二次准备均 applied，真实摘要缓存各一项。
+命令：`THINKING_MODE=disabled uv run python -m dev.perf.summary --output /tmp/agent-perf-results/perf11-{before,after}.json`，
+after 显式 `CONTEXT_SUMMARY_BACKGROUND=true`。未接入另一个廉价模型，不虚构跨模型费用或摘要质量优势；SDK 入参测试验证配置路由。
+新增失败测试先确认旧实现固定模型/超时且无调度接口；补充主/辅助不互锁、未知价格拒绝、后台缓存复用测试。
+`uv sync --locked` 成功，移除可选 ann；完整 `uv run pytest -m 'not integration' -q`：**245 passed, 2 skipped, 3 deselected，8.16s**。
+两项跳过为未装 ann 的真实 HNSW 测试，其默认精确/回退测试仍执行；此前 extra ann 原生测试已通过。

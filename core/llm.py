@@ -349,18 +349,24 @@ async def complete(prompt: str, *, session_id: str | None = None) -> str:
     评估是可选后台工作，受独立总时限约束，不自动重试。
     """
     ticket = None
+    model = config.AUX_MODEL or config.MODEL
+    timeout = config.AUX_TIMEOUT or config.ASSESS_TIMEOUT
+    input_price = config.AUX_INPUT_COST_PER_MILLION or (config.INPUT_COST_PER_MILLION if model == config.MODEL else 0)
+    output_price = config.AUX_OUTPUT_COST_PER_MILLION or (config.OUTPUT_COST_PER_MILLION if model == config.MODEL else 0)
+    endpoint = {'model': model, 'input_cost_per_million': input_price, 'output_cost_per_million': output_price}
     async def operation():
         nonlocal ticket
         client = await asyncio.to_thread(get_client)
         options = model_options()
+        options.update(config.AUX_MODEL_PARAMETERS)
         options.pop('tool_choice', None)
         options.pop('parallel_tool_calls', None)
         ticket = await reserve_request(reserved_cost([PackMessage('user', prompt)], None,
-                                                     {'model': config.MODEL}, options))
+                                                     endpoint, options))
         return await client.with_options(
-            timeout=config.ASSESS_TIMEOUT
+            timeout=timeout
         ).chat.completions.create(
-            model=config.MODEL,
+            model=model,
             **options,
             messages=[PackMessage("user", prompt)],
             stream=False,
@@ -369,12 +375,11 @@ async def complete(prompt: str, *, session_id: str | None = None) -> str:
 
     actual = None
     try:
-        async with asyncio.timeout(config.ASSESS_TIMEOUT):
+        async with asyncio.timeout(timeout):
             response = await _retry(operation, "评估调用", attempts=1)
         usage = getattr(response, 'usage', None)
-        if usage and config.INPUT_COST_PER_MILLION > 0 and config.OUTPUT_COST_PER_MILLION > 0:
-            actual = (usage.prompt_tokens * config.INPUT_COST_PER_MILLION
-                      + usage.completion_tokens * config.OUTPUT_COST_PER_MILLION) / 1e6
+        if usage and input_price > 0 and output_price > 0:
+            actual = (usage.prompt_tokens * input_price + usage.completion_tokens * output_price) / 1e6
         return response.choices[0].message.content or ""
     finally:
         await settle_request(ticket, actual)
