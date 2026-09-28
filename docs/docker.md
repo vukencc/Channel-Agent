@@ -13,9 +13,13 @@
 docker build -f docker/Dockerfile --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ai-agent-startup:v0.2.0 .
 # 需要测试或可选功能：
 docker build -f docker/Dockerfile --build-arg UV_SYNC_ARGS="--dev --extra documents" -t ai-agent-startup:test .
+# GPU 环境（默认安装 CPU 版 torch，镜像更小）：
+docker build -f docker/Dockerfile --build-arg UV_TORCH_BACKEND=cu126 -t ai-agent-startup:gpu .
+# 国内网络可改用 PyPI 镜像源：
+docker build -f docker/Dockerfile --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t ai-agent-startup:v0.2.0 .
 ```
 
-首次构建会下载 Python 依赖（含 torch CPU 轮子），镜像通常 1~3GB。
+镜像默认安装 **CPU 版 torch**（体积约 1~2GB，显著小于 CUDA 版）；需要 GPU 重排时用 `UV_TORCH_BACKEND=cu126` 等覆盖。
 
 ## 运行
 
@@ -26,7 +30,7 @@ docker run --rm -it --env-file .env -e TERM=xterm-256color \
   -v ai-agent-state:/data/state \
   -v ai-agent-sandbox:/data/sandbox \
   -v ai-agent-rag:/data/rag-cache \
-  ai-agent-startup:v0.1.0
+  ai-agent-startup:v0.2.0
 ```
 
 headless 单次执行（默认拒绝一切待确认操作；需要写操作时显式 `--policy trusted` 并自行评估风险）：
@@ -34,13 +38,13 @@ headless 单次执行（默认拒绝一切待确认操作；需要写操作时�
 ```bash
 docker run --rm --env-file .env \
   -v ai-agent-state:/data/state \
-  ai-agent-startup:v0.1.0 --prompt "把 hello 保存到 hello.txt 并读回" --json
+  ai-agent-startup:v0.2.0 --prompt "把 hello 保存到 hello.txt 并读回" --json
 ```
 
 平台/沙箱能力说明：
 
 ```bash
-docker run --rm ai-agent-startup:v0.1.0 --platform
+docker run --rm ai-agent-startup:v0.2.0 --platform
 ```
 
 ## 模型缓存与知识库
@@ -51,7 +55,7 @@ RAG 首次使用会下载本地模型（约数 GB 量级）。复用宿主已有
 docker run --rm -it --env-file .env \
   -v "$PWD/.cache/rag:/data/rag-cache" \
   -v ai-agent-state:/data/state -v ai-agent-sandbox:/data/sandbox \
-  ai-agent-startup:v0.1.0
+  ai-agent-startup:v0.2.0
 ```
 
 知识库默认使用镜像内的 `/app/data/raw`；要挂载自己的语料：
@@ -65,7 +69,7 @@ docker run --rm -it --env-file .env \
 `run_command` 依赖 bwrap 创建用户/网络命名空间，Docker 默认 seccomp 会拦截。先验证：
 
 ```bash
-docker run --rm --entrypoint uv ai-agent-startup:v0.1.0 \
+docker run --rm --entrypoint uv ai-agent-startup:v0.2.0 \
   run --no-sync python dev/ci_sandbox_probe.py
 ```
 
