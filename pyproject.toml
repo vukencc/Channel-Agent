@@ -15,6 +15,7 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "sentence-transformers>=6.1.0",
     "tavily-python>=0.8.0,<0.9",
+    "torch>=2.14,<3",
 ]
 
 [project.scripts]
@@ -33,6 +34,16 @@ dev = [
     "pyarrow>=25.0.1",
     "pytest>=8",
 ]
+
+# torch 固定使用 PyTorch CPU 索引：镜像与开发环境更小，reranker 默认 CPU 推理。
+# 需要 GPU 时改为对应索引（如 pytorch-cu126）并重新执行 `uv lock`。
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
 
 [build-system]
 requires = ["hatchling"]

@@ -9,12 +9,10 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PYTHONUNBUFFERED=1
 
-# 构建参数：镜像源与 torch 后端。默认 CPU 版 torch，镜像显著更小；
-# GPU 环境可加 --build-arg UV_TORCH_BACKEND=cu126；国内网络可换 UV_INDEX_URL。
+# 构建参数：PyPI 镜像源（国内网络可覆盖）。torch 的 CPU 索引由
+# pyproject.toml 的 [tool.uv.sources] 固定；GPU 环境请修改该配置并重新 uv lock。
 ARG UV_INDEX_URL=https://pypi.org/simple
-ARG UV_TORCH_BACKEND=cpu
 ENV UV_DEFAULT_INDEX=${UV_INDEX_URL} \
-    UV_TORCH_BACKEND=${UV_TORCH_BACKEND} \
     UV_HTTP_TIMEOUT=300
 
 # 命令沙箱依赖：bubblewrap + prlimit（util-linux）；容器内可用性见 docs/docker.md。
@@ -28,10 +26,10 @@ WORKDIR /app
 #   --build-arg UV_SYNC_ARGS="--dev --extra documents"
 ARG UV_SYNC_ARGS="--no-dev"
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project ${UV_SYNC_ARGS}
+RUN uv sync --locked --no-install-project --no-cache ${UV_SYNC_ARGS}
 
 COPY . .
-RUN uv sync --locked ${UV_SYNC_ARGS}
+RUN uv sync --locked --no-cache ${UV_SYNC_ARGS}
 
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="ai-agent-startup" \
