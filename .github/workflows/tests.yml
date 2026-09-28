@@ -30,8 +30,8 @@ jobs:
           AUDIT_LOG=$RUNNER_TEMP/audit.log
           RAG_CACHE_DIR=$RUNNER_TEMP/rag-cache
           EOF
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
           enable-cache: true
@@ -52,13 +52,13 @@ jobs:
       OPENBLAS_NUM_THREADS: '1'
       OMP_NUM_THREADS: '4'
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
           enable-cache: true
       - run: uv sync --locked
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cache/rag
           key: rag-models-v1-${{ hashFiles('dev/rag/prepare_assets.py', 'dev/rag/inputs/quality.json') }}
