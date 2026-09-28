@@ -219,3 +219,9 @@ RAG_SOURCES 显式配置只读命名库与可选三档阈值；工具支持有�
 
 ENABLE_MEMORY_MANAGEMENT 默认关闭；命名空间、标签/来源搜索、到期排除与确认后原子编辑已实现。到期不删除、容量不放宽、候选不自动采纳。
 CLI scope/add/search/edit 及原记忆命令遵循所选空间，导出/持久化与并发文件锁保持。专项 10 passed，完整回归 274 passed；配置与状态目录内命名空间边界见 docs/optimization-progress.md。
+
+### FREE-09（完成：P1 headless）
+
+显式 --prompt/--json/--session 复用完整会话循环，无 TTY 默认拒绝待确认操作；只有 --policy trusted 使用显式范围规则。
+真实模型输出单 JSON 验证通过；检查点/取消退出码、工具配对、持久化及真实 SIGINT 子进程专项 6 passed。完整回归 280 passed。
+状态锁不放宽，HTTP/SSE/远程审批仍仅设计。入口与限制见 docs/optimization-progress.md。

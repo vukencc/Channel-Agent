@@ -3,6 +3,8 @@ import argparse
 import asyncio
 import logging
 import json
+import sys
+from contextlib import redirect_stdout
 import time
 from pathlib import Path
 
@@ -456,7 +458,15 @@ def main():
     parser = argparse.ArgumentParser(description='多会话 Agent CLI：自动保存、独立工作区、文件记忆')
     parser.add_argument('--state-dir', type=Path, default=config.AGENT_STATE_DIR, help='持久化目录')
     parser.add_argument('--list', action='store_true', help='列出已保存会话后退出')
+    parser.add_argument('--prompt', help='无 TTY 单次执行；默认拒绝待确认操作')
+    parser.add_argument('--json', action='store_true', help='headless 输出单个 JSON 对象')
+    parser.add_argument('--session', help='headless 继续已有会话 ID 或唯一前缀')
+    parser.add_argument('--policy', choices=['readonly', 'standard', 'trusted'], help='headless 显式权限档位，默认 standard 并拒绝人工确认')
     args = parser.parse_args()
+    if args.prompt is None and (args.json or args.session or args.policy):
+        parser.error('--json/--session/--policy 需要 --prompt')
+    if args.prompt is not None and (not args.prompt.strip() or args.list):
+        parser.error('--prompt 不能为空且不能与 --list 同用')
     try:
         if not args.list:
             config.validate_runtime_config()
@@ -473,6 +483,28 @@ def main():
             for error in store.errors:
                 print('无法读取：', error)
             return
+        if args.prompt is not None:
+            from core.headless import run_headless, RedactingFormatter
+            logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+            for handler in logging.getLogger().handlers:
+                handler.setFormatter(RedactingFormatter('%(levelname)s %(name)s: %(message)s'))
+            async def execute_once():
+                try:
+                    return await run_headless(store, args.prompt, session_id=args.session, policy=args.policy or 'standard')
+                finally:
+                    await llm.close_clients()
+            try:
+                # 第三方模型/解析器的诊断输出不得污染 JSON stdout。
+                with redirect_stdout(sys.stderr):
+                    result = asyncio.run(execute_once())
+            except (ValueError, OSError) as exc:
+                parser.exit(2, str(exc) + '\n')
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False))
+            else:
+                answers = [row.get('content', '') for row in result['messages'] if row['role'] == 'assistant' and not row.get('tool_calls')]
+                print('\n'.join(answers) or result['error'] or result['status'])
+            raise SystemExit(result['exit_code'])
         # Keep debug/audit messages out of the interactive layout.
         logging.basicConfig(filename=store.root / 'cli.log', level=logging.DEBUG if config.DEBUG else logging.INFO,
                             format='%(asctime)s %(levelname)s %(name)s: %(message)s')

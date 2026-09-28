@@ -10,7 +10,7 @@ Web 搜索由 WEB_SEARCH_TIMEOUT 限制网络等待；评估池与前台分开�
 内存预算需覆盖多进程模型副本；命令仍由 Bubblewrap 隔离，写工具不迁入可随意杀死的后台线程。
 验收应注入卡死 native worker，验证回收进程、释放槽位、请求不串轮、已完成工具不重放；本轮不实现该架构。
 
-## BUG-19：Headless 契约（设计，尚未提供命令）
+## BUG-19：Headless 契约（单次入口已由 FREE-09 实现）
 
 计划入口 `--prompt TEXT --json --state-dir PATH`：复用 SessionStore/SessionManager，一次输入执行至 idle/checkpoint/error，等待已授权工具收尾，刷新保存队列后退出。
 不启用 TUI、不读取键盘；无确认代理时所有写入/命令/网络确认默认拒绝，拒绝仍作为对应 tool_call_id 的工具结果反馈。禁止提供默认自动批准的 --yes-all。
@@ -19,6 +19,10 @@ Web 搜索由 WEB_SEARCH_TIMEOUT 限制网络等待；评估池与前台分开�
 标准输出仅一个 JSON 对象：`version/session_id/turn_id/status/messages/metrics/error`，stderr 为诊断日志，不输出密钥；状态码 0=正常完成、2=配置或参数错误、3=检查点未完成、4=执行失败、130=取消。
 流式版本另设 `--jsonl`，事件含递增 seq、session/turn、type、payload，最终 done 事件；重连不重放工具副作用。
 现有 `main.py` 和 `--list` 保持兼容。最小验收包括 fake model 的纯文本结束、拒绝真实写入、配对结果、超时检查点、SIGINT 后持久化、无 stdout 日志污染。
+
+FREE-09 状态：`--prompt/--json/--session/--policy` 已提供，真实服务和子进程 SIGINT 已验证；默认拒绝人工确认，
+仅显式 `--policy trusted` 应用已配置范围规则。JSON messages 为本轮消息，完整历史保留磁盘；参数错误 stderr/退出 2。
+`--jsonl`、审批服务和 HTTP/SSE 仍为下述设计，不宣称已提供。详见 `docs/optimization-progress.md`。
 
 ## HTTP API + SSE（仅设计）
 

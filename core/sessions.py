@@ -55,8 +55,13 @@ class Session:
 
 
 class SessionManager:
-    def __init__(self, store: SessionStore, notify: Callable[[], None] = lambda: None, model=call_model):
+    def __init__(self, store: SessionStore, notify: Callable[[], None] = lambda: None, model=call_model,
+                 *, confirmation_handler=None, permission_override=None):
         self.store, self.notify, self.model = store, notify, model
+        if permission_override not in {None, 'readonly', 'standard', 'trusted'}:
+            raise ValueError('无效权限覆盖')
+        self.confirmation_handler = confirmation_handler
+        self.permission_override = permission_override
         self.sessions = {r['id']: Session(r) for r in store.list_metadata()}
         self.budget_ledger = BudgetLedger(store.root) if (config.SESSION_COST_LIMIT or config.DAILY_COST_LIMIT or config.MODEL_REQUESTS_PER_MINUTE) else None
         self.pending_saves = set()
@@ -167,6 +172,8 @@ class SessionManager:
             self.notify()
 
     def _confirm(self, session, loop, prompt, timeout):
+        if self.confirmation_handler is not None:
+            return bool(self.confirmation_handler(prompt, timeout)) and not session.cancelled.is_set()
         decision = concurrent.futures.Future()
         def show():
             if decision.done():
@@ -205,7 +212,7 @@ class SessionManager:
             context = ToolContext(self.store.workspace(session.id), directory / 'audit.jsonl',
                                   lambda prompt, timeout: self._confirm(session, loop, prompt, timeout),
                                   tool_cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
-                                  tool_call_id=call['id'], permission_policy=session.record.get('permission_policy'))
+                                  tool_call_id=call['id'], permission_policy=self.permission_override or session.record.get('permission_policy'))
             with tool_context(context):
                 names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                 if names is not None and name not in names:

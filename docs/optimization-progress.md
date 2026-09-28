@@ -26,7 +26,7 @@
 - [x] P1：FREE-04 权限档位与范围白名单
 - [x] P1：FREE-07 多知识库与过滤
 - [x] P1：FREE-08 显式记忆管理
-- [ ] P1：FREE-09 headless
+- [x] P1：FREE-09 headless
 - [ ] P1：FREE-10 分支与重发
 - [ ] P2：FREE-02 网络与长任务设计、实现
 - [ ] P2：FREE-06 会话预算设计、实现
@@ -346,3 +346,19 @@ scope 不复制或迁移旧记忆，切换仅改变当前会话读取目标；/r
 先失败测试覆盖缺少命名空间、到期、搜索/编辑；补充 CLI 编辑拒绝/确认、导出/恢复与开关隔离。
 验证：`uv run pytest dev/tests/test_free08_memory_management.py dev/tests/test_bug14_memory.py dev/tests/test_cli.py -q`：**10 passed**；
 完整 `uv run pytest -m 'not integration' -q`：**274 passed, 2 skipped, 5 deselected，8.38s**。无新依赖。
+
+## FREE-09
+
+显式 `uv run main.py --prompt "任务" --json --state-dir <目录>` 单次运行；不创建 TUI，不读取 stdin，复用 SessionManager 全链路。
+`--session <ID 或唯一前缀>` 继续已保存会话；无 --prompt 仍使用原 CLI。没有 --yes-all。
+headless 默认 standard 且确认立即返回拒绝，即使环境/已保存会话是 trusted 也不自动继承；
+仅显式 `--policy trusted` 才使用已有的范围预先确认规则，未匹配仍拒绝，全部工具配对/审计/隔离/原子收尾保留。
+JSON stdout 仅一个对象，第三方 stdout 诊断重定向 stderr；已知配置密钥在结果与日志格式化中隐藏。
+字段 version/session_id/turn_id/status/exit_code/messages/metrics/error/permission_policy；messages 仅本轮，完整历史仍持久化。
+退出码 0 正常结束、2 参数/配置错误、3 检查点未完成、4 执行失败、130 取消；拒绝工具的具体原因在配对工具结果中。
+参数错误在 stderr 返回信息，不伪造成功 JSON。仍保持状态目录单写者锁，没有 HTTP/API/跨进程共享服务。
+
+新增失败测试后实现；文本/恢复、无 TTY 写拒绝、检查点、取消持久化、已知密钥隐藏与真实子进程 SIGINT 测试：**6 passed**。
+真实既有服务调用：临时状态目录执行 --prompt/--json，stdout 可解析为唯一对象、status=idle、exit_code=0、2 条本轮消息/1 次模型调用。
+原始结果 `/tmp/agent-headless-smoke-result.json`；没有替换模型输出或执行用户数据目录写入。
+完整 `uv run pytest -m 'not integration' -q`：**280 passed, 2 skipped, 5 deselected，10.29s**。无新增配置变量/依赖（显式 CLI 参数开启）。
