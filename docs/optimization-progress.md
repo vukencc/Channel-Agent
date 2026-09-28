@@ -18,7 +18,7 @@
 - [x] P1：PERF-01 重排与缓存
 - [x] P1：PERF-02 可选 ANN
 - [x] P1：PERF-03 增量持久化 BM25
-- [ ] P1：PERF-04 内存上限
+- [ ] P1：PERF-04 内存准入与正文磁盘缓存已实现；全量模型 RSS 上限未验收
 - [ ] P1：PERF-09 推理并发隔离
 - [ ] P1：PERF-10 稳定前缀与工具子集
 - [ ] P1：PERF-11 辅助模型
@@ -206,3 +206,22 @@ GPU 环境未实测，不宣称 GPU/fp16 性能或质量通过。候选缩减可
 新增存储重启无重新分词、旧读快照、删词、与原公式/排名完全相同测试；保留所有现有混合检索测试。
 不新增依赖，使用 Python 标准库 sqlite3。全部索引写临时目录。
 真实完整链路：本地模型 + RAG_BM25_PERSIST=true + RUN_RAG_INTEGRATION=1，`uv run pytest dev/tests/test_rag_integration.py -q`：**2 passed，14.78s**，含四阶段结果与阈值仅后置过滤校验。
+
+## PERF-04（实现与范围限制）
+
+新增 `RAG_MEMORY_LIMIT_MB=0`，默认关闭。显式开启后，原文/父块/子块正文使用内容哈希 SQLite 存储，
+分块与正文共享按字节淘汰缓存（预算四分之一，最多 64 MiB）；BM25 自动使用磁盘倒排表，嵌入按批读取正文。
+Linux RSS 在加载、分块、索引、检索和重排边界检查，超预算明确拒绝。无新依赖，不改变工具确认或审计。
+这是一项进程 RSS **准入检查**，包含其他会话与模型，不能限制检查间的临时/native 分配，不等同 cgroup 硬配额。
+
+前后各独立进程，读取已有公开 T2Retrieval parquet 前 100,000 条，准备文件在子进程，不按检索表现挑选：
+加载与分块峰值 RSS **460.250 → 337.570 MiB**，耗时 **13.255816 → 22.866322s**；父块均 **200,697**。
+优化后预算 512 MiB。本测量不含全部语料嵌入/重排，不能宣称 10 万文档完整 RAG RSS 已验收。
+命令：`RAG_MEMORY_LIMIT_MB=512 uv run python -m dev.perf.benchmark memory --corpus <已有公开 parquet> --output /tmp/agent-perf-results/perf04-after.json`。
+默认回归：`uv run pytest -m 'not integration' -q`：**236 passed, 3 deselected，8.55s**。
+启用预算 2048 的专项：`uv run pytest dev/tests/test_perf04_memory.py dev/tests/test_bug12_index.py dev/tests/test_hybrid_rag.py -q`：**31 passed，0.76s**。
+真实本地模型集成：2048 MiB **1 passed / 1 failed**，第二项被真实 RSS 检查拒绝；未放宽检查或测试。
+提高显式配置到 4096 MiB 后，同一 `RUN_RAG_INTEGRATION=1 uv run pytest dev/tests/test_rag_integration.py -q`：**2 passed，12.65s**。
+因此 512 MiB 只是加载/分块场景结果，不是本地模型完整运行的推荐预算。
+补充固定公开 343 文档/10 查询两轮实测：与 PERF-01 输出比较，**20 份四阶段全部字段及 selected_ids 完全一致**。
+原始结果 `/tmp/agent-perf-results/perf04-rag-after.json`；同一 manifest SHA256，缓存配置保持 1024/128，未改阈值。

@@ -19,6 +19,8 @@ from rag.file_events import FileEvents
 from rag.embedding import get_embedding_model, artifact_signature, local_model_path
 from rag.lexical import BM25Index
 from rag.result_cache import ResultCache
+from rag.text_store import (TextRecord, TextSequence, text_store, shared_cache,
+                            object_bytes, check_memory_budget)
 
 
 logger = get_logger(__name__)
@@ -64,11 +66,13 @@ class DocLoader:
     dir: Path
 
     def load(self) -> list[dict]:
+        check_memory_budget()
         root = Path(self.dir).resolve()
         if not root.is_dir():
             raise ValueError(f'DOC_DIR is not a directory: {root}')
         documents = []
         fingerprints = []
+        store = text_store(config.RAG_CACHE_DIR) if config.RAG_MEMORY_LIMIT_MB else None
         with _document_lock:
             cache = _document_cache.setdefault(root, {})
             events = _file_events.setdefault(root, None)
@@ -87,25 +91,50 @@ class DocLoader:
                 fingerprint = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
                 present.add(path)
                 events.watch(path)
-                if changed is None or path in changed or path not in cache or cache[path][0] != fingerprint:
+                if (changed is None or path in changed or path not in cache or cache[path][0] != fingerprint
+                        or bool(store) != isinstance(cache[path][1], TextRecord)):
                     try:
+                        if config.RAG_MEMORY_LIMIT_MB and (len(present) % 128 == 0 or stat.st_size > 1024 ** 2):
+                            check_memory_budget(stat.st_size * 4)
                         content = load_document(path)
                     except ImportError:
                         logger.warning('缺少可选解析器，跳过 %s；PDF 需 pypdf，Word 需 python-docx', path)
                         continue
                     name = path.relative_to(root).as_posix()
                     doc = {'content': content, 'metadata': {'source': str(path), 'filename': name, 'doc_id': name}}
+                    if store:
+                        doc = TextRecord({'metadata': doc['metadata']}, 'content', content, store)
                     cache[path] = (fingerprint, doc, hashlib.sha256(content.encode()).hexdigest())
                 documents.append(cache[path][1])
                 fingerprints.append((str(path), cache[path][2]))
             for deleted in cache.keys() - present:
                 del cache[deleted]
         self.fingerprint = hashlib.sha256(json.dumps(fingerprints).encode()).hexdigest()
+        if store:
+            store.flush()
+        check_memory_budget()
         return documents
 
 
-@lru_cache(maxsize=4096)
 def split_document(content, parent_chars, child_chars):
+    if not config.RAG_MEMORY_LIMIT_MB:
+        return _split_cached(content, parent_chars, child_chars)
+    cache = shared_cache()
+    key = ('split', hashlib.sha256(content.encode()).digest(), parent_chars, child_chars)
+    value = cache.get(key)
+    if value is None:
+        check_memory_budget(len(content) * 8)
+        value = _split_uncached(content, parent_chars, child_chars)
+        cache.put(key, value, object_bytes(value) + object_bytes(key))
+    return value
+
+
+@lru_cache(maxsize=4096)
+def _split_cached(content, parent_chars, child_chars):
+    return _split_uncached(content, parent_chars, child_chars)
+
+
+def _split_uncached(content, parent_chars, child_chars):
     splitter = TextSplitter(parent_chars, child_chars)
     return tuple((text, start, end, tuple(splitter.pack_children(text)))
                  for text, start, end in splitter.split_parents(content))
@@ -167,6 +196,8 @@ def _cached_embeddings(texts: list[str], model, progress=None) -> np.ndarray:
 
 class RetrievalIndex:
     def __init__(self, documents: list[dict], progress=None):
+        check_memory_budget()
+        store = text_store(config.RAG_CACHE_DIR) if config.RAG_MEMORY_LIMIT_MB else None
         self.parents: list[dict] = []
         self.children: list[dict] = []
         splitter = TextSplitter(config.RAG_PARENT_CHARS, config.RAG_CHILD_CHARS)
@@ -183,24 +214,38 @@ class RetrievalIndex:
                 self.parents.append({'id': parent_id, 'document': text, 'metadata': {
                     **metadata, 'doc_id': doc_id, 'parent': pi, 'start': start, 'end': end,
                 }})
+                if store:
+                    parent = self.parents[-1]
+                    self.parents[-1] = TextRecord({'id': parent_id, 'metadata': parent['metadata']}, 'document', text, store)
                 for ci, (child, a, b) in enumerate(children):
                     self.children.append({'content': child, 'parent_index': parent_index,
                                           'child': ci, 'start': start + a, 'end': start + b})
+                    if store:
+                        child_row = self.children[-1]
+                        self.children[-1] = TextRecord({key: value for key, value in child_row.items() if key != 'content'},
+                                                      'content', child, store)
+            if store:
+                check_memory_budget()
         self.by_id = {parent['id']: parent for parent in self.parents}
         self.parent_indexes = np.array([child['parent_index'] for child in self.children], dtype=np.int32)
         self.model = get_embedding_model() if self.children else None
-        self.vectors = cached_embeddings([row['content'] for row in self.children], self.model, progress)
-        if config.RAG_BM25_PERSIST:
+        self.vectors = cached_embeddings(TextSequence(self.children, 'content') if store else
+                                        [row['content'] for row in self.children], self.model, progress)
+        if config.RAG_BM25_PERSIST or store:
             from rag.lexical_store import PersistentBM25
             namespace = hashlib.sha256(json.dumps([str(config.DOC_DIR.resolve()), config.RAG_PARENT_CHARS,
                                                    config.RAG_CHILD_CHARS, 'jieba-bm25-v1']).encode()).hexdigest()
             self.lexical = PersistentBM25(config.RAG_CACHE_DIR / 'lexical' / f'{namespace}.sqlite',
-                [parent['document'] for parent in self.parents], [parent['id'] for parent in self.parents])
+                TextSequence(self.parents, 'document'), [parent['id'] for parent in self.parents])
         else:
             self.lexical = BM25Index([parent['document'] for parent in self.parents])
         self.query_cache = ResultCache()
+        if store:
+            store.flush()
+        check_memory_budget()
 
     def dense(self, query: str, limit: int) -> list[dict]:
+        check_memory_budget()
         if not self.children:
             return []
         key = hashlib.sha256(query.encode()).digest()
@@ -261,7 +306,8 @@ def get_index() -> RetrievalIndex:
            config.EMBEDDING_MODEL_API_KEY, config.EMBEDDING_LOCAL_PATH,
            config.RAG_CACHE_DIR, config.RAG_BATCH_SIZE, config.RAG_THREADS)
     key += (config.RAG_VECTOR_BACKEND, config.RAG_ANN_MIN_CHILDREN, config.RAG_ANN_M,
-            config.RAG_ANN_EF_CONSTRUCTION, config.RAG_ANN_EF_SEARCH, config.RAG_BM25_PERSIST)
+            config.RAG_ANN_EF_CONSTRUCTION, config.RAG_ANN_EF_SEARCH, config.RAG_BM25_PERSIST,
+            config.RAG_MEMORY_LIMIT_MB)
     if config.EMBEDDING_MODEL_SOURCE.upper() == 'LOCAL':
         key += (artifact_signature(local_model_path()),)
     if key == _cached_key:

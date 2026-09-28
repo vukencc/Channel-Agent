@@ -7,16 +7,28 @@ import unicodedata
 import jieba
 import numpy as np
 from rank_bm25 import BM25Okapi
+import config
 
 _TOKENIZER = jieba.Tokenizer()
 _TOKENIZER.tmp_dir = '/tmp'
 
 
-@lru_cache(maxsize=8192)
 def tokenize(text: str) -> list[str]:
+    return _tokenize(text) if config.RAG_MEMORY_LIMIT_MB else _cached_tokens(text)
+
+
+@lru_cache(maxsize=8192)
+def _cached_tokens(text):
+    return _tokenize(text)
+
+
+def _tokenize(text):
     normalized = unicodedata.normalize('NFKC', text).casefold()
     return [token for token in _TOKENIZER.cut(normalized, HMM=False)
             if re.search(r'\w', token, flags=re.UNICODE)]
+
+
+tokenize.cache_clear = _cached_tokens.cache_clear
 
 
 class BM25Index:

@@ -4,6 +4,7 @@ from rag.cancellation import check_cancelled
 import json
 import hashlib
 from rag.result_cache import ResultCache
+from rag.text_store import check_memory_budget
 
 import numpy as np
 
@@ -12,6 +13,7 @@ import config
 
 class Reranker:
     def __init__(self):
+        check_memory_budget()
         import torch
         from sentence_transformers import CrossEncoder
         torch.set_num_threads(config.RAG_THREADS)
@@ -35,8 +37,10 @@ class Reranker:
         )
         self.identity = str(path or config.RERANK_MODEL)
         self.score_cache = ResultCache()
+        check_memory_budget()
 
     def score(self, query: str, passages: list[str]) -> list[float]:
+        check_memory_budget()
         check_cancelled()
         if config.RAG_RERANK_CACHE_SIZE <= 0:
             return self._score_uncached(query, passages)

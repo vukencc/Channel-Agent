@@ -33,7 +33,7 @@ def sessions(count, megabytes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export', 'rag', 'vector', 'bm25'])
+    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export', 'rag', 'vector', 'bm25', 'memory'])
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
@@ -47,7 +47,8 @@ def main():
                                    audit(args.baseline_ref) if args.case == 'audit' else
                                    rag(args.corpus, args.output) if args.case == 'rag' else
                                    vector(args.output) if args.case == 'vector' else
-                                   bm25(args.output) if args.case == 'bm25' else export())}
+                                   bm25(args.output) if args.case == 'bm25' else
+                                   memory(args.corpus) if args.case == 'memory' else export())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({key: value for key, value in result.items() if key != 'traces'}))
@@ -269,6 +270,43 @@ def bm25(output):
     return {'documents': len(texts), 'initial_seconds': initial,
             'one_update_seconds': changed, 'warm_restart_seconds': restart,
             'persistent': getattr(config, 'RAG_BM25_PERSIST', False), 'matches': after}
+
+
+def memory(corpus):
+    """10 万真实语料文件的加载/分块 RSS；准备在子进程，模型推理不计入此项。"""
+    import subprocess
+    import sys
+    import config
+    from rag.index import DocLoader, split_document
+    with tempfile.TemporaryDirectory(prefix='agent-memory-') as directory:
+        root = Path(directory)
+        docs = root / 'docs'
+        docs.mkdir()
+        subprocess.run([sys.executable, '-c', '''
+import sys
+from pathlib import Path
+import pyarrow.parquet as pq
+root = Path(sys.argv[2])
+count = 0
+for batch in pq.ParquetFile(sys.argv[1]).iter_batches(batch_size=1024, columns=['id','text']):
+    for row in batch.to_pylist():
+        (root / (str(row['id']) + '.txt')).write_text(row['text'], encoding='utf-8')
+        count += 1
+        if count == 100000:
+            raise SystemExit(0)
+raise SystemExit('公开语料不足 10 万条')
+''', str(corpus), str(docs)], check=True)
+        config.RAG_CACHE_DIR = root / 'cache'
+        start = time.perf_counter()
+        documents = DocLoader(docs).load()
+        chunks = 0
+        for doc in documents:
+            chunks += len(split_document(doc['content'], config.RAG_PARENT_CHARS, config.RAG_CHILD_CHARS))
+        return {'documents': len(documents), 'parent_chunks': chunks,
+                'seconds': time.perf_counter() - start,
+                'peak_rss_mib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+                'scope': '真实公开文本加载/分块，不含嵌入与重排模型',
+                'memory_limit_mb': getattr(config, 'RAG_MEMORY_LIMIT_MB', 0)}
 
 
 if __name__ == '__main__':

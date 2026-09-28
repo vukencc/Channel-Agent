@@ -18,8 +18,8 @@ class PersistentBM25:
         self.positions = {identifier: i for i, identifier in enumerate(identifiers)}
         with closing(self._writer()) as db:
             saved = dict(db.execute('SELECT id, digest FROM documents'))
-        changes = {identifier: text for identifier, text in zip(identifiers, texts, strict=True)
-                   if saved.get(identifier) != hashlib.sha256(text.encode()).hexdigest()}
+        changes = ((identifier, text) for identifier, text in zip(identifiers, texts, strict=True)
+                   if saved.get(identifier) != hashlib.sha256(text.encode()).hexdigest())
         self._write(changes, set(saved) - self.positions.keys())
         self._snapshot()
 
@@ -47,7 +47,7 @@ class PersistentBM25:
                     db.execute('DELETE FROM documents WHERE id=?', (identifier,))
                     count -= 1
                     total -= old[0]
-            for identifier, text in changes.items():
+            for identifier, text in changes.items() if hasattr(changes, 'items') else changes:
                 terms = Counter(tokenize(text))
                 length = sum(terms.values())
                 old = db.execute('SELECT length FROM documents WHERE id=?', (identifier,)).fetchone()
