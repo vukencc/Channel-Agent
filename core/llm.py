@@ -20,6 +20,7 @@ import config
 from core.log import get_logger
 from core.context import estimate_tokens, request_tokens
 from core.messages import PackMessage
+from core.model_settings import active_profile
 from tools import all_schemas
 
 logger = get_logger(__name__)
@@ -82,12 +83,26 @@ class ModelResponseError(RuntimeError):
 
 def model_options() -> dict:
     """Explicit provider options; do not silently retry with different semantics."""
-    options = {}
+    options = dict(config.MODEL_PARAMETERS)
+    options.update(selected_profile().get('parameters', {}))
     if config.REASONING_EFFORT and config.THINKING_MODE != "disabled":
         options['reasoning_effort'] = config.REASONING_EFFORT
     if config.THINKING_MODE != "auto":
         options['extra_body'] = {'thinking': {'type': config.THINKING_MODE}}
     return options
+
+
+def selected_profile():
+    name = active_profile.get()
+    if name is None:
+        return {}
+    if name not in config.MODEL_PROFILES:
+        raise ValueError(f'模型 profile 不存在：{name}')
+    return config.MODEL_PROFILES[name]
+
+
+def selected_model():
+    return selected_profile().get('model', config.MODEL)
 
 
 # 连接类/限流/服务端错误，属于瞬时故障，可以重试
@@ -138,10 +153,10 @@ async def _retry(operation, what: str, attempts: int | None = None):
 
 async def _open_stream(history: list[dict], session_id: str | None = None):
     """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
-    endpoints = [{'model': config.MODEL}, *config.MODEL_FALLBACKS]
+    endpoints = [{'model': selected_model()}, *config.MODEL_FALLBACKS]
     route = _route.get()
     if route is None:
-        route = {'model': config.MODEL, 'fallbacks': []}
+        route = {'model': selected_model(), 'fallbacks': []}
         _route.set(route)
     for index, endpoint in enumerate(endpoints):
         route['model'] = endpoint['model']
@@ -149,11 +164,12 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
         async def operation():
             client = await asyncio.to_thread(endpoint_client, endpoint)
             options = model_options()
+            options.setdefault('tool_choice', 'auto')
             if config.MODEL_STREAM_USAGE:
                 options['stream_options'] = {'include_usage': True}
             return await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
                 model=endpoint['model'], **options, messages=history, stream=True,
-                tools=TOOL_SCHEMAS, tool_choice='auto',
+                tools=TOOL_SCHEMAS,
                 extra_headers={'x-opencode-session': session_id} if session_id else None)
         try:
             # 有备用时为每个连接阶段预留时间；流开始后不自动换模型。
@@ -168,7 +184,7 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
 
 async def call_model(history: list[dict], *, session_id: str | None = None, emit=None) -> dict:
     """Bound retries + stream by a wall-clock deadline; never execute partial calls."""
-    route = {'model': config.MODEL, 'fallbacks': [], 'endpoint': {}}
+    route = {'model': selected_model(), 'fallbacks': [], 'endpoint': {}}
     route_token = _route.set(route)
     started = time.monotonic()
     metrics = {'input_chars': len(json.dumps(history, ensure_ascii=False)),
@@ -271,8 +287,9 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                            + ''.join(''.join(call['arguments']) for call in tool_calls.values())))
         metrics.setdefault('tokens_source', 'estimate')
         endpoint = route['endpoint']
-        input_price = endpoint.get('input_cost_per_million', config.INPUT_COST_PER_MILLION if not route['fallbacks'] else 0)
-        output_price = endpoint.get('output_cost_per_million', config.OUTPUT_COST_PER_MILLION if not route['fallbacks'] else 0)
+        primary_price = not route['fallbacks'] and route['model'] == config.MODEL
+        input_price = endpoint.get('input_cost_per_million', config.INPUT_COST_PER_MILLION if primary_price else 0)
+        output_price = endpoint.get('output_cost_per_million', config.OUTPUT_COST_PER_MILLION if primary_price else 0)
         metrics.update(model=route['model'], fallbacks=route['fallbacks'],
             estimated_cost_usd=(metrics['input_tokens'] * input_price + metrics['output_tokens'] * output_price) / 1e6
             if input_price or output_price else None)
@@ -297,11 +314,14 @@ async def complete(prompt: str, *, session_id: str | None = None) -> str:
     """
     async def operation():
         client = await asyncio.to_thread(get_client)
+        options = model_options()
+        options.pop('tool_choice', None)
+        options.pop('parallel_tool_calls', None)
         return await client.with_options(
             timeout=config.ASSESS_TIMEOUT
         ).chat.completions.create(
             model=config.MODEL,
-            **model_options(),
+            **options,
             messages=[PackMessage("user", prompt)],
             stream=False,
             extra_headers={"x-opencode-session": session_id} if session_id else None,

@@ -184,3 +184,7 @@
 ### FREE-03（完成）
 
 显式 ENABLE_FILE_EXTRAS=false 注册开关；补充五种工具，写入确认/配额/无覆盖原子发布，glob 不进入链接目录。move/copy 当前仅支持普通文件。30 项文件回归通过。详见 docs/optimization-progress.md。
+
+### FREE-05（完成）
+
+显式 MODEL_PARAMETERS/MODEL_PROFILES，默认请求等价；/model 持久化并发隔离预设。31 项模型/会话回归通过，未调用收费服务。详见 docs/optimization-progress.md。

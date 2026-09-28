@@ -16,6 +16,7 @@ from core.llm import call_model, complete, ModelResponseError, TOOL_SCHEMAS
 from core.context import build_model_history, ContextBudgetError, prepare_model_history
 from core.storage import SessionStore, finish_pending_tools
 from core.log import get_logger
+from core.model_settings import model_profile
 from rag.assess import assess_rag
 from tools import TOOL_REGISTRY
 from tools.sandbox import ToolContext, tool_context, CancellationFlag
@@ -263,7 +264,17 @@ class SessionManager:
     async def _call_model(self, history, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
-            return await self.model(history, **kwargs)
+            session = self.sessions.get(kwargs.get('session_id'))
+            with model_profile(session.record.get('model_profile') if session else None):
+                return await self.model(history, **kwargs)
+
+    def set_model_profile(self, session, name):
+        if session.busy:
+            raise ValueError('请等待当前任务结束再切换模型参数')
+        if name and name not in config.MODEL_PROFILES:
+            raise ValueError('未知模型 profile')
+        session.record['model_profile'] = name or None
+        self.save(session)
 
     async def _run(self, session):
         contexts = []

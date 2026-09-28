@@ -12,7 +12,7 @@
 - [ ] P0：PERF-08 审计句柄（实现与回归完成，50% 性能目标未达）
 - [x] P0：PERF-12 流式导出
 - [x] P0：FREE-03 文件工具
-- [ ] P0：FREE-05 模型参数
+- [x] P0：FREE-05 模型参数
 - [ ] P0：FREE-13 成本与速率预算
 - [ ] P0：FREE-16 提示词模板
 - [ ] P1：PERF-01 重排与缓存
@@ -106,3 +106,14 @@ stat/glob 只读并审计；glob 不进入链接目录，有结果/字符上限�
 无新依赖；不增加删除目录能力。取消/拒绝、越界、目标竞争和配额测试均使用临时目录。
 验证：`uv run pytest dev/tests/test_free03_file_extras.py dev/tests/test_file_crud.py -q`：30 passed。
 本项功能测试不调用模型；不提供虚构性能指标。
+
+## FREE-05
+
+`MODEL_PARAMETERS={}`：可配置 temperature[0,2]、top_p(0,1]、正整数 max_tokens、parallel_tool_calls、
+response_format（text/json_object）、tool_choice（auto/none/required）。默认不传额外字段，选择工具仍 auto。
+`MODEL_PROFILES={}`：形如 `{"precise":{"model":"模型名","parameters":{"temperature":0.2}}}`。
+`/model precise` 选择并持久化；`/model default` 恢复默认；当前任务运行时禁止切换。
+模型名不同且无已知单价时成本显示未知；不会静默沿用主模型单价。配置不改变写入确认或工具权限。
+不兼容这些 Chat Completions 参数的服务会明确报错，不自动删参数重试。不新增第三方依赖。
+失败测试 → 参数范围/未知字段校验、并发 profile 隔离、保存恢复及实际 SDK 入参捕获。
+验证：`uv run pytest dev/tests/test_free05_model_parameters.py dev/tests/test_llm_stream.py dev/tests/test_sessions.py -q`：31 passed。

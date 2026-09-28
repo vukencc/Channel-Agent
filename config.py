@@ -198,3 +198,15 @@ ASSESS_INPUT_CHARS = env_int("ASSESS_INPUT_CHARS", 12000)
 ASSESS_CONTEXT_CHARS = env_int("ASSESS_CONTEXT_CHARS", 2000)
 
 RUN_HISTORY_LIMIT = env_int("RUN_HISTORY_LIMIT", 20)
+
+# 只允许已声明的请求参数；不接受任意网络地址或安全策略覆盖。
+from core.model_settings import ModelParameters, ModelProfile
+try:
+    MODEL_PARAMETERS = ModelParameters.model_validate_json(os.getenv('MODEL_PARAMETERS', '{}')).model_dump(exclude_none=True)
+    _profiles = json.loads(os.getenv('MODEL_PROFILES', '{}'))
+    if not isinstance(_profiles, dict):
+        raise ValueError
+    MODEL_PROFILES = {name: ModelProfile.model_validate(value).model_dump(exclude_none=True)
+                      for name, value in _profiles.items()}
+except (ValueError, TypeError):
+    raise ValueError('MODEL_PARAMETERS / MODEL_PROFILES 参数无效，请检查采样范围及支持字段') from None
