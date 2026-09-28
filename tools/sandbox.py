@@ -17,8 +17,10 @@ from typing import Callable
 
 import config
 from core.log import get_logger
+from core.audit_writer import append_audit
 
 logger = get_logger(__name__)
+_audit_encoder = json.JSONEncoder(ensure_ascii=False)
 
 # 确认实现可被替换（测试或自定义 UI）；返回 True 表示允许执行
 confirmer: Callable[[str, float], bool] | None = None
@@ -109,8 +111,7 @@ def truncate(text: str) -> str:
 
 def _audit_path() -> Path:
     context = _context.get()
-    path = context.audit_path if context else Path(config.AUDIT_LOG)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = context.audit_path if context else config.AUDIT_LOG
     return path
 
 
@@ -125,12 +126,11 @@ def audit(event: str, **fields) -> None:
         "event": event,
         **fields,
     }
-    line = json.dumps(record, ensure_ascii=False)
+    line = _audit_encoder.encode(record)
     logger.info("[审计] %s", line)
 
     try:
-        with open(_audit_path(), "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        append_audit(_audit_path(), line, sync=config.AUDIT_SYNC)
     except OSError as exc:
         logger.warning("审计日志写入失败：%s", exc)
 

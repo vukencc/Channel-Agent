@@ -33,14 +33,15 @@ def sessions(count, megabytes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case', choices=['sessions', 'context', 'quota'])
+    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit'])
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     result = {'case': args.case, **(sessions(args.count, args.megabytes)
                                    if args.case == 'sessions' else
-                                   context() if args.case == 'context' else quota())}
+                                   context() if args.case == 'context' else
+                                   quota() if args.case == 'quota' else audit())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps(result))
@@ -95,6 +96,21 @@ def quota():
                         'scan_seconds': scan_seconds, 'scans': calls, 'files': 3000}
         finally:
             command.check_workspace_quota = original
+
+
+def audit():
+    import threading
+    from tools.sandbox import ToolContext, tool_context, audit as write_audit
+    with tempfile.TemporaryDirectory(prefix='agent-audit-') as directory:
+        root = Path(directory)
+        with tool_context(ToolContext(root, root / 'audit.jsonl', lambda *_: True, threading.Event())):
+            start = time.perf_counter()
+            for i in range(10000):
+                write_audit('benchmark', number=i)
+            elapsed = time.perf_counter() - start
+        lines = (root / 'audit.jsonl').read_text().splitlines()
+        assert len(lines) == 10000
+        return {'seconds': elapsed, 'events': len(lines)}
 
 
 if __name__ == '__main__':

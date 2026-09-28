@@ -76,6 +76,7 @@ SANDBOX_DIR = env_path("SANDBOX_DIR", "crud_tests")   # 文件/命令操作的�
 CONFIRM_TIMEOUT = env_float("CONFIRM_TIMEOUT", 30.0)  # 风险操作确认等待秒数，超时视为拒绝
 COMMAND_TIMEOUT = env_float("COMMAND_TIMEOUT", 10.0)  # 单条命令最长执行秒数
 COMMAND_QUOTA_INTERVAL = env_float("COMMAND_QUOTA_INTERVAL", 0.1)  # 保持原 0.1s 采样间隔，避免输出触发额外扫描
+AUDIT_SYNC = env_bool("AUDIT_SYNC", False)  # 默认保持内核追加；开启后每事件 fsync
 TOOL_MAX_OUTPUT = env_int("TOOL_MAX_OUTPUT", 20000)   # 工具输出（命令/文件内容）最大字符数，超出截断
 FILE_READ_CHARS = env_int("FILE_READ_CHARS", 6000)
 MODEL_INPUT_CHARS = env_int("MODEL_INPUT_CHARS", 64000)

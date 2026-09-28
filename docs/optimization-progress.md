@@ -9,7 +9,7 @@
 - [x] P0：PERF-05 会话懒加载
 - [x] P0：PERF-06 上下文单次序列化
 - [x] P0：PERF-07 配额节流
-- [ ] P0：PERF-08 审计句柄
+- [ ] P0：PERF-08 审计句柄（实现与回归完成，50% 性能目标未达）
 - [ ] P0：PERF-12 流式导出
 - [ ] P0：FREE-03 文件工具
 - [ ] P0：FREE-05 模型参数
@@ -73,3 +73,14 @@ ASCII 计数使用标准库 C 编码实现；摘要输入在预算处停止序�
 扫描耗时 **1.771452 → 0.127973 秒**。默认参数下测量，无主机执行回退。
 验证：`uv run pytest dev/tests/test_perf07_quota.py dev/tests/test_command.py dev/tests/test_bug04_limits.py -q`：26 passed。
 测量命令：`uv run python -m dev.perf.benchmark quota --output /tmp/agent-perf-results/perf07-after.json`。
+
+## PERF-08
+
+使用最多 64 个 LRU 追加描述符，直接 os.write，不缓冲事件；线程锁避免行交错；每次检查 inode，兼容日志轮转。
+复用 JSON 编码器；句柄淘汰/退出关闭，写入失败仍遵循既有告警行为。
+`AUDIT_SYNC=false` 保持原内核写入语义（进程崩溃无用户态缓冲丢失，不承诺断电持久性）；true 每事件 fsync。
+10,000 事件基准 **0.128443 → 0.081054 秒，下降 36.90%**。内容条数真实校验；首轮实现 0.105372 秒后进一步优化。
+**报告中 ≥50% 的性能目标未达到，不标为完全验收。** 为保留轮转即时识别，没有省掉 inode 校验。
+测试：失败先证明每事件 open 和没有 fsync；新增复用、轮转、同步、并发完整行、64 句柄上限回归。
+验证命令：`uv run pytest dev/tests/test_perf08_audit.py dev/tests/test_file_crud.py dev/tests/test_command.py -q`。
+基准：`uv run python -m dev.perf.benchmark audit --output /tmp/agent-perf-results/perf08-after.json`。
