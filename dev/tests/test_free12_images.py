@@ -113,3 +113,27 @@ def test_image_payload_reaches_sdk_and_branch_preserves_attachment(setup, monkey
     assert '_attachments' not in captured[0]['messages'][-1]
     assert captured[0]['messages'][-1]['content'][1]['type'] == 'image_url'
     assert '图片附件引用' in setup.export(record, 'md').read_text()
+
+
+def test_retry_image_turn_copies_attachment_into_new_branch(setup, monkeypatch):
+    from core.images import submit_image, expand_images
+    monkeypatch.setattr(config, 'ENABLE_SESSION_BRANCHES', True)
+    seen = []
+    async def model(history, **kwargs):
+        payload = expand_images(history, {'model': config.MODEL})
+        seen.append(payload[-1]['content'])
+        return {'role': 'assistant', 'content': '测试桩'}
+    async def run():
+        manager = SessionManager(setup, model=model, confirmation_handler=lambda *_: True)
+        parent = manager.create()
+        await manager.flush()
+        Image.new('RGB', (16, 16)).save(setup.workspace(parent.id) / 'image.png')
+        await submit_image(manager, parent, 'image.png', 'see image')
+        await parent.task
+        child = await manager.resend(parent, 1)
+        await child.task
+        assert isinstance(seen[-1], list)
+        assert seen[-1][1]['type'] == 'image_url'
+        assert '_attachments' in child.record['messages'][-2]
+        await manager.shutdown()
+    asyncio.run(run())

@@ -448,3 +448,7 @@ JSON 替换当前覆盖集，default 清空。预设仅缩放轮次和输出上�
 ### FREE-02 交付前复查
 
 补充失败测试发现 `ipaddress.is_global` 对 IPv4/IPv6 组播也可能为真；代理改为只允许公网单播，额外拒绝保留/未指定/6to4/Teredo 过渡地址。先复现 2 failed，再运行命令/联网/任务专项 29 passed；实际白名单 HTTPS 复测 200/559 字节，结果 `/tmp/agent-perf-results/free02-network-final.json`。没有放宽任何出网条件。
+
+### FREE-12 图片重发补充
+
+交付前新增测试复现 `/retry` 图片轮次只重发文本（1 failed）。分支快照现在同时复制待重发消息的附件，编辑重发保留引用与原模型/服务授权范围，不回写原会话。图片与分支专项合计 13 passed；切换目标仍拒绝静默上传。

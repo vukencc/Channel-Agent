@@ -396,7 +396,7 @@ class SessionManager:
         session.record['memory_namespace'] = namespace
         self.save(session)
 
-    async def fork_session(self, session, through: int | None = None) -> Session:
+    async def fork_session(self, session, through: int | None = None, *, attachment_refs=()) -> Session:
         from core.branches import fork_record
         if self.closing or session.busy:
             raise ValueError('请等待原会话空闲后创建分支')
@@ -406,7 +406,7 @@ class SessionManager:
         try:
             await self.flush()
             # Shield 后继续等待，避免取消 UI 时留下未登记的后台写线程。
-            worker = asyncio.create_task(asyncio.to_thread(fork_record, self.store, session.record, through))
+            worker = asyncio.create_task(asyncio.to_thread(fork_record, self.store, session.record, through, attachment_refs=attachment_refs))
             try:
                 record = await asyncio.shield(worker)
             except asyncio.CancelledError:
@@ -428,8 +428,9 @@ class SessionManager:
         prompt = messages[user_index]['content'] if text is None else text
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError('重发消息不能为空')
-        child = await self.fork_session(session, through=user_index - 1)
-        self.submit(child, prompt)
+        references = copy.deepcopy(messages[user_index].get('_attachments', []))
+        child = await self.fork_session(session, through=user_index - 1, attachment_refs=references)
+        self.submit(child, prompt, attachments=references)
         return child
 
     def set_model_profile(self, session, name):

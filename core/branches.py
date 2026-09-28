@@ -31,7 +31,7 @@ def validate_prefix(messages: list[dict]):
         raise ValueError('截断点位于工具配对中间；请选择结果返回后的消息')
 
 
-def fork_record(store, source: dict, through: int | None = None) -> dict:
+def fork_record(store, source: dict, through: int | None = None, *, attachment_refs=()) -> dict:
     from core.storage import LazyRecord
     if not config.ENABLE_SESSION_BRANCHES:
         raise ValueError('请显式开启 ENABLE_SESSION_BRANCHES')
@@ -63,7 +63,7 @@ def fork_record(store, source: dict, through: int | None = None) -> dict:
     directory.mkdir(mode=0o700)  # 新随机 ID，绝不覆盖已有目录。
     try:
         from core.images import read_attachment, save_attachment
-        for message in prefix:
+        for message in [*prefix, {'_attachments': attachment_refs}]:
             for reference in message.get('_attachments', []):
                 data = read_attachment(store.directory(source['id']) / 'attachments', reference)
                 save_attachment(directory / 'attachments', data, reference['model'])
