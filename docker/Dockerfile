@@ -29,7 +29,7 @@ RUN uv sync --locked ${UV_SYNC_ARGS}
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="ai-agent-startup" \
       org.opencontainers.image.revision=$GIT_SHA \
-      org.opencontainers.image.source="https://github.com/vukencc/ai-agent-startup"
+      org.opencontainers.image.source="https://github.com/vukencc/Channel-Agent"
 
 # 运行数据统一落在 /data，便于挂载卷持久化。
 ENV AGENT_STATE_DIR=/data/state \

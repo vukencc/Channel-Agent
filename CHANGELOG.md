@@ -35,7 +35,7 @@
 - 全量模型推理峰值内存、RAG p95/吞吐权衡、真实视觉服务、Windows/macOS 原生能力尚未验收，详见 `docs/optimization-delivery.md`。
 - 容器后端（Docker/Podman 作为命令沙箱）仅有设计契约，未实现，见 `docs/platform-design.md`。
 
-[Unreleased]: https://github.com/vukencc/ai-agent-startup/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/vukencc/ai-agent-startup/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/vukencc/ai-agent-startup/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/vukencc/ai-agent-startup/releases/tag/v0.1.0
+[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/vukencc/Channel-Agent/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/vukencc/Channel-Agent/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/vukencc/Channel-Agent/releases/tag/v0.1.0

@@ -98,8 +98,8 @@ docker load < ai-agent-startup-v0.2.0-image.tar.gz
 
 # 推送到 GitHub 容器仓库（token 需 write:packages）
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <用户名> --password-stdin
-docker tag ai-agent-startup:v0.2.0 ghcr.io/vukencc/ai-agent-startup:v0.2.0
-docker push ghcr.io/vukencc/ai-agent-startup:v0.2.0
+docker tag ai-agent-startup:v0.2.0 ghcr.io/vukencc/channel-agent:v0.2.0
+docker push ghcr.io/vukencc/channel-agent:v0.2.0
 ```
 
 推 `v*` 标签会触发 `.github/workflows/release.yml`：离线回归 + 沙箱探测 → 构建并推送 GHCR → 创建 GitHub Release。
