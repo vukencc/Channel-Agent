@@ -29,6 +29,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /switch ID前缀       切换会话（也可点击左侧）
 /model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
 /tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
+/usage /trace [轮次] 查看保留窗口统计及有界脱敏指标（启用可观测命令后）
 /image 路径 | 问题   从会话工作区发送图片；启用视觉后仍需确认上传
 /tasks [cancel ID]  查看当前会话委派任务或取消（启用子代理后）
 /config [JSON|预设]  查看或设置会话预算；default 恢复全局默认
@@ -423,6 +424,10 @@ class AgentCLI:
                         self.manager.set_tool_names(session, names)
                     names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                     self.notice = '当前工具子集：' + ('全部' if names is None else ', '.join(names) or '无工具')
+                elif command in {'/usage', '/trace'}:
+                    from core.observability import usage_report, trace_report
+                    report = usage_report(session.record) if command == '/usage' else trace_report(session.record, argument)
+                    self.notice = json.dumps(report, ensure_ascii=False, indent=2)
                 elif command == '/image':
                     self.image_command(session, argument)
                 elif command == '/tasks':

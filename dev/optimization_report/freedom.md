@@ -274,3 +274,12 @@ CLI 显示有效预算及本轮剩余交互次数；分支继承覆盖值。先�
 ### FREE-12（实现：有界图片附件；真实视觉服务未验收）
 
 图片输入、确认、持久引用、协议展开、预算、分支/导出已实现；Pillow 作为 vision extra，uv lock/sync 已成功。新增专项 5 passed，全量非集成 308 passed、2 skipped。没有可确认的视觉服务，因此不宣称真实识图/服务端兼容验收通过；音频/视频仍仅设计。配置与边界见 docs/optimization-progress.md。
+
+### FREE-14 实施前设计（P2）
+
+新增默认关闭 ENABLE_OBSERVABILITY。/usage 聚合当前会话保留的 run_history 与未归档 last_run，按 turn_id 去重，明确统计窗口、provider/estimate token 口径和未知费用数量；不把缺失费用视为零。/trace [轮次 ID 前缀] 仅展示有界元数据白名单：时间、结果、上下文计数、模型 usage 与工具名称/耗时/输出长度。
+不读取/复制消息正文、工具参数、图片数据或审计详情；已配置凭据在展示前替换，字段与轮次数量限额避免卡顿。只读 UI，无模型/网络调用，不改原日志格式。未来 JSONL 事件订阅及用户反馈另行设计；本版先测去重、未知费用、脱敏、字段上限及 CLI 命令。
+
+### FREE-14（完成：有界只读 usage/trace）
+
+按设计实现，新增专项 3 passed，全量非集成 311 passed、2 skipped。统计保留窗口去重、未知费用显示 null，字段白名单/已配置凭据脱敏/长度上限均已验证；不读取消息正文，不改日志格式。配置与口径见 docs/optimization-progress.md。

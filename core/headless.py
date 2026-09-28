@@ -9,7 +9,7 @@ from core.sessions import SessionManager
 
 
 def redact_result(value):
-    secrets = [config.API_KEY, config.EMBEDDING_MODEL_API_KEY]
+    secrets = [config.API_KEY, config.EMBEDDING_MODEL_API_KEY, config.WEB_SEARCH_API_KEY]
     secrets += [os.getenv(endpoint['api_key_env'], '') for endpoint in config.MODEL_FALLBACKS if endpoint.get('api_key_env')]
     secrets += [os.getenv('TAVILY_API_KEY', '')]
     def clean(item):
