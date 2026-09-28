@@ -475,6 +475,8 @@ class SessionStore:
                     stream.write(self.memory(record['id'], record.get('memory_namespace')))
                     for message in messages:
                         stream.write('\n\n## ' + message['role'] + '\n' + str(message.get('content') or ''))
+                        for reference in message.get('_attachments', []):
+                            stream.write('\n图片附件引用：' + str(reference.get('sha256', '')) + '.jpg（附件目录单独保存）')
                         if message.get('tool_calls'):
                             stream.write('\n```json\n')
                             json.dump(message['tool_calls'], stream, ensure_ascii=False, indent=2)

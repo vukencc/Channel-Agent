@@ -116,6 +116,13 @@ RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)
 # Durable user conversations and memory, separate from disposable model caches.
 AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", ".agent")
 MAX_CONCURRENT_AGENTS = env_int("MAX_CONCURRENT_AGENTS", 4)
+ENABLE_IMAGE_INPUT = env_bool('ENABLE_IMAGE_INPUT', False)
+VISION_MODELS = json.loads(os.getenv('VISION_MODELS', '[]'))
+IMAGE_MAX_BYTES = env_int('IMAGE_MAX_BYTES', 5242880)
+IMAGE_MAX_PIXELS = env_int('IMAGE_MAX_PIXELS', 4000000)
+IMAGE_MAX_PER_REQUEST = env_int('IMAGE_MAX_PER_REQUEST', 4)
+IMAGE_TOKEN_BUDGET = env_int('IMAGE_TOKEN_BUDGET', 4096)
+IMAGE_TOTAL_MB = env_int('IMAGE_TOTAL_MB', 32)
 ENABLE_AGENT_TASKS = env_bool('ENABLE_AGENT_TASKS', False)
 AGENT_TASK_CONCURRENCY = env_int('AGENT_TASK_CONCURRENCY', 2)
 AGENT_TASK_MAX_ACTIVE = env_int('AGENT_TASK_MAX_ACTIVE', 16)
@@ -167,6 +174,8 @@ def validate_runtime_config() -> None:
         validate_network_config()
     except ValueError as exc:
         errors.append(str(exc))
+    if not isinstance(VISION_MODELS, list) or any(not isinstance(name, str) or not name.strip() for name in VISION_MODELS):
+        errors.append('VISION_MODELS 必须为模型名称列表')
     if ENABLE_AGENT_TASKS and not ENABLE_SESSION_BUDGETS:
         errors.append('ENABLE_AGENT_TASKS 需要 ENABLE_SESSION_BUDGETS')
     if not 0 <= MODEL_RECOVERY_LIMIT <= 3:

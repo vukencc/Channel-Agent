@@ -188,10 +188,12 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
                 options.pop('parallel_tool_calls', None)
             if config.MODEL_STREAM_USAGE:
                 options['stream_options'] = {'include_usage': True}
+            from core.images import expand_images
+            request_history = await asyncio.to_thread(expand_images, history, endpoint) if any(message.get('_attachments') for message in history) else history
             ticket = await reserve_request(reserved_cost(history, schemas, endpoint, options))
             try:
                 stream = await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
-                    model=endpoint['model'], **options, messages=history, stream=True,
+                    model=endpoint['model'], **options, messages=request_history, stream=True,
                     **({'tools': schemas} if schemas else {}),
                     extra_headers={'x-opencode-session': session_id} if session_id else None)
                 route['budget_ticket'] = ticket

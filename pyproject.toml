@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 documents = ["pypdf", "python-docx"]
+vision = ["Pillow>=12,<13"]
 ann = [
     "hnswlib>=0.8.0,<0.9",
 ]

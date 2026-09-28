@@ -39,6 +39,9 @@ documents = [
     { name = "pypdf" },
     { name = "python-docx" },
 ]
+vision = [
+    { name = "pillow" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -55,6 +58,7 @@ requires-dist = [
     { name = "jieba", specifier = ">=0.42.1" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "openai", specifier = ">=2.15.0,<3" },
+    { name = "pillow", marker = "extra == 'vision'", specifier = ">=12,<13" },
     { name = "prompt-toolkit", specifier = ">=3.0.53,<4" },
     { name = "pydantic", specifier = ">=2.13.0,<3" },
     { name = "pypdf", marker = "extra == 'documents'" },
@@ -64,7 +68,7 @@ requires-dist = [
     { name = "sentence-transformers", specifier = ">=6.1.0" },
     { name = "tavily-python", specifier = ">=0.8.0,<0.9" },
 ]
-provides-extras = ["documents", "ann"]
+provides-extras = ["documents", "vision", "ann"]
 
 [package.metadata.requires-dev]
 dev = [

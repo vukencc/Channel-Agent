@@ -5,6 +5,7 @@ import json
 
 import config
 from core.session_limits import limit as session_limit
+from core.images import attachment_tokens
 
 
 def estimate_tokens(text: str) -> int:
@@ -14,7 +15,7 @@ def estimate_tokens(text: str) -> int:
 
 
 def request_tokens(messages, schemas=None):
-    return estimate_tokens(json.dumps(messages, ensure_ascii=False)) + (
+    return sum(attachment_tokens(message) for message in messages) + estimate_tokens(json.dumps(messages, ensure_ascii=False)) + (
         estimate_tokens(json.dumps(schemas, ensure_ascii=False)) if schemas else 0)
 
 
@@ -56,13 +57,15 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
     before = sum(sizes) if messages else 2
     def exact_tokens(chars, ascii_chars):
         return chars - ascii_chars + (ascii_chars + 3) // 4 + schema_tokens
-    original_tokens = exact_tokens(before, sum(ascii_sizes) if messages else 2)
+    image_tokens = [attachment_tokens(message) for message in messages]
+    current_image_tokens = sum(image_tokens)
+    original_tokens = exact_tokens(before, sum(ascii_sizes) if messages else 2) + current_image_tokens
     dirty = set()
     limit = session_limit('MODEL_INPUT_CHARS') - schema_chars
     def metrics():
         return {'original_chars': before, 'sent_chars': current_chars,
                 'original_tokens': original_tokens,
-                'sent_tokens': exact_tokens(current_chars, current_ascii),
+                'sent_tokens': exact_tokens(current_chars, current_ascii) + current_image_tokens,
                 'schema': schema_chars, 'memory': memory_chars, 'extra': extra_chars,
                 'messages': current_chars - memory_chars - extra_chars,
                 'total_chars': current_chars + schema_chars,
@@ -104,7 +107,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
         sizes[i] = len(serialized[i]) + 2
         ascii_sizes[i] = len(serialized[i].encode('ascii', errors='ignore')) + 2
     # 每条消息额外留一个 token 覆盖 JSON 分隔；估算略保守。
-    tokens = [estimate_tokens(value) + 1 for value in serialized]
+    tokens = [estimate_tokens(value) + 1 + image_tokens[index] for index, value in enumerate(serialized)]
     current_chars = sum(sizes) if history else 2
     current_ascii = sum(ascii_sizes) if history else 2
     current_tokens = sum(tokens) + 1 + schema_tokens
@@ -136,6 +139,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 break
             current_chars -= sum(sizes[keep_from:next_turn])
             current_tokens -= sum(tokens[keep_from:next_turn])
+            current_image_tokens -= sum(image_tokens[keep_from:next_turn])
             current_ascii -= sum(ascii_sizes[keep_from:next_turn])
             keep_from = next_turn
             omitted += 1
@@ -150,7 +154,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
         chars, ascii_chars = append_context_notice(history, notice)
         current_chars += chars
         current_ascii += ascii_chars
-    if current_chars > limit or exact_tokens(current_chars, current_ascii) > session_limit('MODEL_INPUT_TOKENS'):
+    if current_chars > limit or exact_tokens(current_chars, current_ascii) + current_image_tokens > session_limit('MODEL_INPUT_TOKENS'):
         raise ContextBudgetError(metrics())
     return history, metrics()
 

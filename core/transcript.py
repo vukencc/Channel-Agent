@@ -37,6 +37,8 @@ class Transcript:
                 label += ' · ' + self.tool_names.get(message.get('tool_call_id'), '')
             self.lines += ['', f'━━ {label} · 消息 {number} ━━']
             self.lines += self.text_lines(message.get('content') or '')
+            for reference in message.get('_attachments', []):
+                self.lines += [f'图片附件 · {reference.get("sha256", "")[:16]}… · 已批准模型 {reference.get("model", "")}']
             for call in message.get('tool_calls', []):
                 name = call['function']['name']
                 self.tool_names[call['id']] = name

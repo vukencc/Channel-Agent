@@ -62,6 +62,11 @@ def fork_record(store, source: dict, through: int | None = None) -> dict:
     directory = store.directory(record['id'])
     directory.mkdir(mode=0o700)  # 新随机 ID，绝不覆盖已有目录。
     try:
+        from core.images import read_attachment, save_attachment
+        for message in prefix:
+            for reference in message.get('_attachments', []):
+                data = read_attachment(store.directory(source['id']) / 'attachments', reference)
+                save_attachment(directory / 'attachments', data, reference['model'])
         store.save(record)
         store.atomic_write(store.memory_path(record['id'], 'session'), memory)
         store._audit_memory(record['id'], 'session_branch', 'session', '')

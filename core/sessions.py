@@ -119,7 +119,7 @@ class SessionManager:
         if self.pending_saves:
             await asyncio.gather(*list(self.pending_saves))
 
-    def submit(self, session: Session, text: str):
+    def submit(self, session: Session, text: str, *, attachments=None):
         if self.closing:
             raise ValueError('管理器正在关闭，不能启动新任务')
         if session.busy:
@@ -141,7 +141,10 @@ class SessionManager:
         session.record.pop('assessment', None)
         session.record['last_run'] = {'turn_id': uuid.uuid4().hex, 'model_calls': [], 'tools': []}
         session.record.update(status='queued', error='')
-        session.record['messages'].append({'role': 'user', 'content': text})
+        message = {'role': 'user', 'content': text}
+        if attachments:
+            message['_attachments'] = copy.deepcopy(attachments)
+        session.record['messages'].append(message)
         self.save(session)
         session.task = asyncio.create_task(self._run_with_budget(session))
         def finish(task):
@@ -173,6 +176,9 @@ class SessionManager:
         return False
 
     def cancel(self, session):
+        if session.forking:
+            session.cancelled.set()
+            self.decide(session, False)
         if self.agent_tasks is not None:
             self.agent_tasks.cancel_owner(session.id)
         if session.summary_task and not session.summary_task.done():
@@ -444,7 +450,8 @@ class SessionManager:
         self.save(session)
 
     async def _run_with_budget(self, session):
-        with budget_scope(self.budget_ledger, session.record.get('budget_owner_id', session.id)), limits_scope(session.record):
+        from core.images import image_scope
+        with budget_scope(self.budget_ledger, session.record.get('budget_owner_id', session.id)), limits_scope(session.record), image_scope(self.store.directory(session.id) / 'attachments'):
             await self._run(session)
 
     async def _run(self, session):
