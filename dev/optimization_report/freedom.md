@@ -192,3 +192,7 @@
 ### FREE-13（完成）
 
 显式费用/速率额度默认 0 不限；原子账本预留、provider usage 结算、未知单价拒绝、超限检查点；27 项回归通过。估算不是账单硬上限。详见 docs/optimization-progress.md。
+
+### FREE-16（完成）
+
+提示词/参数 schema 共用配置，显式系统提示文件，默认文本快照完全一致。完整离线回归 222 passed、3 deselected；随后快照专项 3 passed。详见 docs/optimization-progress.md。

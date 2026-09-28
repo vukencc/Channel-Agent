@@ -37,7 +37,7 @@ class ReadFileArgs(BaseModel):
     """
     path: str = Field(description="相对沙箱根目录的路径，例如 notes/todo.txt")
     offset: int = Field(default=0, ge=0, description="从 0 开始的字符偏移；续读使用返回的 next_offset，不是字节数")
-    limit: int = Field(default=6000, ge=1, description="本页最多字符数，服务端还会限制在 FILE_READ_CHARS 内")
+    limit: int = Field(default=config.FILE_READ_CHARS, ge=1, description="本页最多字符数，服务端还会限制在 FILE_READ_CHARS 内")
     search: str = Field(default="", max_length=1024, description="可选：从 offset 起查找精确文本，从首次匹配处读取；用于定位标签、函数、CSS 选择器")
 
 
@@ -51,6 +51,9 @@ class EditFileArgs(BaseModel):
     old_text: str = Field(min_length=1, description="从实际文件读取的唯一原文，不接受省略号或模糊匹配")
     new_text: str = Field(description="替换后的局部内容；未选中的文件内容不变")
     reason: str = Field(default="", description="本次局部修改的目的")
+
+
+EditFileArgs.__doc__ = EditFileArgs.__doc__.replace('4000', str(config.FILE_APPEND_CHARS))
 
 
 class UpdateFileArgs(BaseModel):
@@ -106,7 +109,7 @@ def create_file(path: str, content: str = "", reason: str = "") -> str:
 
 
 @register_tool(ReadFileArgs, name="read_file", concurrency="read")
-def read_file(path: str, offset: int = 0, limit: int = 6000, search: str = "") -> str:
+def read_file(path: str, offset: int = 0, limit: int = config.FILE_READ_CHARS, search: str = "") -> str:
     """
     读取沙箱内文件的内容。
     """
@@ -302,9 +305,12 @@ class AppendFileArgs(BaseModel):
     新文件先 create_file，再根据成功结果的 next_offset 追加；失败后读取确认，禁止重复追加。
     """
     path: str
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(min_length=1, max_length=config.FILE_APPEND_CHARS)
     expected_chars: int = Field(ge=0)
     reason: str = ''
+
+
+AppendFileArgs.__doc__ = AppendFileArgs.__doc__.replace('4000', str(config.FILE_APPEND_CHARS))
 
 
 @register_tool(AppendFileArgs, name='append_file')

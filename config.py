@@ -216,3 +216,7 @@ try:
                       for name, value in _profiles.items()}
 except (ValueError, TypeError):
     raise ValueError('MODEL_PARAMETERS / MODEL_PROFILES 参数无效，请检查采样范围及支持字段') from None
+
+FILE_APPEND_CHARS = env_int('FILE_APPEND_CHARS', 4000)
+RAG_RETRY_LIMIT = env_int('RAG_RETRY_LIMIT', 2)
+SYSTEM_PROMPT_FILE = env_path('SYSTEM_PROMPT_FILE')

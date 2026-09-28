@@ -14,7 +14,7 @@
 - [x] P0：FREE-03 文件工具
 - [x] P0：FREE-05 模型参数
 - [x] P0：FREE-13 成本与速率预算
-- [ ] P0：FREE-16 提示词模板
+- [x] P0：FREE-16 提示词模板
 - [ ] P1：PERF-01 重排与缓存
 - [ ] P1：PERF-02 可选 ANN
 - [ ] P1：PERF-03 增量持久化 BM25
@@ -130,3 +130,14 @@ response_format（text/json_object）、tool_choice（auto/none/required）。�
 状态与停止原因写入账本、会话和原有运行日志；不替代工具操作确认/审计。无新依赖。
 验证：`uv run pytest dev/tests/test_free13_budgets.py dev/tests/test_llm_stream.py dev/tests/test_sessions.py -q`：27 passed。
 新增持久化/预留、速率恢复、未知单价拒绝和完整会话发送前拦截测试。
+
+## FREE-16
+
+FILE_APPEND_CHARS=4000 同时注入提示词、append_file schema 和运行时校验；FILE_READ_CHARS 控制 schema 与默认分页。
+RAG_RETRY_LIMIT=2 参数化提示词中的重试建议（不是新的强制重试循环）。SYSTEM_PROMPT_FILE 留空使用内置模板；
+显式文件仅用于新会话，要求 UTF-8、非空且不超过 MODEL_INPUT_CHARS，读取失败明确退出，已有会话不改写。
+默认两份提示词 SHA256 与改动前完全一致。任何自定义提示均不能关闭工具确认或沙箱。
+新增子进程测试验证配置同时改变 schema/文本、文件缺失拒绝与默认快照。
+完整离线回归：222 passed, 3 deselected（6.98s）；随后新增快照专项 3 passed。
+验证命令：`uv run pytest -m 'not integration' -q`；`uv run pytest dev/tests/test_free16_prompt_templates.py -q`。
+无新依赖。
