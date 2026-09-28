@@ -13,8 +13,8 @@
 docker build -f docker/Dockerfile --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ai-agent-startup:v0.2.0 .
 # 需要测试或可选功能：
 docker build -f docker/Dockerfile --build-arg UV_SYNC_ARGS="--dev --extra documents" -t ai-agent-startup:test .
-# GPU 环境（默认安装 CPU 版 torch，镜像更小）：
-docker build -f docker/Dockerfile --build-arg UV_TORCH_BACKEND=cu126 -t ai-agent-startup:gpu .
+# GPU 环境：torch 索引由 pyproject.toml 的 [tool.uv.sources] 固定为 CPU；
+# 需要 CUDA 时编辑该处（如 pytorch-cu126）并重新执行 `uv lock`。
 # 国内网络可改用 PyPI 镜像源：
 docker build -f docker/Dockerfile --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t ai-agent-startup:v0.2.0 .
 ```
