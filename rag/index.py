@@ -18,6 +18,7 @@ from rag.chunking import TextSplitter
 from rag.file_events import FileEvents
 from rag.embedding import get_embedding_model, artifact_signature, local_model_path
 from rag.lexical import BM25Index
+from rag.result_cache import ResultCache
 
 
 logger = get_logger(__name__)
@@ -190,11 +191,16 @@ class RetrievalIndex:
         self.model = get_embedding_model() if self.children else None
         self.vectors = cached_embeddings([row['content'] for row in self.children], self.model, progress)
         self.lexical = BM25Index([parent['document'] for parent in self.parents])
+        self.query_cache = ResultCache()
 
     def dense(self, query: str, limit: int) -> list[dict]:
         if not self.children:
             return []
-        vector = self.model.embed_queries([query])[0]
+        key = hashlib.sha256(query.encode()).digest()
+        vector = self.query_cache.get(key, config.RAG_QUERY_CACHE_SIZE)
+        if vector is None:
+            vector = self.model.embed_queries([query])[0]
+            self.query_cache.put(key, vector, config.RAG_QUERY_CACHE_SIZE)
         if self.vectors.shape[1] != len(vector):
             raise ValueError('Query/document embedding dimensions differ')
         child_scores = self.vectors @ vector

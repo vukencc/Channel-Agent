@@ -133,19 +133,23 @@ def validate_runtime_config() -> None:
     if url.scheme not in {'http', 'https'} or not url.hostname:
         errors.append('BASE_URL 必须是有效的 http/https 地址')
     for name, value in globals().items():
-        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE'}:
+        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE'}:
             if not math.isfinite(value) or value <= 0:
                 errors.append(f'{name} 必须大于 0 且有限')
     if not DOC_DIR or not DOC_DIR.is_dir() or not os.access(DOC_DIR, os.R_OK):
         errors.append('DOC_DIR 必须是可读的知识库目录')
     if not SANDBOX_DIR or (SANDBOX_DIR.exists() and not SANDBOX_DIR.is_dir()):
         errors.append('SANDBOX_DIR 必须是目录路径')
+    if RAG_RERANK_DEVICE not in {'cpu', 'cuda', 'mps', 'auto'}:
+        errors.append('RAG_RERANK_DEVICE 必须是 cpu/cuda/mps/auto')
+    if RAG_RERANK_DTYPE not in {'fp32', 'fp16'}:
+        errors.append('RAG_RERANK_DTYPE 必须是 fp32/fp16')
     if WEB_SEARCH_CONFIRM not in {'always', 'off'}:
         errors.append('WEB_SEARCH_CONFIRM 必须为 always 或 off')
     for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:
         if value < 0:
             errors.append(f'{name} 不能为负数')
-    for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE'):
+    for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE'):
         if globals()[name] < 0:
             errors.append(f'{name} 不能为负数')
     for endpoint in MODEL_FALLBACKS:
@@ -220,3 +224,16 @@ except (ValueError, TypeError):
 FILE_APPEND_CHARS = env_int('FILE_APPEND_CHARS', 4000)
 RAG_RETRY_LIMIT = env_int('RAG_RETRY_LIMIT', 2)
 SYSTEM_PROMPT_FILE = env_path('SYSTEM_PROMPT_FILE')
+
+RAG_RERANK_DEVICE = os.getenv('RAG_RERANK_DEVICE', 'cpu')
+RAG_RERANK_DTYPE = os.getenv('RAG_RERANK_DTYPE', 'fp32')
+RAG_RERANK_CACHE_SIZE = env_int('RAG_RERANK_CACHE_SIZE', 0)
+RAG_QUERY_CACHE_SIZE = env_int('RAG_QUERY_CACHE_SIZE', 0)
+try:
+    RAG_RERANK_BY_BREADTH = json.loads(os.getenv('RAG_RERANK_BY_BREADTH', '{}'))
+    if (not isinstance(RAG_RERANK_BY_BREADTH, dict)
+            or any(key not in {'narrow', 'normal', 'wide'} or type(value) is not int or value < 1
+                   for key, value in RAG_RERANK_BY_BREADTH.items())):
+        raise ValueError
+except (ValueError, TypeError):
+    raise ValueError('RAG_RERANK_BY_BREADTH 必须是 breadth 到正整数候选数的 JSON 对象') from None

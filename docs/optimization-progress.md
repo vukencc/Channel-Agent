@@ -15,7 +15,7 @@
 - [x] P0：FREE-05 模型参数
 - [x] P0：FREE-13 成本与速率预算
 - [x] P0：FREE-16 提示词模板
-- [ ] P1：PERF-01 重排与缓存
+- [x] P1：PERF-01 重排与缓存
 - [ ] P1：PERF-02 可选 ANN
 - [ ] P1：PERF-03 增量持久化 BM25
 - [ ] P1：PERF-04 内存上限
@@ -153,3 +153,23 @@ RAG_RETRY_LIMIT=2 参数化提示词中的重试建议（不是新的强制重�
 去掉 `--baseline-ref` 输出 after 文件。微基准为临时目录，无 fsync，不能推断 HDD/WSL 全部部署环境增益。
 验证：`uv run pytest dev/tests/test_perf08_audit.py dev/tests/test_file_crud.py dev/tests/test_command.py -q`：49 passed。
 新增秒边界与覆盖公共字段兼容测试；日志格式与每条写入安全语义保持。
+
+## PERF-01
+
+默认 CPU/fp32、50 候选、不缓存保持原状；显式配置设备/精度、breadth 候选映射和真实结果 LRU。
+`RAG_RERANK_DEVICE=cpu`（cpu/cuda/mps/auto）；`RAG_RERANK_DTYPE=fp32`（fp16 仅 GPU）；
+`RAG_RERANK_CACHE_SIZE=0`、`RAG_QUERY_CACHE_SIZE=0`（0 禁用）；`RAG_RERANK_BY_BREADTH={}`（未指定项沿用 TOP_N）。
+缓存键含查询/段落内容哈希，模型实例由模型工件指纹/设备/精度隔离；长段落仍完整滑窗，不缩短内容。
+无新模型或依赖：使用已存在 embedding-int8 与 mmarco-mMiniLMv2-L12-H384-v1；CPU、4 推理线程。
+GPU 环境未实测，不宣称 GPU/fp16 性能或质量通过。候选缩减可能损失召回，基准保持 50 候选。
+
+固定 C-MTEB/T2Retrieval 清单 343 文档、10 查询，2 轮真实完整检索（未改阈值）：
+- 首次查询 p50 **5.998842 → 6.779045s**（本次反而变慢 13%，不宣称冷查询优化）。
+- 第二轮 p50 **5.954295 → 0.001340s**，重排 **5.950797 → 0.000428s**。
+- 独立冷索引构建 **16.766884 → 17.435558s**。
+- 优化后显式 `RAG_RERANK_CACHE_SIZE=1024 RAG_QUERY_CACHE_SIZE=128`，热查询减少约 99.98%。
+- 所有 20 份 vector/BM25/RRF/rerank 阶段及 selected_ids 前后完全相同。留出重排 hit@10=.8、MRR=.8、precision=.733333、recall=.64。
+真实四阶段对比见 `docs/perf-rag-comparison.md`；全部原始 trace 在 `/tmp/agent-perf-results/perf01-{before,after}.json`。
+基准命令：`uv run python -m dev.perf.benchmark rag --corpus .cache/rag/benchmark/corpus/corpus-00000-of-00001-8afe7b7a7eca49e3.parquet --output /tmp/agent-perf-results/perf01-after.json`；
+设置 `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 RERANK_LOCAL_PATH=.cache/rag/reranker HF_HUB_OFFLINE=1 HF_HOME=/tmp/agent-perf-hf`。
+验证：`uv run pytest dev/tests/test_perf01_rag_cache.py dev/tests/test_hybrid_rag.py -q`：28 passed。

@@ -57,7 +57,8 @@ def rag_search(query: str, top_k: int | None = None, strictness: str = 'normal',
         then = perf_counter()
         stages['rrf'] = reciprocal_rank_fusion([stages['vector'], stages['bm25']], config.RAG_RRF_K)
         times['rrf'] = perf_counter() - then
-        candidates = stages['rrf'][:max(config.RAG_RERANK_TOP_N, limit)]
+        budget = config.RAG_RERANK_BY_BREADTH.get(breadth, config.RAG_RERANK_TOP_N)
+        candidates = stages['rrf'][:max(budget, limit)]
         check_cancelled()
         then = perf_counter()
         values = get_reranker().score(query, [index.by_id[row['id']]['document'] for row in candidates])

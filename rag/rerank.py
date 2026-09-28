@@ -2,6 +2,8 @@
 from functools import lru_cache
 from rag.cancellation import check_cancelled
 import json
+import hashlib
+from rag.result_cache import ResultCache
 
 import numpy as np
 
@@ -14,16 +16,43 @@ class Reranker:
         from sentence_transformers import CrossEncoder
         torch.set_num_threads(config.RAG_THREADS)
         path = local_reranker_path()
+        device = config.RAG_RERANK_DEVICE
+        if device == 'auto':
+            device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+        if device == 'cuda' and not torch.cuda.is_available():
+            raise ValueError('RAG_RERANK_DEVICE=cuda，但 CUDA 不可用；请显式选择 cpu')
+        if device == 'mps' and not torch.backends.mps.is_available():
+            raise ValueError('RAG_RERANK_DEVICE=mps，但 MPS 不可用；请显式选择 cpu')
+        if config.RAG_RERANK_DTYPE == 'fp16' and device == 'cpu':
+            raise ValueError('fp16 重排需要 cuda/mps；CPU 请使用 fp32')
+        model_kwargs = {'torch_dtype': torch.float16} if config.RAG_RERANK_DTYPE == 'fp16' else {}
         self.model = CrossEncoder(
             str(path) if path else config.RERANK_MODEL,
             revision=config.RERANK_REVISION if not path else None,
-            device='cpu', max_length=512,
+            device=device, max_length=512, model_kwargs=model_kwargs,
             cache_folder=str(config.RAG_CACHE_DIR / 'models'),
             local_files_only=bool(path), trust_remote_code=False,
         )
         self.identity = str(path or config.RERANK_MODEL)
+        self.score_cache = ResultCache()
 
     def score(self, query: str, passages: list[str]) -> list[float]:
+        check_cancelled()
+        if config.RAG_RERANK_CACHE_SIZE <= 0:
+            return self._score_uncached(query, passages)
+        if not hasattr(self, 'score_cache'):
+            self.score_cache = ResultCache()
+        query_key = hashlib.sha256(query.encode()).digest()
+        keys = [(self.identity, query_key, hashlib.sha256(passage.encode()).digest()) for passage in passages]
+        values = [self.score_cache.get(key, config.RAG_RERANK_CACHE_SIZE) for key in keys]
+        missing = [i for i, value in enumerate(values) if value is None]
+        computed = self._score_uncached(query, [passages[i] for i in missing])
+        for i, value in zip(missing, computed, strict=True):
+            values[i] = value
+            self.score_cache.put(keys[i], value, config.RAG_RERANK_CACHE_SIZE)
+        return values
+
+    def _score_uncached(self, query: str, passages: list[str]) -> list[float]:
         import torch
         if not passages:
             return []
@@ -64,7 +93,8 @@ def get_reranker():
     from rag.embedding import artifact_signature
     return _get_reranker((config.RERANK_MODEL, config.RERANK_REVISION,
                           config.RERANK_LOCAL_PATH, config.RAG_CACHE_DIR,
-                          config.RAG_THREADS, artifact_signature(local_reranker_path())))
+                          config.RAG_THREADS, config.RAG_RERANK_DEVICE, config.RAG_RERANK_DTYPE,
+                          artifact_signature(local_reranker_path())))
 
 
 def local_reranker_path():

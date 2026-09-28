@@ -33,20 +33,22 @@ def sessions(count, megabytes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export'])
+    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export', 'rag'])
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--baseline-ref', help='审计复测可直接使用指定 Git 提交中的原始实现')
+    parser.add_argument('--corpus', type=Path, help='RAG 基准使用已有公开 parquet 与固定 quality.json')
     args = parser.parse_args()
     result = {'case': args.case, **(sessions(args.count, args.megabytes)
                                    if args.case == 'sessions' else
                                    context() if args.case == 'context' else
                                    quota() if args.case == 'quota' else
-                                   audit(args.baseline_ref) if args.case == 'audit' else export())}
+                                   audit(args.baseline_ref) if args.case == 'audit' else
+                                   rag(args.corpus, args.output) if args.case == 'rag' else export())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
-    print(json.dumps(result))
+    print(json.dumps({key: value for key, value in result.items() if key != 'traces'}))
 
 
 def context():
@@ -153,6 +155,53 @@ def export():
                     'output_bytes': path.stat().st_size, 'source_mib': 100}
         finally:
             store.close()
+
+
+def rag(corpus, output):
+    import hashlib
+    import pyarrow.parquet as pq
+    import config
+    from rag.index import RetrievalIndex
+    from rag.tool import rag_search
+    from dev.rag.quality import metrics
+    manifest_path = Path('dev/rag/inputs/quality.json')
+    manifest = json.loads(manifest_path.read_text())
+    with corpus.open('rb') as stream:
+        if hashlib.file_digest(stream, 'sha256').hexdigest() != manifest['corpus_sha256']:
+            raise ValueError('公开语料哈希不匹配')
+    wanted = set(manifest['document_ids'])
+    documents = []
+    for batch in pq.ParquetFile(corpus).iter_batches(columns=['id', 'text']):
+        for row in batch.to_pylist():
+            if str(row['id']) in wanted:
+                documents.append({'content': row['text'], 'metadata': {'doc_id': str(row['id']),
+                                  'filename': str(row['id']) + '.txt', 'source': 'C-MTEB/T2Retrieval'}})
+    if {doc['metadata']['doc_id'] for doc in documents} != wanted:
+        raise ValueError('固定候选池缺失文档')
+    documents.sort(key=lambda row: row['metadata']['doc_id'])
+    config.RAG_CACHE_DIR = output.parent / (output.stem + '-cache')
+    start = time.perf_counter()
+    index = RetrievalIndex(documents)
+    build = time.perf_counter() - start
+    traces = []
+    for repetition in range(2):
+        for query in manifest['queries']:
+            trace = {}
+            rag_search(query['text'], top_k=10, index=index, trace=trace)
+            traces.append({'id': query['id'], 'repetition': repetition, **trace})
+            print(f"RAG {repetition + 1}/2 {query['id']}", flush=True)
+    summaries = []
+    for repetition in range(2):
+        rows = traces[repetition * len(manifest['queries']):(repetition + 1) * len(manifest['queries'])]
+        summaries.append({'p50_seconds': statistics.median(row['timings_seconds']['total'] for row in rows),
+            'p50_rerank_seconds': statistics.median(row['timings_seconds']['rerank'] for row in rows),
+            'quality': {stage: metrics([{**query, 'ranking': [(row['metadata']['doc_id'], row['score'])
+                        for row in trace['stages'][stage]]} for query, trace in zip(manifest['queries'], rows)
+                        if query['split'] == 'evaluation'], config.RAG_THRESHOLD_NORMAL if stage == 'rerank' else float('-inf'))
+                        for stage in ('vector', 'bm25', 'rrf', 'rerank')}})
+    return {'documents': len(documents), 'queries': len(manifest['queries']), 'build_seconds': build,
+            'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            'rounds': summaries, 'traces': traces}
 
 
 if __name__ == '__main__':
