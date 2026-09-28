@@ -2,6 +2,51 @@
 
 镜像保存的是**可运行环境**，源码版本仍以 git tag 为准；构建参数 `GIT_SHA` 会把镜像关联到提交。
 
+## 快速开始（开包即用）
+
+### 方式 A：从 GHCR 拉取（推荐给其他人）
+
+```bash
+cp .env.example .env            # 1) 填好 OPENCODE_API_KEY 等
+docker pull ghcr.io/vukencc/channel-agent:v0.2.1   # 2) 拉取镜像（约 2.3GB）
+
+# 3) 运行交互式 TUI
+docker run --rm -it --env-file .env -e TERM=xterm-256color \
+  -v ai-agent-state:/data/state -v ai-agent-sandbox:/data/sandbox -v ai-agent-rag:/data/rag-cache \
+  ghcr.io/vukencc/channel-agent:v0.2.1
+
+# 或 headless 单次执行
+docker run --rm --env-file .env -v ai-agent-state:/data/state \
+  ghcr.io/vukencc/channel-agent:v0.2.1 --prompt "只回复：你好" --json
+```
+
+GHCR 包若为私有：`echo $GITHUB_TOKEN | docker login ghcr.io -u <用户名> --password-stdin`，
+或在 GitHub 的 Package 设置里改为 public。
+
+### 方式 B：从归档文件加载（离线/内网）
+
+```bash
+docker load < ai-agent-startup-v0.2.1-image.tar.gz
+docker run --rm -it --env-file .env -e TERM=xterm-256color \
+  -v ai-agent-state:/data/state -v ai-agent-sandbox:/data/sandbox -v ai-agent-rag:/data/rag-cache \
+  ai-agent-startup:v0.2.1
+```
+
+### 方式 C：用 compose 一条命令
+
+```bash
+cd docker && docker compose up         # 或 docker compose -f docker/docker-compose.yml up
+```
+
+compose 已默认开启 `seccomp=unconfined`（容器内命令沙箱需要）并挂载三个数据卷。
+
+### 首次运行说明
+
+- **命令沙箱**：容器内 `run_command` 需要 `--security-opt seccomp=unconfined`（compose 已配置）；
+  不加也能用文件工具与 RAG。
+- **RAG 模型**：首次调用 `rag_search` 会自动下载 embedding/reranker 模型到 `/data/rag-cache`
+  （数百 MB~数 GB，需要网络）。离线环境请预先准备该目录并挂载。
+
 ## 前置
 
 - Docker Engine 或 Docker Desktop（WSL2 需在 Docker Desktop 中开启对应发行版的 WSL Integration）。
