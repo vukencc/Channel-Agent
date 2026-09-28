@@ -133,7 +133,7 @@ def validate_runtime_config() -> None:
     if url.scheme not in {'http', 'https'} or not url.hostname:
         errors.append('BASE_URL 必须是有效的 http/https 地址')
     for name, value in globals().items():
-        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB'}:
+        if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY'}:
             if not math.isfinite(value) or value <= 0:
                 errors.append(f'{name} 必须大于 0 且有限')
     if not DOC_DIR or not DOC_DIR.is_dir() or not os.access(DOC_DIR, os.R_OK):
@@ -151,7 +151,7 @@ def validate_runtime_config() -> None:
     for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:
         if value < 0:
             errors.append(f'{name} 不能为负数')
-    for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB'):
+    for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY'):
         if globals()[name] < 0:
             errors.append(f'{name} 不能为负数')
     for endpoint in MODEL_FALLBACKS:
@@ -238,6 +238,7 @@ RAG_ANN_EF_CONSTRUCTION = env_int('RAG_ANN_EF_CONSTRUCTION', 200)
 RAG_ANN_EF_SEARCH = env_int('RAG_ANN_EF_SEARCH', 256)
 RAG_BM25_PERSIST = env_bool('RAG_BM25_PERSIST', False)
 RAG_MEMORY_LIMIT_MB = env_int('RAG_MEMORY_LIMIT_MB', 0)
+RAG_INFERENCE_CONCURRENCY = env_int('RAG_INFERENCE_CONCURRENCY', 0)
 try:
     RAG_RERANK_BY_BREADTH = json.loads(os.getenv('RAG_RERANK_BY_BREADTH', '{}'))
     if (not isinstance(RAG_RERANK_BY_BREADTH, dict)

@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import threading
 import time
+from contextvars import copy_context
 from functools import partial
 from dataclasses import dataclass, field
 from typing import Callable
@@ -58,6 +59,11 @@ class SessionManager:
         self.pending_saves = set()
         self.tool_workers = set()
         self.read_slots = asyncio.Semaphore(config.TOOL_CONCURRENCY)
+        # 显式启用后，重推理不占文件工具的线程与并发额度。
+        self.rag_slots = asyncio.Semaphore(config.RAG_INFERENCE_CONCURRENCY) if config.RAG_INFERENCE_CONCURRENCY else None
+        self.rag_executor = (concurrent.futures.ThreadPoolExecutor(
+            max_workers=config.RAG_INFERENCE_CONCURRENCY, thread_name_prefix='rag-inference')
+            if config.RAG_INFERENCE_CONCURRENCY else None)
         self.slots = asyncio.Semaphore(config.MAX_CONCURRENT_AGENTS)
         self.assessment_slots = asyncio.Semaphore(config.ASSESS_CONCURRENCY)
 
@@ -193,14 +199,25 @@ class SessionManager:
                 if session.cancelled.is_set():
                     return '[已取消] 工具尚未执行。'
                 return tool.run(call['function']['arguments'])
-        if tool.concurrency == 'read':
-            await self.read_slots.acquire()
-        worker = asyncio.create_task(asyncio.to_thread(execute))
+        isolated_rag = name == 'rag_search' and self.rag_executor is not None
+        slots = self.rag_slots if isolated_rag else self.read_slots if tool.concurrency == 'read' else None
+        if slots is not None:
+            await slots.acquire()
+        try:
+            if isolated_rag:
+                # Executor 不自动复制 ContextVar；预算和审计调用域必须跟随工作线程。
+                worker = loop.run_in_executor(self.rag_executor, copy_context().run, execute)
+            else:
+                worker = asyncio.create_task(asyncio.to_thread(execute))
+        except BaseException:
+            if slots is not None:
+                slots.release()
+            raise
         self.tool_workers.add(worker)
         def finished(done):
             self.tool_workers.discard(done)
-            if tool.concurrency == 'read':
-                self.read_slots.release()
+            if slots is not None:
+                slots.release()
             if not done.cancelled():
                 done.exception()
         worker.add_done_callback(finished)
@@ -450,4 +467,6 @@ class SessionManager:
         await asyncio.gather(*(s.memory_task for s in self.sessions.values() if s.memory_task), return_exceptions=True)
         if self.tool_workers:
             await asyncio.gather(*list(self.tool_workers), return_exceptions=True)
+        if self.rag_executor:
+            self.rag_executor.shutdown(wait=True)
         await self.flush()
