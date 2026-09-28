@@ -32,7 +32,7 @@ Name files `dev/tests/test_<feature>.py` and functions `test_<behavior>`. Use py
 
 ## Commit & Pull Request Guidelines
 
-History is limited to an initial Chinese description and a `feat:` commit. Prefer concise, descriptive messages with prefixes such as `feat:` or `fix:`. PRs should explain the behavior change, link relevant issues, list validation commands/results, and identify configuration or dependency changes. Update `uv.lock` alongside dependency edits.
+`main` is the protected template branch. Start new work from the current baseline tag (`git switch -c feat/<topic> v0.1.0`); do not push directly to `main`. Use concise prefixes such as `feat:`, `fix:`, `perf:`, `docs:`, `ci:`, `chore:`. PRs should explain the behavior change, link relevant issues, list validation commands/results, and identify configuration or dependency changes. Update `uv.lock` alongside dependency edits. Release/tagging steps live in `docs/release.md`; container usage in `docs/docker.md`.
 
 ## Security & Configuration
 

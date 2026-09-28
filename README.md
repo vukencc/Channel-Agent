@@ -10,6 +10,31 @@ uv sync --locked
 uv run main.py
 ```
 
+## 模板与分支开发
+
+本仓库作为模板基线维护：`main` 保持可用，历史版本用注解 tag 冻结（当前 `v0.1.0`）。
+
+```bash
+# 从基线开启一个新方向
+git switch -c feat/<topic> v0.1.0
+# 并行开发（不来回切分支）
+git worktree add ../ai-agent-<topic> v0.1.0 -b feat/<topic>
+```
+
+较大分歧方向可在 GitHub 上用「Use this template」新建独立仓库（只复制默认分支内容）。
+贡献规范见 [贡献指南](CONTRIBUTING.md)，版本与标签流程见 [发布说明](docs/release.md)。
+
+## Docker
+
+```bash
+docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ai-agent-startup:v0.1.0 .
+docker run --rm -it --env-file .env -e TERM=xterm-256color \
+  -v ai-agent-state:/data/state -v ai-agent-sandbox:/data/sandbox -v ai-agent-rag:/data/rag-cache \
+  ai-agent-startup:v0.1.0
+```
+
+headless、模型缓存、命令沙箱权限与镜像保存/推送见 [Docker 指南](docs/docker.md)。
+
 ## 结构
 
 ```text
@@ -31,9 +56,10 @@ docs/               使用文档与历史交付记录
 ## 验证
 
 ```bash
-uv run pytest -m 'not integration'
-# 已有本地模型时：
-RUN_RAG_INTEGRATION=1 uv run pytest -m integration -k 'not strictness'
+uv run pytest -m 'not integration'          # 离线回归（当前基线：319 passed, 2 skipped, 5 deselected）
+uv run python dev/ci_sandbox_probe.py       # Linux：真实 Bubblewrap/prlimit 探测
+# 已有本地模型与公开语料时：
+RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run pytest -m integration -q
 uv run python -m dev.rag.prepare_engineering
 uv run python -m dev.rag.run_engineering
 ```
@@ -61,3 +87,7 @@ Ctrl+C 停止当前任务，Ctrl+Q 退出。多个会话并发执行，各自拥
 冻结公开 qrels 的小候选池入口与报告见 [质量校准说明](docs/rag-quality.md)。
 `uv run python -m dev.rag.quality --corpus /path/to/corpus.parquet --output /tmp/new-quality-run`，
 需显式配置本地 EMBEDDING_LOCAL_PATH/RERANK_LOCAL_PATH。输入和输出分开；修改阈值或模型须附校准与留出报告，不自动覆盖默认配置。
+
+## 许可证
+
+本项目使用 [MIT 许可证](LICENSE)。
