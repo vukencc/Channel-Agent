@@ -1,6 +1,6 @@
 """Content-addressed embeddings and a reusable parent/child retrieval index."""
 import hashlib
-import fcntl
+from core.file_lock import lock_file
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -155,8 +155,8 @@ def cached_embeddings(texts: list[str], model, progress=None) -> np.ndarray:
     directory = config.RAG_CACHE_DIR / 'vectors'
     directory.mkdir(parents=True, exist_ok=True)
     identity = hashlib.sha256(model.identity.encode()).hexdigest()
-    with (directory / f'{identity}.lock').open('w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with (directory / f'{identity}.lock').open('a+b') as lock:
+        lock_file(lock)
         return _cached_embeddings(texts, model, progress)
 
 

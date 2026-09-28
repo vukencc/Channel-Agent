@@ -1,5 +1,5 @@
 """可选 HNSW 索引；内容指纹持久化，默认精确检索不导入此依赖。"""
-import fcntl
+from core.file_lock import lock_file
 import hashlib
 import json
 import os
@@ -31,7 +31,7 @@ class AnnIndex:
         self.index = hnswlib.Index(space='ip', dim=vectors.shape[1])
         self.loaded_from_disk = False
         with (directory / f'{self.identity}.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            lock_file(lock)
             if path.exists():
                 self.index.load_index(str(path), max_elements=self.count)
                 self.loaded_from_disk = True

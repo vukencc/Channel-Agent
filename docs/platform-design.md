@@ -52,3 +52,16 @@ workflow_dispatch 可显式开启真实模型集成任务；缓存公开模型�
 本轮只在本机验证脚本及工作流静态契约，未触发远端 GitHub Actions，不把配置完成当成远端运行成功。
 
 工作流在运行器步骤中写 GITHUB_ENV，避免在 job.env 中使用不可用的 runner 上下文；依据 [GitHub 上下文可用性规则](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability)。
+
+## FREE-15：平台能力与容器后端边界
+
+| 环境 | 状态/索引锁 | 交互与文件工具 | 隔离命令 | 本轮验证 |
+|---|---|---|---|---|
+| Linux | flock | TUI、headless、文件工具 | bwrap + prlimit，能力不足拒绝 | 本机真实多进程锁与隔离探针通过 |
+| WSL2 Linux | flock | 同 Linux，建议 Linux 文件系统工作区 | 仍须真实隔离探针通过 | 不把其他 WSL 安装视为本机已验证 |
+| macOS | flock | 原则上支持文本/headless/基础文件；原子 move 拒绝 | 拒绝，建议 Linux VM | 无原生环境，未验收 |
+| Windows 原生 | msvcrt 单字节锁适配 | 去除直接 fcntl 导入障碍；依赖/终端/文件边界需原生验证 | 拒绝，建议 WSL2 | 仅锁适配契约单测，未原生验收 |
+
+`/platform` 或 `uv run main.py --platform` 只显示静态能力，不创建会话目录、不调用模型，不把找到二进制当成隔离验证通过。所有命令在非 Linux 入口即拒绝；不会静默切换 subprocess 宿主执行。文件系统（如网络盘）是否可靠支持锁也需部署环境验证。
+
+Docker/Podman 后端后续实现契约：固定镜像摘要、非特权非 root、只读 rootfs、仅当前工作区可写、网络默认 none、无宿主 socket/密钥/额外根、CPU/内存/PID/文件限制；取消必须终止容器及所有子进程，镜像拉取与联网需明确授权/审计。Windows/macOS 的 bind mount、用户映射、路径大小写/符号链接须真实越界测试。任一探测不支持即拒绝，不启用降级执行；本轮不提供该后端。

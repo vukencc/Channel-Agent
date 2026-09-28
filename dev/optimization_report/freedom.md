@@ -283,3 +283,13 @@ CLI 显示有效预算及本轮剩余交互次数；分支继承覆盖值。先�
 ### FREE-14（完成：有界只读 usage/trace）
 
 按设计实现，新增专项 3 passed，全量非集成 311 passed、2 skipped。统计保留窗口去重、未知费用显示 null，字段白名单/已配置凭据脱敏/长度上限均已验证；不读取消息正文，不改日志格式。配置与口径见 docs/optimization-progress.md。
+
+### FREE-15 实施前设计（P2）
+
+最小实现集中在可导入/可诊断，不实现未经平台验收的宿主命令回退：将 SessionStore、RAG/ANN 的直接 fcntl 依赖抽成平台文件锁；POSIX 保留 flock，Windows 使用 msvcrt 单字节互斥，能力缺失拒绝打开存储。真实 Linux 多进程互斥必须测试；Windows 分支仅可模拟时明确未原生验收。
+命令入口先检查 Linux，macOS/Windows 提示使用 Linux/WSL2 的 bwrap/prlimit；文件工具与 headless 保持可用范围，不把找到同名 bwrap 当成可用隔离。新增只读 /platform 与 --platform 输出能力/限制，不启动状态目录、不执行模型。
+Docker/Podman 后端仅设计：必须专用镜像、非特权非 root、只挂载工作区、只读 rootfs、无 host socket/凭据、网络默认 none、资源配额、进程树取消和镜像摘要绑定；在各平台真实越界/网络/限额测试通过前不启用。
+
+### FREE-15（完成最小适配：平台诊断与锁；原生非 Linux 未验收）
+
+移除存储/RAG/ANN 的直接 fcntl 依赖，统一 POSIX/Windows 锁接口；非 Linux 命令提前拒绝，--platform 无凭据/状态即可说明能力。新增专项 4 passed；全量非集成 315 passed、2 skipped；本机 Bubblewrap + prlimit 实际探针通过。Windows 仅适配契约测试、macOS 无原生测试，不宣称跨平台验收通过；容器后端仅设计。详见 docs/platform-design.md。

@@ -283,6 +283,8 @@ def isolated_command(argv: list[str], *, network_socket: Path | None = None) -> 
 
     Never fall back to executing on the host if isolation is unavailable.
     """
+    if sys.platform != 'linux':
+        raise SandboxError('隔离命令需要 Linux/WSL2 的 bubblewrap 与 prlimit；当前平台仅使用文件工具或 headless 文本，不回退宿主执行')
     import shutil
     executable = shutil.which("bwrap", path="/usr/bin:/bin")
     if not executable:

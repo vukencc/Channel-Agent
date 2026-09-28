@@ -7,7 +7,7 @@ import threading
 import hashlib
 
 import config
-import fcntl
+from core.file_lock import lock_file, unlock_file
 import json
 import os
 import re
@@ -80,10 +80,13 @@ class SessionStore:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = (self.root / '.lock').open('a')
         try:
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_file(self.lock, blocking=False)
         except BlockingIOError:
             self.lock.close()
             raise RuntimeError('该状态目录已有 CLI 在运行；请使用不同的 --state-dir') from None
+        except BaseException:
+            self.lock.close()
+            raise
         self.errors: list[str] = []
         self.workspace_root = Path(workspace_root or config.SANDBOX_DIR).resolve()
         self.writer = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-save")
@@ -93,7 +96,7 @@ class SessionStore:
     def close(self):
         self.writer.shutdown(wait=True)
         if not self.lock.closed:
-            fcntl.flock(self.lock, fcntl.LOCK_UN)
+            unlock_file(self.lock)
             self.lock.close()
 
     def directory(self, identifier: str) -> Path:

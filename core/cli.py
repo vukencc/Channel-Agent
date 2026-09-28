@@ -29,6 +29,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /switch ID前缀       切换会话（也可点击左侧）
 /model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
 /tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
+/platform           查看平台能力与隔离验证方式
 /usage /trace [轮次] 查看保留窗口统计及有界脱敏指标（启用可观测命令后）
 /image 路径 | 问题   从会话工作区发送图片；启用视觉后仍需确认上传
 /tasks [cancel ID]  查看当前会话委派任务或取消（启用子代理后）
@@ -424,6 +425,9 @@ class AgentCLI:
                         self.manager.set_tool_names(session, names)
                     names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
                     self.notice = '当前工具子集：' + ('全部' if names is None else ', '.join(names) or '无工具')
+                elif command == '/platform':
+                    from core.platform_info import platform_info
+                    self.notice = json.dumps(platform_info(), ensure_ascii=False, indent=2)
                 elif command in {'/usage', '/trace'}:
                     from core.observability import usage_report, trace_report
                     report = usage_report(session.record) if command == '/usage' else trace_report(session.record, argument)
@@ -556,12 +560,17 @@ class AgentCLI:
 def main():
     parser = argparse.ArgumentParser(description='多会话 Agent CLI：自动保存、独立工作区、文件记忆')
     parser.add_argument('--state-dir', type=Path, default=config.AGENT_STATE_DIR, help='持久化目录')
+    parser.add_argument('--platform', action='store_true', help='只显示平台能力，不创建状态或调用模型')
     parser.add_argument('--list', action='store_true', help='列出已保存会话后退出')
     parser.add_argument('--prompt', help='无 TTY 单次执行；默认拒绝待确认操作')
     parser.add_argument('--json', action='store_true', help='headless 输出单个 JSON 对象')
     parser.add_argument('--session', help='headless 继续已有会话 ID 或唯一前缀')
     parser.add_argument('--policy', choices=['readonly', 'standard', 'trusted'], help='headless 显式权限档位，默认 standard 并拒绝人工确认')
     args = parser.parse_args()
+    if args.platform:
+        from core.platform_info import platform_info
+        print(json.dumps(platform_info(), ensure_ascii=False, indent=2))
+        return
     if args.prompt is None and (args.json or args.session or args.policy):
         parser.error('--json/--session/--policy 需要 --prompt')
     if args.prompt is not None and (not args.prompt.strip() or args.list):
