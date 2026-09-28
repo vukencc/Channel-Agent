@@ -187,3 +187,7 @@
 100 × 10 MiB v2 会话，管理器加载 1.969569 → 0.003993 秒，峰值 RSS 增量 1016.246 → 0 MiB。
 方法与限制见 `docs/optimization-progress.md`；基准入口 `dev/perf/benchmark.py`。
 历史校验与中断恢复延后到目标访问，列表只读，保留 v1 兼容。
+
+### PERF-06（完成）
+
+10,001 条消息，3 次中位 0.732597 → 0.053915 秒，减少 92.64%；输出计量一致。详见 docs/optimization-progress.md。

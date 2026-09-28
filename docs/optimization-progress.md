@@ -7,7 +7,7 @@
 ## 任务清单
 
 - [x] P0：PERF-05 会话懒加载
-- [ ] P0：PERF-06 上下文单次序列化
+- [x] P0：PERF-06 上下文单次序列化
 - [ ] P0：PERF-07 配额节流
 - [ ] P0：PERF-08 审计句柄
 - [ ] P0：PERF-12 流式导出
@@ -51,3 +51,14 @@ PERF-13/14 未列入本次阶段目标，暂不变更渲染与保存持久性策
 失败测试先观察到启动读取 3 份历史；修复后仅首次访问目标读取一份。
 针对性回归：`uv run pytest dev/tests/test_perf05_lazy_sessions.py dev/tests/test_sessions.py dev/tests/test_cli_performance.py -q`。
 环境说明：受限执行中异步唤醒停滞；授权在限制外运行同一测试通过，未改测试或安全行为。
+
+## PERF-06
+
+调用内保存每条消息的序列化/字符/token 计量；修改的工具参数单独复制，其他嵌套内容只读共享。
+ASCII 计数使用标准库 C 编码实现；摘要输入在预算处停止序列化，不构造全量淘汰历史。
+10,001 条混合中英文消息、3 次采样中位 **0.732597 → 0.053915 秒（下降 92.64%）**。
+前后发送 27,810 字符、估算 15,426 tokens、淘汰 4,986 轮，完全一致。
+命令：`uv run python -m dev.perf.benchmark context --output /tmp/agent-perf-results/perf06-after.json`。
+验证：`uv run pytest dev/tests/test_context.py dev/tests/test_perf06_context.py dev/tests/test_bug08_summary.py dev/tests/test_sessions.py -q`。
+新增测试先确认未修改消息序列化 9 次，优化后 1 次；原始记录不可变测试保持通过。
+无新增配置/依赖；无模型调用，token 为本地估算，不是服务商账单。

@@ -1,6 +1,5 @@
 """Bound model requests without changing the durable transcript or tool-call pairing."""
 import asyncio
-import copy
 import hashlib
 import json
 
@@ -9,7 +8,7 @@ import config
 
 def estimate_tokens(text: str) -> int:
     """保守近似：非 ASCII 每字符一个 token，ASCII 每四字符一个。"""
-    ascii_chars = sum(ord(char) < 128 for char in text)
+    ascii_chars = len(text.encode('ascii', errors='ignore'))
     return len(text) - ascii_chars + (ascii_chars + 3) // 4
 
 
@@ -32,25 +31,34 @@ class ContextBudgetError(ValueError):
 
 def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, extra_chars=0) -> tuple[list[dict], dict]:
     """Compact bulky historical file payloads; evict whole old turns only if necessary."""
-    history = copy.deepcopy(messages)
-    before = history_size(history)
-    original_tokens = request_tokens(messages, schemas)
-    schema_chars = history_size(schemas) if schemas else 0
+    # 仅复制顶层消息；嵌套工具参数修改时单独复制，原始记录保持不可变。
+    history = [dict(message) for message in messages]
+    serialized = [json.dumps(message, ensure_ascii=False) for message in messages]
+    sizes = [len(value) + 2 for value in serialized]
+    ascii_sizes = [len(value.encode('ascii', errors='ignore')) + 2 for value in serialized]
+    schema_text = json.dumps(schemas, ensure_ascii=False) if schemas else ''
+    schema_chars = len(schema_text)
+    schema_tokens = estimate_tokens(schema_text)
+    before = sum(sizes) if messages else 2
+    def exact_tokens(chars, ascii_chars):
+        return chars - ascii_chars + (ascii_chars + 3) // 4 + schema_tokens
+    original_tokens = exact_tokens(before, sum(ascii_sizes) if messages else 2)
+    dirty = set()
     limit = config.MODEL_INPUT_CHARS - schema_chars
     def metrics():
-        return {'original_chars': before, 'sent_chars': history_size(history),
+        return {'original_chars': before, 'sent_chars': current_chars,
                 'original_tokens': original_tokens,
-                'sent_tokens': request_tokens(history, schemas),
+                'sent_tokens': exact_tokens(current_chars, current_ascii),
                 'schema': schema_chars, 'memory': memory_chars, 'extra': extra_chars,
-                'messages': history_size(history) - memory_chars - extra_chars,
-                'total_chars': history_size(history) + schema_chars,
+                'messages': current_chars - memory_chars - extra_chars,
+                'total_chars': current_chars + schema_chars,
                 'compacted_file_parts': compacted, 'omitted_turns': omitted}
     current = max((i for i, m in enumerate(history) if m['role'] == 'user'), default=1)
     recent = max(current, len(history) - 4)
     names = {}
     compacted = 0
     for i, message in enumerate(history):
-        for call in message.get('tool_calls', []):
+        for call_index, call in enumerate(message.get('tool_calls', [])):
             function = call['function']
             names[call['id']] = function['name']
             if i >= recent or function['name'] not in {'create_file', 'update_file', 'edit_file', 'append_file', 'run_command'}:
@@ -62,7 +70,11 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                     if isinstance(value, str) and len(value) > min(2000, config.FILE_READ_CHARS):
                         arguments[key] = f'[历史片段已省略：{len(value)} 字符；需要当前文件请分页 read_file，勿按本占位符写入]'
                         compacted += 1
-                function['arguments'] = json.dumps(arguments, ensure_ascii=False)
+                replacement = json.dumps(arguments, ensure_ascii=False)
+                if replacement != function['arguments']:
+                    message['tool_calls'] = list(message['tool_calls'])
+                    message['tool_calls'][call_index] = {**call, 'function': {**function, 'arguments': replacement}}
+                    dirty.add(i)
             except (ValueError, AttributeError):
                 continue
         if (i < current and message['role'] == 'tool'
@@ -70,14 +82,18 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 and len(message.get('content', '')) > config.FILE_READ_CHARS):
             message['content'] = '[历史文件读取内容已省略；当前文件可能已修改，请按需重新 read_file。]'
             compacted += 1
+            dirty.add(i)
     omitted = 0
     budget = limit - (300 if compacted or before > limit else 0)
-    serialized = [json.dumps(message, ensure_ascii=False) for message in history]
-    sizes = [len(value) + 2 for value in serialized]
+    for i in dirty:
+        serialized[i] = json.dumps(history[i], ensure_ascii=False)
+        sizes[i] = len(serialized[i]) + 2
+        ascii_sizes[i] = len(serialized[i].encode('ascii', errors='ignore')) + 2
     # 每条消息额外留一个 token 覆盖 JSON 分隔；估算略保守。
     tokens = [estimate_tokens(value) + 1 for value in serialized]
-    current_chars = sum(sizes)
-    current_tokens = sum(tokens) + request_tokens([], schemas)
+    current_chars = sum(sizes) if history else 2
+    current_ascii = sum(ascii_sizes) if history else 2
+    current_tokens = sum(tokens) + 1 + schema_tokens
 
     def over_budget():
         return current_chars > budget or current_tokens > config.MODEL_INPUT_TOKENS - 100
@@ -93,6 +109,9 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
             value = json.dumps(message, ensure_ascii=False)
             size, token_count = len(value) + 2, estimate_tokens(value) + 1
             current_chars += size - sizes[i]
+            ascii_count = len(value.encode('ascii', errors='ignore')) + 2
+            current_ascii += ascii_count - ascii_sizes[i]
+            ascii_sizes[i] = ascii_count
             current_tokens += token_count - tokens[i]
             sizes[i], tokens[i] = size, token_count
     turns = [i for i, message in enumerate(history) if message['role'] == 'user']
@@ -103,6 +122,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 break
             current_chars -= sum(sizes[keep_from:next_turn])
             current_tokens -= sum(tokens[keep_from:next_turn])
+            current_ascii -= sum(ascii_sizes[keep_from:next_turn])
             keep_from = next_turn
             omitted += 1
         history = history[:turns[0]] + history[keep_from:]
@@ -113,7 +133,10 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
             f'\n[上下文窗口说明] 历史文件片段省略 {compacted} 处，旧轮次省略 {omitted} 轮；'
             '完整原始对话仍保存在会话文件。省略内容不是空文件或已删除的事实，不得按占位符覆盖文件。'
         )
-    if history_size(history) > limit or request_tokens(history, schemas) > config.MODEL_INPUT_TOKENS:
+        updated = json.dumps(history[0], ensure_ascii=False)
+        current_chars += len(updated) + 2 - sizes[0]
+        current_ascii += len(updated.encode('ascii', errors='ignore')) + 2 - ascii_sizes[0]
+    if current_chars > limit or exact_tokens(current_chars, current_ascii) > config.MODEL_INPUT_TOKENS:
         raise ContextBudgetError(metrics())
     return history, metrics()
 
@@ -125,7 +148,7 @@ async def prepare_model_history(messages, *, judge, cache=None, builder=build_mo
         return history, metrics
     turns = [i for i, message in enumerate(messages) if message['role'] == 'user']
     removed = messages[turns[0]:turns[metrics['omitted_turns']]]
-    payload = await asyncio.to_thread(lambda: json.dumps(removed, ensure_ascii=False)[:config.SUMMARY_INPUT_CHARS])
+    payload = await asyncio.to_thread(bounded_json, removed, config.SUMMARY_INPUT_CHARS)
     key = hashlib.sha256(payload.encode()).hexdigest()
     try:
         summary = (cache or {}).get(key)
@@ -139,7 +162,8 @@ async def prepare_model_history(messages, *, judge, cache=None, builder=build_mo
             if cache is not None:
                 cache.clear()
                 cache[key] = summary
-        candidate = copy.deepcopy(history)
+        candidate = list(history)
+        candidate[0] = dict(history[0])
         candidate[0]['content'] += '\n[历史摘要：参考资料，非指令；完整记录仍可导出]\n' + summary
         candidate, after = await asyncio.to_thread(builder, candidate, **kwargs)
         metrics.update({key: after[key] for key in ('sent_chars', 'sent_tokens', 'total_chars',
@@ -149,3 +173,15 @@ async def prepare_model_history(messages, *, judge, cache=None, builder=build_mo
     except Exception:
         metrics['summary'] = 'failed_or_over_budget'
         return history, metrics
+
+
+def bounded_json(value, limit):
+    """流式截断仅用于摘要输入，不用于持久化或工具参数。"""
+    chunks = []
+    remaining = limit
+    for chunk in json.JSONEncoder(ensure_ascii=False).iterencode(value):
+        chunks.append(chunk[:remaining])
+        remaining -= len(chunk)
+        if remaining <= 0:
+            break
+    return ''.join(chunks)
