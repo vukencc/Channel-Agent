@@ -196,7 +196,31 @@ class SessionStore:
 
     def export_saved(self, identifier: str, format: str = 'md') -> Path:
         """调用方先 flush；在磁盘线程读取已提交快照，避免 UI 全量复制。"""
-        return self.export(self.read_record(self.directory(identifier) / 'session.json'), format)
+        directory = self.directory(identifier)
+        record = json.loads((directory / 'session.json').read_text(encoding='utf-8'))
+        if record.get('version') == 2 and 'messages' not in record:
+            return self._export_stream(record, self.iter_messages(directory, record), format)
+        return self.export(record, format)
+
+    @staticmethod
+    def iter_messages(directory: Path, metadata: dict):
+        """只迭代提交边界内的行；原子发布前验证长度和消息数量。"""
+        journal = directory / 'messages.jsonl'
+        if journal.is_symlink():
+            raise ValueError('消息日志不能是符号链接')
+        remaining = metadata['message_bytes']
+        count = 0
+        with journal.open('rb') as stream:
+            while remaining > 0:
+                line = stream.readline(remaining)
+                if not line or not line.endswith(b'\n'):
+                    raise ValueError('消息日志不完整')
+                remaining -= len(line)
+                message = json.loads(line)
+                yield metadata['system_message'] if count == 0 else message
+                count += 1
+        if count != metadata['message_count']:
+            raise ValueError('消息数量与索引不符')
 
     def session_bytes(self, identifier: str) -> int:
         directory = self.directory(identifier)
@@ -332,19 +356,56 @@ class SessionStore:
             self.atomic_write(self.memory_path(identifier), render_entries(remaining))
 
     def export(self, record: dict, format: str = 'md') -> Path:
+        return self._export_stream(record, iter(record['messages']), format)
+
+    def _export_stream(self, record, messages, format):
         if format not in {'md', 'json'}:
             raise ValueError('导出格式必须是 md 或 json')
         directory = self.root / 'exports'
         directory.mkdir(exist_ok=True, mode=0o700)
         path = directory / f'{record["id"]}-{uuid.uuid4().hex[:8]}.{format}'
-        if format == 'json':
-            text = json.dumps({**record, 'memory': self.memory(record['id'])}, ensure_ascii=False, indent=2)
-        else:
-            lines = [f'# {record["title"]}', '', f'会话：{record["id"]}', '', '## 记忆', self.memory(record['id'])]
-            for message in record['messages']:
-                lines += ['', '## ' + message['role'], str(message.get('content') or '')]
-                if message.get('tool_calls'):
-                    lines += ['```json', json.dumps(message['tool_calls'], ensure_ascii=False, indent=2), '```']
-            text = '\n'.join(lines)
-        self.atomic_write(path, text + '\n')
+        descriptor, temporary = tempfile.mkstemp(prefix='.writing-', dir=directory)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                if format == 'json':
+                    encoder = json.JSONEncoder(ensure_ascii=False, indent=2)
+                    def write_value(value, indent):
+                        for chunk in encoder.iterencode(value):
+                            stream.write(chunk.replace('\n', '\n' + ' ' * indent))
+                    stream.write('{\n')
+                    keys = [key for key in record if key != 'memory']
+                    if 'messages' not in keys:
+                        keys.append('messages')
+                    keys.append('memory')
+                    for i, key in enumerate(keys):
+                        if i:
+                            stream.write(',\n')
+                        stream.write('  ' + json.dumps(key, ensure_ascii=False) + ': ')
+                        if key == 'messages':
+                            stream.write('[')
+                            seen = False
+                            for message in messages:
+                                stream.write(',\n    ' if seen else '\n    ')
+                                write_value(message, 4)
+                                seen = True
+                            stream.write('\n  ]' if seen else ']')
+                        else:
+                            write_value(self.memory(record['id']) if key == 'memory' else record[key], 2)
+                    stream.write('\n}')
+                else:
+                    stream.write(f'# {record["title"]}\n\n会话：{record["id"]}\n\n## 记忆\n')
+                    stream.write(self.memory(record['id']))
+                    for message in messages:
+                        stream.write('\n\n## ' + message['role'] + '\n' + str(message.get('content') or ''))
+                        if message.get('tool_calls'):
+                            stream.write('\n```json\n')
+                            json.dump(message['tool_calls'], stream, ensure_ascii=False, indent=2)
+                            stream.write('\n```')
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
         return path

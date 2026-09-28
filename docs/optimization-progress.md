@@ -10,7 +10,7 @@
 - [x] P0：PERF-06 上下文单次序列化
 - [x] P0：PERF-07 配额节流
 - [ ] P0：PERF-08 审计句柄（实现与回归完成，50% 性能目标未达）
-- [ ] P0：PERF-12 流式导出
+- [x] P0：PERF-12 流式导出
 - [ ] P0：FREE-03 文件工具
 - [ ] P0：FREE-05 模型参数
 - [ ] P0：FREE-13 成本与速率预算
@@ -84,3 +84,15 @@ ASCII 计数使用标准库 C 编码实现；摘要输入在预算处停止序�
 测试：失败先证明每事件 open 和没有 fsync；新增复用、轮转、同步、并发完整行、64 句柄上限回归。
 验证命令：`uv run pytest dev/tests/test_perf08_audit.py dev/tests/test_file_crud.py dev/tests/test_command.py -q`。
 基准：`uv run python -m dev.perf.benchmark audit --output /tmp/agent-perf-results/perf08-after.json`。
+
+## PERF-12
+
+v2 导出逐行读取已提交日志，逐消息输出 JSON/Markdown，fsync 后原子替换；损坏日志不发布部分文件。
+v1 继续兼容，但旧单 JSON 格式本身仍需完整解析。峰值由最大单条消息决定，不承诺单条 100 MiB 消息的低内存。
+100 MiB 日志（1,600 条各 64 KiB）：**0.938152 → 0.661944 秒**；tracemalloc 峰值分配 **400.817 → 0.356 MiB**；
+输出均 **104,946,050 字节**。该数字是 Python 分配峰值，不是进程总 RSS。
+基准：`uv run python -m dev.perf.benchmark export --output /tmp/agent-perf-results/perf12-after.json`。
+失败测试证明旧实现必须全量 read_record；新增格式等价及损坏不发布测试。
+验证：`uv run pytest -m 'not integration' -q`：**203 passed, 3 deselected**，5.71 秒。
+`uv sync --locked` 成功；所有运行目录通过环境变量重定向 `/tmp/agent-optimization-validation/`。
+无新增配置/依赖；未启用压缩格式。

@@ -33,7 +33,7 @@ def sessions(count, megabytes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit'])
+    parser.add_argument('case', choices=['sessions', 'context', 'quota', 'audit', 'export'])
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--megabytes', type=int, default=10)
     parser.add_argument('--output', type=Path, required=True)
@@ -41,7 +41,8 @@ def main():
     result = {'case': args.case, **(sessions(args.count, args.megabytes)
                                    if args.case == 'sessions' else
                                    context() if args.case == 'context' else
-                                   quota() if args.case == 'quota' else audit())}
+                                   quota() if args.case == 'quota' else
+                                   audit() if args.case == 'audit' else export())}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps(result))
@@ -111,6 +112,29 @@ def audit():
         lines = (root / 'audit.jsonl').read_text().splitlines()
         assert len(lines) == 10000
         return {'seconds': elapsed, 'events': len(lines)}
+
+
+def export():
+    import tracemalloc
+    from core.storage import SessionStore
+    with tempfile.TemporaryDirectory(prefix='agent-export-') as directory:
+        store = SessionStore(Path(directory) / 'state', Path(directory) / 'workspace')
+        try:
+            record = store.new_record('export', 'system')
+            record['messages'] += [{'role': 'user', 'content': 'x' * 65536} for _ in range(1600)]
+            store.save(record)
+            identifier = record['id']
+            del record
+            tracemalloc.start()
+            start = time.perf_counter()
+            path = store.export_saved(identifier, 'json')
+            elapsed = time.perf_counter() - start
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            return {'seconds': elapsed, 'python_peak_mib': peak / 1024 ** 2,
+                    'output_bytes': path.stat().st_size, 'source_mib': 100}
+        finally:
+            store.close()
 
 
 if __name__ == '__main__':
