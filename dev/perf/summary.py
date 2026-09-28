@@ -9,11 +9,11 @@ from pathlib import Path
 
 
 async def measure():
-    import config
-    from core.context import prepare_model_history
-    from core.sessions import SessionManager
-    from core.storage import SessionStore
-    from core.llm import complete, close_clients
+    from ai_agent_startup import config
+    from ai_agent_startup.core.context import prepare_model_history
+    from ai_agent_startup.core.sessions import SessionManager
+    from ai_agent_startup.core.storage import SessionStore
+    from ai_agent_startup.core.llm import complete, close_clients
     config.MODEL_INPUT_CHARS = 1800
     config.CONTEXT_SUMMARY = True
     config.MODEL_PARAMETERS = {'max_tokens': 256}

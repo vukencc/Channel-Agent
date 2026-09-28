@@ -62,6 +62,6 @@ workflow_dispatch 可显式开启真实模型集成任务；缓存公开模型�
 | macOS | flock | 原则上支持文本/headless/基础文件；原子 move 拒绝 | 拒绝，建议 Linux VM | 无原生环境，未验收 |
 | Windows 原生 | msvcrt 单字节锁适配 | 去除直接 fcntl 导入障碍；依赖/终端/文件边界需原生验证 | 拒绝，建议 WSL2 | 仅锁适配契约单测，未原生验收 |
 
-`/platform` 或 `uv run main.py --platform` 只显示静态能力，不创建会话目录、不调用模型，不把找到二进制当成隔离验证通过。所有命令在非 Linux 入口即拒绝；不会静默切换 subprocess 宿主执行。文件系统（如网络盘）是否可靠支持锁也需部署环境验证。
+`/platform` 或 `uv run ai-agent-startup --platform` 只显示静态能力，不创建会话目录、不调用模型，不把找到二进制当成隔离验证通过。所有命令在非 Linux 入口即拒绝；不会静默切换 subprocess 宿主执行。文件系统（如网络盘）是否可靠支持锁也需部署环境验证。
 
 Docker/Podman 后端后续实现契约：固定镜像摘要、非特权非 root、只读 rootfs、仅当前工作区可写、网络默认 none、无宿主 socket/密钥/额外根、CPU/内存/PID/文件限制；取消必须终止容器及所有子进程，镜像拉取与联网需明确授权/审计。Windows/macOS 的 bind mount、用户映射、路径大小写/符号链接须真实越界测试。任一探测不支持即拒绝，不启用降级执行；本轮不提供该后端。

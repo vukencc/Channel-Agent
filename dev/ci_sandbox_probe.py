@@ -4,10 +4,8 @@ import tempfile
 import threading
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from tools.command import run_command
-from tools.sandbox import ToolContext, tool_context
+from ai_agent_startup.tools.command import run_command
+from ai_agent_startup.tools.sandbox import ToolContext, tool_context
 
 
 def main():

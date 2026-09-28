@@ -7,11 +7,11 @@ from pathlib import Path
 
 
 async def measure(names=None):
-    import config
-    from core import llm
-    from core.sessions import SessionManager
-    from core.storage import SessionStore
-    from core.prompts import DEFAULT_PROMPT
+    from ai_agent_startup import config
+    from ai_agent_startup.core import llm
+    from ai_agent_startup.core.sessions import SessionManager
+    from ai_agent_startup.core.storage import SessionStore
+    from ai_agent_startup.core.prompts import DEFAULT_PROMPT
     config.MODEL_TOOL_NAMES = names
     config.MODEL_PARAMETERS = {'max_tokens': 64, 'tool_choice': 'auto'}
     config.MODEL_STREAM_USAGE = True

@@ -10,9 +10,9 @@
 ## 构建
 
 ```bash
-docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ai-agent-startup:v0.1.0 .
+docker build -f docker/Dockerfile --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ai-agent-startup:v0.2.0 .
 # 需要测试或可选功能：
-docker build --build-arg UV_SYNC_ARGS="--dev --extra documents" -t ai-agent-startup:test .
+docker build -f docker/Dockerfile --build-arg UV_SYNC_ARGS="--dev --extra documents" -t ai-agent-startup:test .
 ```
 
 首次构建会下载 Python 依赖（含 torch CPU 轮子），镜像通常 1~3GB。
@@ -82,24 +82,24 @@ docker run --rm --entrypoint uv ai-agent-startup:v0.1.0 \
 ## docker compose
 
 ```bash
-GIT_SHA=$(git rev-parse --short HEAD) TAG=v0.1.0 docker compose build
-docker compose run --rm agent            # TUI
-docker compose run --rm agent --prompt "..." --json
+GIT_SHA=$(git rev-parse --short HEAD) TAG=v0.2.0 docker compose -f docker/docker-compose.yml build
+docker compose -f docker/docker-compose.yml run --rm agent            # TUI
+docker compose -f docker/docker-compose.yml run --rm agent --prompt "..." --json
 ```
 
-需要命令沙箱时取消 `docker-compose.yml` 中 `security_opt` 的注释，并用探针验证。
+需要命令沙箱时取消 `docker/docker-compose.yml` 中 `security_opt` 的注释，并用探针验证。
 
 ## 保存、分发与发布
 
 ```bash
 # 离线归档
-docker save ai-agent-startup:v0.1.0 | gzip > ai-agent-startup-v0.1.0-image.tar.gz
-docker load < ai-agent-startup-v0.1.0-image.tar.gz
+docker save ai-agent-startup:v0.2.0 | gzip > ai-agent-startup-v0.2.0-image.tar.gz
+docker load < ai-agent-startup-v0.2.0-image.tar.gz
 
 # 推送到 GitHub 容器仓库（token 需 write:packages）
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <用户名> --password-stdin
-docker tag ai-agent-startup:v0.1.0 ghcr.io/vukencc/ai-agent-startup:v0.1.0
-docker push ghcr.io/vukencc/ai-agent-startup:v0.1.0
+docker tag ai-agent-startup:v0.2.0 ghcr.io/vukencc/ai-agent-startup:v0.2.0
+docker push ghcr.io/vukencc/ai-agent-startup:v0.2.0
 ```
 
 推 `v*` 标签会触发 `.github/workflows/release.yml`：离线回归 + 沙箱探测 → 构建并推送 GHCR → 创建 GitHub Release。

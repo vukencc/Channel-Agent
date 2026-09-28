@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import uuid
-import config
+from ai_agent_startup import config
 import chromadb
 import os
 from pathlib import Path
@@ -38,8 +38,8 @@ class DocLoader:
     
 from sklearn.metrics.pairwise import cosine_similarity
 
-from rag.chunking import TextSplitter
-from rag.embedding import get_embedding_model
+from ai_agent_startup.rag.chunking import TextSplitter
+from ai_agent_startup.rag.embedding import get_embedding_model
 
 # 语义参数 → 实际数值。阈值按本地 bge-small-zh 在本语料上的实测分布校准：
 # 相关查询 top1 约 0.55~0.64，不相关约 0.29~0.43，两者有重叠，所以阈值只是粗筛，

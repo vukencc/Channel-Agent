@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 (ROOT / '.cache/reports/rag/full-corpus').mkdir(parents=True, exist_ok=True)
 
 import pyarrow.parquet as pq
-from rag.chunking import TextSplitter
+from ai_agent_startup.rag.chunking import TextSplitter
 
 source = next((ROOT / '.cache/rag/benchmark/corpus').glob('corpus-*.parquet'))
 splitter = TextSplitter()

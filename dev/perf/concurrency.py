@@ -11,11 +11,11 @@ from pathlib import Path
 
 async def measure(corpus: Path) -> dict:
     import pyarrow.parquet as pq
-    import config
-    from core.sessions import SessionManager
-    from core.storage import SessionStore
-    from rag.index import get_index
-    from rag.rerank import get_reranker
+    from ai_agent_startup import config
+    from ai_agent_startup.core.sessions import SessionManager
+    from ai_agent_startup.core.storage import SessionStore
+    from ai_agent_startup.rag.index import get_index
+    from ai_agent_startup.rag.rerank import get_reranker
 
     manifest = json.loads(Path('dev/rag/inputs/quality.json').read_text())
     with corpus.open('rb') as stream:

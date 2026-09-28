@@ -39,7 +39,7 @@ ls -la | head
 ## 验证
 
 ```bash
-uv run pytest dev/tests/test_command.py dev/tests/test_file_crud.py dev/tests/test_agent_tools.py -q
+uv run pytest tests/test_command.py tests/test_file_crud.py tests/test_agent_tools.py -q
 ```
 
 命令测试需要允许创建 Linux 用户、进程和网络命名空间；在禁止嵌套隔离的 CI/容器中需要调整运行器。
