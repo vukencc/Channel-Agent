@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-28
+
+### Changed
+- **破坏性**：应用代码迁移到 `src/ai_agent_startup/` 包布局，测试迁移到 `tests/`，Docker 资产迁移到 `docker/`。
+- **破坏性**：启动命令由 `uv run main.py` 改为 `uv run ai-agent-startup`（等价：`uv run python -m ai_agent_startup.main`）；项目经 hatchling 安装为包，`uv.lock` 同步更新。
+- 全部内部导入改为 `ai_agent_startup.*`；`dev/` 保留诊断、性能基准、RAG 数据准备与历史报告。
+- 新增可选环境变量 `AI_AGENT_PROJECT_ROOT`，用于覆盖自动探测的仓库根目录。
+
+### Fixed
+- Docker 构建命令更新为 `docker build -f docker/Dockerfile ...`，compose 使用 `docker compose -f docker/docker-compose.yml ...`。
+
 ## [0.1.1] - 2026-09-28
 
 ### Added
@@ -24,6 +35,7 @@
 - 全量模型推理峰值内存、RAG p95/吞吐权衡、真实视觉服务、Windows/macOS 原生能力尚未验收，详见 `docs/optimization-delivery.md`。
 - 容器后端（Docker/Podman 作为命令沙箱）仅有设计契约，未实现，见 `docs/platform-design.md`。
 
-[Unreleased]: https://github.com/vukencc/ai-agent-startup/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/vukencc/ai-agent-startup/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/vukencc/ai-agent-startup/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/vukencc/ai-agent-startup/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/vukencc/ai-agent-startup/releases/tag/v0.1.0
