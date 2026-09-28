@@ -24,7 +24,7 @@
 - [x] P1：PERF-11 辅助模型与后台摘要
 - [x] P1：FREE-01 命名只读工具根
 - [x] P1：FREE-04 权限档位与范围白名单
-- [ ] P1：FREE-07 多知识库与过滤
+- [x] P1：FREE-07 多知识库与过滤
 - [ ] P1：FREE-08 记忆管理
 - [ ] P1：FREE-09 headless
 - [ ] P1：FREE-10 分支与重发
@@ -314,3 +314,19 @@ RAG 使用显式根参数与独立磁盘词法命名空间，不修改全局 DOC
 完整 `uv run pytest -m 'not integration' -q`：**263 passed, 2 skipped, 4 deselected，8.26s**。
 随后补充两会话 readonly/trusted 并发隔离，`uv run pytest dev/tests/test_free04_permissions.py -q`：**6 passed**。
 无新依赖；权限变更由用户 CLI/配置完成，模型工具参数不能自行提升档位。
+
+## FREE-07
+
+`RAG_SOURCES={}`：命名知识库到 path/可选 thresholds 的映射，路径只读，不自动导入或修改数据。
+`source=''` 仍使用 DOC_DIR；`source='manual'` 选择配置库；`@名称` 保留 FREE-01 只读根。
+每库可配置 strict/normal/loose 三档阈值且必须递减；未提供沿用现状，不自动校准阈值。
+模型仍共享全局配置；不实现 URL 导入、HyDE 或按库热切换模型，避免请求间修改全局配置。
+工具增加 `top_k`（默认 None 按 breadth，显式上限 `RAG_MAX_TOP_K=50`）与带时区的 `updated_after`。
+修改时间指文件 mtime，不是文档正文的发布日期；仅过滤请求跟踪 mtime 并使时间变化失效，无过滤默认元数据不变。
+时间条件在两路候选截断前应用；过滤向量查询使用 exact，BM25 在全体匹配中筛选再截断，可能增加查询开销。
+索引构建按显式根隔离词法文件，不切换全局 DOC_DIR；并发库同名文档不串内容。无新依赖。
+
+新增四项失败测试先观察到缺参数/时间指纹/范围校验；补充双库并发与持久倒排隔离。
+`uv run pytest -m 'not integration' -q`：**269 passed, 2 skipped, 5 deselected，9.10s**。
+真实本地模型：`RUN_RAG_INTEGRATION=1 uv run pytest dev/tests/test_free07_sources.py dev/tests/test_rag_integration.py -m integration -q`：**3 passed，17.36s**。
+真实工程用例使用原知识库临时副本，验证 top_k/命名库/时间过滤；原有四阶段/阈值后置测试保留，不是新质量评测或阈值搜索。

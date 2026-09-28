@@ -35,6 +35,8 @@ def file_workflow_guide():
         guide += ('\n显式配置的只读目录：' + ', '.join('@' + name for name in config.TOOL_ROOTS)
                   + '。可用 read_file/list_files/stat/glob 读取对应 @名称/路径，或 rag_search(source="@名称") 检索；'
                   '写工具禁止修改这些根，复制到工作区仍需确认；run_command 看不到这些额外目录。\n')
+    if config.RAG_SOURCES:
+        guide += '\n可选知识库 source：' + ', '.join(config.RAG_SOURCES) + '；按用户任务选择，留空沿用默认库。\n'
     return guide
 
 

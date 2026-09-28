@@ -208,3 +208,9 @@ TOOL_ROOTS 默认空；显式 @名称/路径用于 read/list/stat/glob，rag_sea
 默认 standard 逐次确认；readonly 拒绝风险操作，trusted 仅使用显式工具/路径或简单命令 argv 前缀预先确认规则。
 范围匹配后仍受原路径/只读根/沙箱/配额约束，规则放行审计；/policy 持久化会话档位，运行中不可切换。
 真实沙箱与 shell 组合拒绝测试通过；263 项完整回归通过，随后并发档位隔离专项 6 passed。未增加整轮无限授权，详见 docs/optimization-progress.md。
+
+### FREE-07（完成：命名库、数量与时间过滤）
+
+RAG_SOURCES 显式配置只读命名库与可选三档阈值；工具支持有界 top_k、带时区 updated_after（文件 mtime）。
+过滤在两路候选截断前生效，过滤向量查询用 exact；双库倒排命名空间与内容隔离，无全局 DOC_DIR 切换。默认单库输出保持。
+完整回归 269 passed，真实命名库/过滤及原完整 RAG 3 passed；未实现可选 URL 导入或按库模型切换，范围见 docs/optimization-progress.md。

@@ -251,6 +251,25 @@ RAG_ANN_EF_SEARCH = env_int('RAG_ANN_EF_SEARCH', 256)
 RAG_BM25_PERSIST = env_bool('RAG_BM25_PERSIST', False)
 RAG_MEMORY_LIMIT_MB = env_int('RAG_MEMORY_LIMIT_MB', 0)
 RAG_INFERENCE_CONCURRENCY = env_int('RAG_INFERENCE_CONCURRENCY', 0)
+RAG_MAX_TOP_K = env_int('RAG_MAX_TOP_K', 50)
+try:
+    RAG_SOURCES = json.loads(os.getenv('RAG_SOURCES', '{}'))
+    if not isinstance(RAG_SOURCES, dict):
+        raise ValueError
+    for name, entry in RAG_SOURCES.items():
+        if (not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', name) or not isinstance(entry, dict)
+                or set(entry) - {'path', 'thresholds'} or not isinstance(entry.get('path'), str)
+                or not entry['path'].strip()):
+            raise ValueError
+        entry['path'] = str((PROJECT_ROOT / pathlib.Path(entry['path']).expanduser()).resolve())
+        if 'thresholds' in entry:
+            values = entry['thresholds']
+            if (not isinstance(values, dict) or set(values) != {'strict', 'normal', 'loose'}
+                    or any(type(value) not in (int, float) or not math.isfinite(value) for value in values.values())
+                    or not values['strict'] > values['normal'] > values['loose']):
+                raise ValueError
+except (ValueError, TypeError, OSError):
+    raise ValueError('RAG_SOURCES 必须是命名知识库到 path/可选 thresholds 的 JSON 对象') from None
 MODEL_STABLE_PREFIX = env_bool('MODEL_STABLE_PREFIX', False)
 AUX_MODEL = os.getenv('AUX_MODEL', '').strip()
 AUX_TIMEOUT = env_float('AUX_TIMEOUT', 0)

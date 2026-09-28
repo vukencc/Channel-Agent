@@ -65,6 +65,7 @@ def load_document(path: Path) -> str:
 class DocLoader:
     dir: Path
     confined: bool = False
+    track_updates: bool = False
 
     def load(self) -> list[dict]:
         check_memory_budget()
@@ -95,7 +96,8 @@ class DocLoader:
                 present.add(path)
                 events.watch(path)
                 if (changed is None or path in changed or path not in cache or cache[path][0] != fingerprint
-                        or bool(store) != isinstance(cache[path][1], TextRecord)):
+                        or bool(store) != isinstance(cache[path][1], TextRecord)
+                        or ('updated_at' in cache[path][1]['metadata']) != self.track_updates):
                     try:
                         if config.RAG_MEMORY_LIMIT_MB and (len(present) % 128 == 0 or stat.st_size > 1024 ** 2):
                             check_memory_budget(stat.st_size * 4)
@@ -105,11 +107,14 @@ class DocLoader:
                         continue
                     name = path.relative_to(root).as_posix()
                     doc = {'content': content, 'metadata': {'source': str(path), 'filename': name, 'doc_id': name}}
+                    if self.track_updates:
+                        doc['metadata']['updated_at'] = stat.st_mtime
                     if store:
                         doc = TextRecord({'metadata': doc['metadata']}, 'content', content, store)
                     cache[path] = (fingerprint, doc, hashlib.sha256(content.encode()).hexdigest())
                 documents.append(cache[path][1])
-                fingerprints.append((str(path), cache[path][2]))
+                fingerprints.append((str(path), cache[path][2], stat.st_mtime_ns) if self.track_updates else
+                                    (str(path), cache[path][2]))
             for deleted in cache.keys() - present:
                 del cache[deleted]
         self.fingerprint = hashlib.sha256(json.dumps(fingerprints).encode()).hexdigest()
@@ -247,7 +252,7 @@ class RetrievalIndex:
             store.flush()
         check_memory_budget()
 
-    def dense(self, query: str, limit: int) -> list[dict]:
+    def dense(self, query: str, limit: int, allowed: set[int] | None = None) -> list[dict]:
         check_memory_budget()
         if not self.children:
             return []
@@ -259,7 +264,7 @@ class RetrievalIndex:
         if self.vectors.shape[1] != len(vector):
             raise ValueError('Query/document embedding dimensions differ')
         self.vector_backend = 'exact'
-        if config.RAG_VECTOR_BACKEND == 'ann' and len(self.children) >= config.RAG_ANN_MIN_CHILDREN:
+        if allowed is None and config.RAG_VECTOR_BACKEND == 'ann' and len(self.children) >= config.RAG_ANN_MIN_CHILDREN:
             try:
                 from rag.vector_backend import AnnIndex
                 if not hasattr(self, 'ann_index'):
@@ -285,12 +290,17 @@ class RetrievalIndex:
         parent_scores = np.full(len(self.parents), -np.inf, dtype=np.float32)
         np.maximum.at(parent_scores, self.parent_indexes, child_scores)
         # Parent list is deterministic; ties retain document/chunk order.
-        order = np.argsort(-parent_scores, kind='stable')[:limit]
+        if allowed is None:
+            order = np.argsort(-parent_scores, kind='stable')[:limit]
+        else:
+            eligible = np.array(sorted(allowed), dtype=np.int64)
+            order = eligible[np.argsort(-parent_scores[eligible], kind='stable')[:limit]]
         return [{'id': self.parents[i]['id'], 'score': float(parent_scores[i])} for i in order]
 
-    def bm25(self, query: str, limit: int) -> list[dict]:
+    def bm25(self, query: str, limit: int, allowed: set[int] | None = None) -> list[dict]:
         return [{'id': self.parents[i]['id'], 'score': score}
-                for i, score in self.lexical.search(query, limit)]
+                for i, score in self.lexical.search(query, len(self.parents) if allowed is not None else limit)
+                if allowed is None or i in allowed][:limit]
 
 
 _lock = RLock()
@@ -298,12 +308,12 @@ _cached_key = None
 _cached_index = None
 
 
-def get_index(root: Path | None = None) -> RetrievalIndex:
+def get_index(root: Path | None = None, *, track_updates: bool = False) -> RetrievalIndex:
     """Read content to detect same-size/mtime edits; reuse all expensive work."""
     global _cached_key, _cached_index
-    loader = DocLoader(root or config.DOC_DIR, confined=root is not None)
+    loader = DocLoader(root or config.DOC_DIR, confined=root is not None, track_updates=track_updates)
     documents = loader.load()
-    key = (str(root or config.DOC_DIR), root is not None, loader.fingerprint, config.RAG_PARENT_CHARS,
+    key = (str(root or config.DOC_DIR), root is not None, track_updates, loader.fingerprint, config.RAG_PARENT_CHARS,
            config.RAG_CHILD_CHARS, config.EMBEDDING_MODEL_SOURCE,
            config.EMBEDDING_MODEL_URL, config.EMBEDDING_MODEL_NAME,
            config.EMBEDDING_MODEL_API_KEY, config.EMBEDDING_LOCAL_PATH,
