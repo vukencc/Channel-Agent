@@ -310,10 +310,11 @@ class SessionStore:
     def memory_path(self, identifier: str, namespace: str | None = None) -> Path:
         self.directory(identifier)
         if namespace is not None:
+            if namespace == 'session':
+                # 分支始终拥有独立会话记忆，不受旧 MEMORY_SHARED 的别名影响。
+                return self.directory(identifier) / 'memory.md'
             if not config.ENABLE_MEMORY_MANAGEMENT:
                 raise ValueError('命名空间需要 ENABLE_MEMORY_MANAGEMENT=true')
-            if namespace == 'session':
-                return self.directory(identifier) / 'memory.md'
             if namespace == 'global':
                 return self.root / 'memory' / 'global.md'
             if namespace == 'project':

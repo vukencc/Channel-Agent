@@ -27,7 +27,7 @@
 - [x] P1：FREE-07 多知识库与过滤
 - [x] P1：FREE-08 显式记忆管理
 - [x] P1：FREE-09 headless
-- [ ] P1：FREE-10 分支与重发
+- [x] P1：FREE-10 分支与重发
 - [ ] P2：FREE-02 网络与长任务设计、实现
 - [ ] P2：FREE-06 会话预算设计、实现
 - [ ] P2：FREE-11 后台任务与子代理设计、实现
@@ -362,3 +362,18 @@ JSON stdout 仅一个对象，第三方 stdout 诊断重定向 stderr；已知�
 真实既有服务调用：临时状态目录执行 --prompt/--json，stdout 可解析为唯一对象、status=idle、exit_code=0、2 条本轮消息/1 次模型调用。
 原始结果 `/tmp/agent-headless-smoke-result.json`；没有替换模型输出或执行用户数据目录写入。
 完整 `uv run pytest -m 'not integration' -q`：**280 passed, 2 skipped, 5 deselected，10.29s**。无新增配置变量/依赖（显式 CLI 参数开启）。
+
+## FREE-10
+
+`ENABLE_SESSION_BRANCHES=false`；开启后 `/branch [消息编号]` 创建截至该消息的独立快照（system=0，默认末尾），
+`/resend 编号 新文本` 在新分支替换 user 输入并运行，`/retry` 在新分支重发最后一个用户问题。
+原消息日志和工作区不改写；前缀验证拒绝孤立/重复/未完成工具配对，不补造工具结果。
+新分支总是空工作区，系统说明明确旧工具结果属于原工作区；不提供共享引用或自动工作区复制。
+模型预设/工具子集/权限继承；所选记忆复制成独立会话快照，避免 MEMORY_SHARED 别名使新分支反向修改原记忆。
+独立 session 记忆快照不依赖 ENABLE_MEMORY_MANAGEMENT；原 global/project 管理仍需要其开关。
+分支记录 parent_id/through，侧栏展示来源；忙会话拒绝分支，快照期间禁止提交/修改参数，线程收尾后才关闭存储。
+保存失败只清理本次新建未发布的随机 ID 目录，不能覆盖旧目录。没有新依赖。
+
+先失败测试覆盖缺少分支/重发接口；补充前缀配对、原数据不可变、并发分支持久化、共享记忆隔离、关闭收尾和 CLI 命令。
+完整 `uv run pytest -m 'not integration' -q`：**286 passed, 2 skipped, 5 deselected，10.20s**；
+随后 CLI 分支/重发专项补充：`uv run pytest dev/tests/test_free10_branches.py -q`：**7 passed**。

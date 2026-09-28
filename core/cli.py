@@ -31,6 +31,8 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
 /policy 档位         readonly/standard/trusted；default 恢复环境默认；无参数查看
 /memory scope 范围   启用管理后选择 session/project/global/default；add/search/edit 使用 JSON
+/branch [编号]       启用分支后复制截至该消息的历史到新会话；system=0，默认末尾
+/resend 编号 新文本  在新分支编辑并重发 user 消息；/retry 重发最后一个用户问题
 /rename 名称         重命名当前会话
 /prompt 指令         设置当前 Agent 的系统指令（空闲时）
 /remember 内容       保存当前会话的长期记忆
@@ -187,8 +189,10 @@ class AgentCLI:
                 if event.event_type == MouseEventType.MOUSE_UP:
                     self.select(key)
             status = LABELS.get(session.record['status'], session.record['status'])
+            parent = session.record.get('branch', {}).get('parent_id')
+            lineage = f' · ↳{parent[:6]}' if parent else ''
             result.append(('class:selected' if identifier == self.current else '',
-                           f'{">" if identifier == self.current else " "} {session.record["title"][:14]}\n  {identifier[:8]} · {status}\n', click))
+                           f'{">" if identifier == self.current else " "} {session.record["title"][:14]}\n  {identifier[:8]} · {status}{lineage}\n', click))
         return result
 
     def confirmation_text(self):
@@ -320,6 +324,48 @@ class AgentCLI:
             self.pending_memory_edit = (session.id, entry_id, values, namespace)
             self.notice = f'确认修改记忆 {entry_id}：{json.dumps(values, ensure_ascii=False)}？输入 /yes 或 /no。'
 
+    def branch_command(self, session, command, argument):
+        if not config.ENABLE_SESSION_BRANCHES:
+            raise ValueError('请先显式开启 ENABLE_SESSION_BRANCHES')
+        if command == '/branch':
+            index = int(argument) if argument else None
+            text = None
+        elif command == '/resend':
+            number, _, text = argument.partition(' ')
+            index = int(number)
+            if not text.strip():
+                raise ValueError('请输入重发的新文本')
+        else:
+            index = next((i for i in range(len(session.record['messages']) - 1, 0, -1)
+                          if session.record['messages'][i]['role'] == 'user'), None)
+            if index is None:
+                raise ValueError('没有可以重发的用户消息')
+            text = None
+        try:
+            asyncio.get_running_loop()
+            synchronous = False
+        except RuntimeError:
+            synchronous = True
+        async def create_branch():
+            try:
+                child = (await self.manager.fork_session(session, index) if command == '/branch'
+                         else await self.manager.resend(session, index, text))
+                if self.current == session.id:
+                    self.select(child.id)
+                self.notice = f'新分支 {child.id[:8]}；原会话未修改，新工作区为空。'
+                if synchronous and child.task:
+                    await child.task
+            except (ValueError, OSError) as exc:
+                self.notice = str(exc)
+            self.refresh()
+        self.notice = '正在创建独立会话快照…'
+        if synchronous:
+            asyncio.run(create_branch())
+        else:
+            task = asyncio.create_task(create_branch())
+            self._ui_jobs.add(task)
+            task.add_done_callback(self._ui_jobs.discard)
+
     def handle(self, value):
         if not value:
             return
@@ -337,6 +383,8 @@ class AgentCLI:
                 argument = argument.strip()
                 if command == '/new':
                     self.select(self.manager.create(argument or '新会话').id)
+                elif command in {'/branch', '/resend', '/retry'}:
+                    self.branch_command(session, command, argument)
                 elif command == '/model':
                     if argument:
                         self.manager.set_model_profile(session, None if argument == 'default' else argument)

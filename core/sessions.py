@@ -44,6 +44,7 @@ class Session:
     partial_reasoning: str = ''
     last_model_event_at: float = 0.0
     context_summaries: dict = field(default_factory=dict)
+    forking: bool = False
 
     @property
     def id(self):
@@ -51,7 +52,7 @@ class Session:
 
     @property
     def busy(self):
-        return self.task is not None and not self.task.done()
+        return self.forking or (self.task is not None and not self.task.done())
 
 
 class SessionManager:
@@ -67,6 +68,8 @@ class SessionManager:
         self.pending_saves = set()
         self.tool_workers = set()
         self.summary_tasks = set()
+        self.fork_tasks = set()
+        self.closing = False
         self.read_slots = asyncio.Semaphore(config.TOOL_CONCURRENCY)
         # 显式启用后，重推理不占文件工具的线程与并发额度。
         self.rag_slots = asyncio.Semaphore(config.RAG_INFERENCE_CONCURRENCY) if config.RAG_INFERENCE_CONCURRENCY else None
@@ -80,6 +83,8 @@ class SessionManager:
         self.auxiliary_slots = asyncio.Semaphore(config.AUX_CONCURRENCY) if config.AUX_CONCURRENCY else None
 
     def create(self, title='新会话', prompt=DEFAULT_PROMPT) -> Session:
+        if self.closing:
+            raise ValueError('管理器正在关闭，不能创建会话')
         session = Session(self.store.new_record(title, prompt))
         self.sessions[session.id] = session
         self.save(session)
@@ -110,6 +115,8 @@ class SessionManager:
             await asyncio.gather(*list(self.pending_saves))
 
     def submit(self, session: Session, text: str):
+        if self.closing:
+            raise ValueError('管理器正在关闭，不能启动新任务')
         if session.busy:
             raise ValueError('此会话正在运行，请等待、停止，或切换到其他会话')
         if not text.strip():
@@ -163,7 +170,7 @@ class SessionManager:
     def cancel(self, session):
         if session.summary_task and not session.summary_task.done():
             session.summary_task.cancel()
-        if session.busy and session.record["status"] != "stopping":
+        if session.task is not None and not session.task.done() and session.record["status"] != "stopping":
             session.cancelled.set()
             self.decide(session, False)
             session.record['status'] = 'stopping'
@@ -370,6 +377,42 @@ class SessionManager:
         session.record['memory_namespace'] = namespace
         self.save(session)
 
+    async def fork_session(self, session, through: int | None = None) -> Session:
+        from core.branches import fork_record
+        if self.closing or session.busy:
+            raise ValueError('请等待原会话空闲后创建分支')
+        session.forking = True
+        task = asyncio.current_task()
+        self.fork_tasks.add(task)
+        try:
+            await self.flush()
+            # Shield 后继续等待，避免取消 UI 时留下未登记的后台写线程。
+            worker = asyncio.create_task(asyncio.to_thread(fork_record, self.store, session.record, through))
+            try:
+                record = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                record = await worker
+            child = Session(record)
+            self.sessions[child.id] = child
+            self.notify()
+            return child
+        finally:
+            session.forking = False
+            self.fork_tasks.discard(task)
+
+    async def resend(self, session, user_index: int, text: str | None = None) -> Session:
+        if session.busy:
+            raise ValueError('请等待原会话空闲后编辑重发')
+        messages = session.record['messages']
+        if type(user_index) is not int or not 1 <= user_index < len(messages) or messages[user_index]['role'] != 'user':
+            raise ValueError('重发编号必须指向 user 消息（system=0）')
+        prompt = messages[user_index]['content'] if text is None else text
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError('重发消息不能为空')
+        child = await self.fork_session(session, through=user_index - 1)
+        self.submit(child, prompt)
+        return child
+
     def set_model_profile(self, session, name):
         if session.busy:
             raise ValueError('请等待当前任务结束再切换模型参数')
@@ -551,6 +594,10 @@ class SessionManager:
             await self.save(session)
 
     async def shutdown(self):
+        self.closing = True
+        for task in self.fork_tasks:
+            task.cancel()
+        await asyncio.gather(*list(self.fork_tasks), return_exceptions=True)
         for session in self.sessions.values():
             self.cancel(session)
             if session.assessment_task:

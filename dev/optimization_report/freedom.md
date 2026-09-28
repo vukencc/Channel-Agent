@@ -225,3 +225,9 @@ CLI scope/add/search/edit 及原记忆命令遵循所选空间，导出/持久�
 显式 --prompt/--json/--session 复用完整会话循环，无 TTY 默认拒绝待确认操作；只有 --policy trusted 使用显式范围规则。
 真实模型输出单 JSON 验证通过；检查点/取消退出码、工具配对、持久化及真实 SIGINT 子进程专项 6 passed。完整回归 280 passed。
 状态锁不放宽，HTTP/SSE/远程审批仍仅设计。入口与限制见 docs/optimization-progress.md。
+
+### FREE-10（完成：独立分支与编辑重发）
+
+显式 ENABLE_SESSION_BRANCHES；/branch、/resend、/retry 创建新会话，原日志/工作区不改写，截断点必须保持完整工具配对。
+空工作区有明确上下文说明，记忆为独立快照，权限/工具配置继承；侧栏展示 parent_id，关闭等待快照线程。
+完整回归 286 passed，后续专项 7 passed；本版不复制/共享工作区，详细边界见 docs/optimization-progress.md。
