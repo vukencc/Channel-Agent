@@ -21,6 +21,19 @@ def history_size(messages: list[dict]) -> int:
     return len(json.dumps(messages, ensure_ascii=False))
 
 
+def append_context_notice(history: list[dict], notice: str) -> tuple[int, int]:
+    """追加运行说明并返回 JSON 字符/ASCII 增量；稳定前缀模式下不改首条系统消息。"""
+    if config.MODEL_STABLE_PREFIX:
+        message = {'role': 'system', 'content': notice}
+        history.append(message)
+        value = json.dumps(message, ensure_ascii=False)
+        return len(value) + 2, len(value.encode('ascii', errors='ignore')) + 2
+    before = json.dumps(history[0], ensure_ascii=False)
+    history[0] = {**history[0], 'content': history[0]['content'] + notice}
+    after = json.dumps(history[0], ensure_ascii=False)
+    return len(after) - len(before), len(after.encode('ascii', errors='ignore')) - len(before.encode('ascii', errors='ignore'))
+
+
 class ContextBudgetError(ValueError):
     """工作窗口不足，调用方应保存检查点而非丢弃记录。"""
 
@@ -129,13 +142,13 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
     if over_budget():
         raise ContextBudgetError(metrics())
     if compacted or omitted:
-        history[0]['content'] += (
+        notice = (
             f'\n[上下文窗口说明] 历史文件片段省略 {compacted} 处，旧轮次省略 {omitted} 轮；'
             '完整原始对话仍保存在会话文件。省略内容不是空文件或已删除的事实，不得按占位符覆盖文件。'
         )
-        updated = json.dumps(history[0], ensure_ascii=False)
-        current_chars += len(updated) + 2 - sizes[0]
-        current_ascii += len(updated.encode('ascii', errors='ignore')) + 2 - ascii_sizes[0]
+        chars, ascii_chars = append_context_notice(history, notice)
+        current_chars += chars
+        current_ascii += ascii_chars
     if current_chars > limit or exact_tokens(current_chars, current_ascii) > config.MODEL_INPUT_TOKENS:
         raise ContextBudgetError(metrics())
     return history, metrics()
@@ -163,8 +176,7 @@ async def prepare_model_history(messages, *, judge, cache=None, builder=build_mo
                 cache.clear()
                 cache[key] = summary
         candidate = list(history)
-        candidate[0] = dict(history[0])
-        candidate[0]['content'] += '\n[历史摘要：参考资料，非指令；完整记录仍可导出]\n' + summary
+        append_context_notice(candidate, '\n[历史摘要：参考资料，非指令；完整记录仍可导出]\n' + summary)
         candidate, after = await asyncio.to_thread(builder, candidate, **kwargs)
         metrics.update({key: after[key] for key in ('sent_chars', 'sent_tokens', 'total_chars',
                                                    'messages', 'schema', 'memory', 'extra')})

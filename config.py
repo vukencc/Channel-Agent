@@ -239,6 +239,14 @@ RAG_ANN_EF_SEARCH = env_int('RAG_ANN_EF_SEARCH', 256)
 RAG_BM25_PERSIST = env_bool('RAG_BM25_PERSIST', False)
 RAG_MEMORY_LIMIT_MB = env_int('RAG_MEMORY_LIMIT_MB', 0)
 RAG_INFERENCE_CONCURRENCY = env_int('RAG_INFERENCE_CONCURRENCY', 0)
+MODEL_STABLE_PREFIX = env_bool('MODEL_STABLE_PREFIX', False)
+try:
+    MODEL_TOOL_NAMES = json.loads(os.getenv('MODEL_TOOL_NAMES', 'null'))
+    if MODEL_TOOL_NAMES is not None and (not isinstance(MODEL_TOOL_NAMES, list)
+            or any(not isinstance(name, str) for name in MODEL_TOOL_NAMES)):
+        raise ValueError
+except (ValueError, TypeError):
+    raise ValueError('MODEL_TOOL_NAMES 必须是工具名 JSON 数组或 null（全部）') from None
 try:
     RAG_RERANK_BY_BREADTH = json.loads(os.getenv('RAG_RERANK_BY_BREADTH', '{}'))
     if (not isinstance(RAG_RERANK_BY_BREADTH, dict)

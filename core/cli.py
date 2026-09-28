@@ -25,6 +25,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /new [名称]          新建会话并启动独立 Agent
 /switch ID前缀       切换会话（也可点击左侧）
 /model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
+/tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
 /rename 名称         重命名当前会话
 /prompt 指令         设置当前 Agent 的系统指令（空闲时）
 /remember 内容       保存当前会话的长期记忆
@@ -297,6 +298,12 @@ class AgentCLI:
                     if argument:
                         self.manager.set_model_profile(session, None if argument == 'default' else argument)
                     self.notice = '当前模型预设：' + str(session.record.get('model_profile') or 'default') + '\n可选：' + ', '.join(config.MODEL_PROFILES)
+                elif command == '/tools':
+                    if argument:
+                        names = None if argument == 'all' else [] if argument == 'none' else argument.replace(',', ' ').split()
+                        self.manager.set_tool_names(session, names)
+                    names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
+                    self.notice = '当前工具子集：' + ('全部' if names is None else ', '.join(names) or '无工具')
                 elif command == '/switch':
                     matches = [key for key in self.manager.sessions if key.startswith(argument)]
                     if not argument or len(matches) != 1:

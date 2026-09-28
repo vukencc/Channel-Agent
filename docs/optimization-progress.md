@@ -20,7 +20,7 @@
 - [x] P1：PERF-03 增量持久化 BM25
 - [ ] P1：PERF-04 内存准入与正文磁盘缓存已实现；全量模型 RSS 上限未验收
 - [x] P1：PERF-09 推理并发隔离（响应隔离通过；严格 p95 不增目标未达到）
-- [ ] P1：PERF-10 稳定前缀与工具子集
+- [x] P1：PERF-10 稳定前缀与工具子集
 - [ ] P1：PERF-11 辅助模型
 - [ ] P1：FREE-01 多工具根
 - [ ] P1：FREE-04 权限策略
@@ -241,3 +241,24 @@ RAG 不占文件读取额度；线程超时后直到真实退出才释放推理�
 命令：`uv run python -m dev.perf.concurrency --corpus <固定公开 parquet> --output /tmp/agent-perf-results/perf09-{before,after}.json`，
 分别设 RAG_INFERENCE_CONCURRENCY=0/2，OPENBLAS_NUM_THREADS=1、OMP_NUM_THREADS=4，模型路径同 PERF-01。
 该测试只有四个查询，不能作为生产 p95 分布证明；需要更多样本才能判断小幅差异是否为噪声。
+
+## PERF-10
+
+`MODEL_STABLE_PREFIX=false`；开启后基础提示/工具协议保持前缀，记忆/轮次/省略说明/摘要/恢复说明在请求尾部。
+`MODEL_TOOL_NAMES=null` 默认全工具，`[]` 无工具或工具名数组；`/tools read_file,rag_search` 持久化到当前会话，
+`/tools all`、`/tools none` 显式覆盖。schema、上下文预算、成本预留和执行侧共用子集；未选调用拒绝并审计。
+空子集不发送 tools/tool_choice；与 required 冲突明确报错。会话繁忙时不可更改；写操作仍需确认。
+usage 保留输入总 tokens，另记录服务商提供的 cached_input_tokens；未返回时不虚构为 0，不注入专有缓存参数。
+
+真实已配置 `deepseek-v4.1-flash` 服务，临时新会话、固定两句合成请求，不发送用户数据、禁止实际执行工具。
+相同 tool_choice=auto/max_tokens=64/thinking disabled，对照全工具/原布局与两个工具/稳定前缀：
+- 首轮 provider 输入 **4025 → 2006 tokens**；第二轮 **4040 → 2021 tokens**（减少 49.98%）。
+- schema JSON **7941 → 2196 字符**；第二轮全请求 **9864 → 4154 字符**。
+- 第二轮请求耗时 **2.850 → 2.533s**；仅两次请求，不能推断长期网络延迟分布。
+- 优化后第二轮 provider 报告 **1920 cached tokens / 2021 总输入 tokens**；首轮 cached=0。
+输入减少来自工具子集；缓存命中不等于总输入 tokens 减少，历史实现未记录缓存细项，不能编造命中提升比。
+早期 tool_choice=none 探针只计 911/926 tokens（服务端忽略工具说明），保留 perf10-before-none.json，未拿来作为 auto 基线。
+命令：`uv run python -m dev.perf.prefix --output /tmp/agent-perf-results/perf10-before.json`；
+优化后加 `MODEL_STABLE_PREFIX=true` 与 `--tool-names read_file,rag_search`，其余配置相同。
+新增三项测试先失败，补充并发选择隔离与摘要/淘汰后前缀稳定；完整回归 `uv run pytest -m 'not integration' -q`：**243 passed, 3 deselected，8.43s**。
+无新依赖或新模型；本测试费用单价未配置，费用显示未知，不将其记为零。

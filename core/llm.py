@@ -21,6 +21,7 @@ from core.log import get_logger
 from core.context import estimate_tokens, request_tokens
 from core.messages import PackMessage
 from core.model_settings import active_profile
+from core.tool_settings import selected_schemas
 from core.budgets import active_budget, reserve_request, settle_request
 from tools import all_schemas
 
@@ -178,13 +179,19 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
             client = await asyncio.to_thread(endpoint_client, endpoint)
             options = model_options()
             options.setdefault('tool_choice', 'auto')
+            schemas = selected_schemas(TOOL_SCHEMAS)
+            if not schemas:
+                if options.get('tool_choice') == 'required':
+                    raise ValueError('tool_choice=required 与空工具子集冲突')
+                options.pop('tool_choice', None)
+                options.pop('parallel_tool_calls', None)
             if config.MODEL_STREAM_USAGE:
                 options['stream_options'] = {'include_usage': True}
-            ticket = await reserve_request(reserved_cost(history, TOOL_SCHEMAS, endpoint, options))
+            ticket = await reserve_request(reserved_cost(history, schemas, endpoint, options))
             try:
                 stream = await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
                     model=endpoint['model'], **options, messages=history, stream=True,
-                    tools=TOOL_SCHEMAS,
+                    **({'tools': schemas} if schemas else {}),
                     extra_headers={'x-opencode-session': session_id} if session_id else None)
                 route['budget_ticket'] = ticket
                 return stream
@@ -204,6 +211,7 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
 
 async def call_model(history: list[dict], *, session_id: str | None = None, emit=None) -> dict:
     """Bound retries + stream by a wall-clock deadline; never execute partial calls."""
+    schemas = selected_schemas(TOOL_SCHEMAS)
     route = {'model': selected_model(), 'fallbacks': [], 'endpoint': {}}
     route_token = _route.set(route)
     started = time.monotonic()
@@ -224,6 +232,12 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                 usage = getattr(chunk, 'usage', None)
                 if usage:
                     metrics.update(input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, tokens_source='provider')
+                    details = getattr(usage, 'prompt_tokens_details', None)
+                    cached = getattr(details, 'cached_tokens', None)
+                    if cached is None:
+                        cached = getattr(usage, 'prompt_cache_hit_tokens', None)
+                    if cached is not None:
+                        metrics['cached_input_tokens'] = cached
                 if not chunk.choices:
                     continue
                 elapsed = time.monotonic() - started
@@ -302,7 +316,7 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
     finally:
         if stream is not None:
             await stream.close()
-        metrics.setdefault('input_tokens', request_tokens(history, TOOL_SCHEMAS))
+        metrics.setdefault('input_tokens', request_tokens(history, schemas))
         metrics.setdefault('output_tokens', estimate_tokens(''.join(content) + ''.join(reasoning)
                            + ''.join(''.join(call['arguments']) for call in tool_calls.values())))
         metrics.setdefault('tokens_source', 'estimate')
