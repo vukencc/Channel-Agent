@@ -22,7 +22,7 @@
 - [x] P1：PERF-09 推理并发隔离（响应隔离通过；严格 p95 不增目标未达到）
 - [x] P1：PERF-10 稳定前缀与工具子集
 - [x] P1：PERF-11 辅助模型与后台摘要
-- [ ] P1：FREE-01 多工具根
+- [x] P1：FREE-01 命名只读工具根
 - [ ] P1：FREE-04 权限策略
 - [ ] P1：FREE-07 多知识库与过滤
 - [ ] P1：FREE-08 记忆管理
@@ -283,3 +283,19 @@ after 显式 `CONTEXT_SUMMARY_BACKGROUND=true`。未接入另一个廉价模型�
 新增失败测试先确认旧实现固定模型/超时且无调度接口；补充主/辅助不互锁、未知价格拒绝、后台缓存复用测试。
 `uv sync --locked` 成功，移除可选 ann；完整 `uv run pytest -m 'not integration' -q`：**245 passed, 2 skipped, 3 deselected，8.16s**。
 两项跳过为未装 ann 的真实 HNSW 测试，其默认精确/回退测试仍执行；此前 extra ann 原生测试已通过。
+
+## FREE-01
+
+`TOOL_ROOTS={}` 默认只有会话工作区；显式示例 `{"docs":{"path":"docs","read_only":true}}`。
+配置路径在启动时相对仓库规范化，名字仅小写字母/数字/连字符/下划线；当前额外根只支持 read_only=true。
+文件工具用 `@docs/a.md`、`list_files('@docs')`、`glob('@docs/**/*.md')`；`rag_search(source='@docs')` 检索该根。
+普通路径仍相对原工作区，不接收主机绝对路径；`@workspace/` 在启用命名根时显式引用工作区。
+只读根每次检查存在/根路径未改变，目录边界独立校验；../ 与外部 symlink 拒绝。
+所有写工具在路径解析时声明写意图；move 源也需可写，copy 可从只读根复制到工作区但仍需确认/配额/原子发布。
+RAG 使用显式根参数与独立磁盘词法命名空间，不修改全局 DOC_DIR，命名根扫描排除越界链接。
+额外根不挂载给命令沙箱；没有新增额外可写根。读操作及拒绝沿用审计，无新依赖。
+
+12 项新测试先失败，文件/扩展/命令针对性回归 **63 passed, 1 deselected，2.14s**。
+真实 `uv run python dev/ci_sandbox_probe.py` 通过，额外目录在命令内不可见；不是模拟 bwrap 输出。
+真实模型：`RUN_RAG_INTEGRATION=1 uv run pytest dev/tests/test_free01_roots.py -m integration -q`：**1 passed，9.78s**。
+使用原有知识库的临时副本，校验命名根完整 RAG 和外部链接排除，不以该工程用例宣称检索质量提升。

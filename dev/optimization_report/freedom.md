@@ -196,3 +196,9 @@
 ### FREE-16（完成）
 
 提示词/参数 schema 共用配置，显式系统提示文件，默认文本快照完全一致。完整离线回归 222 passed、3 deselected；随后快照专项 3 passed。详见 docs/optimization-progress.md。
+
+### FREE-01（完成：命名只读根）
+
+TOOL_ROOTS 默认空；显式 @名称/路径用于 read/list/stat/glob，rag_search(source='@名称') 使用受边界限制的索引。
+全部写工具拒绝只读根；从只读根复制到工作区仍需确认；不挂载到命令沙箱。文件/命令专项 63 passed，真实 bwrap 探针与真实命名根 RAG 测试通过。
+完整回归 258 passed，2 项可选 ANN 跳过、4 项集成未启用。配置与实现范围见 docs/optimization-progress.md。

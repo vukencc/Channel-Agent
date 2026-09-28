@@ -19,6 +19,7 @@ from tools.sandbox import (
     audit,
     resolve_path,
     sandbox_root,
+    path_scope,
 )
 
 
@@ -86,7 +87,7 @@ def create_file(path: str, content: str = "", reason: str = "") -> str:
     在沙箱内新建文件（不覆盖已存在文件）。
     """
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, write=True)
     except SandboxError as exc:
         audit("blocked", action="create_file", path=path, reason=str(exc))
         return f"[已拦截] {exc}"
@@ -166,7 +167,7 @@ def read_file(path: str, offset: int = 0, limit: int = config.FILE_READ_CHARS, s
 def edit_file(path: str, old_text: str, new_text: str, reason: str = "") -> str:
     """Replace one exact anchor atomically; refuse ambiguity and changes during confirmation."""
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, write=True)
         before = target.read_bytes()
         text = before.decode('utf-8')
     except SandboxError as exc:
@@ -183,7 +184,7 @@ def edit_file(path: str, old_text: str, new_text: str, reason: str = "") -> str:
         return "[已取消] 用户未确认，文件未修改。"
     temporary = None
     try:
-        if resolve_path(path) != target or target.read_bytes() != before:
+        if resolve_path(path, write=True) != target or target.read_bytes() != before:
             return "[失败] 确认期间文件发生变化，请重新读取后修改。"
         after = text.replace(old_text, new_text, 1).encode('utf-8')
         descriptor, temporary = tempfile.mkstemp(prefix='.edit-', dir=target.parent)
@@ -209,7 +210,7 @@ def update_file(path: str, content: str = "", reason: str = "") -> str:
     覆盖写入沙箱内已存在的文件。
     """
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, write=True)
     except SandboxError as exc:
         audit("blocked", action="update_file", path=path, reason=str(exc))
         return f"[已拦截] {exc}"
@@ -244,7 +245,7 @@ def delete_file(path: str, reason: str = "") -> str:
     删除沙箱内的一个文件。
     """
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, write=True)
     except SandboxError as exc:
         audit("blocked", action="delete_file", path=path, reason=str(exc))
         return f"[已拦截] {exc}"
@@ -282,16 +283,16 @@ def list_files(path: str = ".") -> str:
     if not target.is_dir():
         return f"[失败] 目录不存在：{path}"
 
-    root = sandbox_root()
+    root, _, prefix = path_scope(path)
     entries: List[str] = []
     for item in sorted(target.iterdir()):
         # 软链只显示本身，不去 stat 目标，避免顺链走到沙箱外
         if item.is_symlink():
-            entries.append(f"- [link] {item.relative_to(root)}")
+            entries.append(f"- [link] {prefix}{item.relative_to(root)}")
         elif item.is_dir():
-            entries.append(f"- [dir ] {item.relative_to(root)}")
+            entries.append(f"- [dir ] {prefix}{item.relative_to(root)}")
         else:
-            entries.append(f"- [file] {item.relative_to(root)} ({item.stat().st_size} 字节)")
+            entries.append(f"- [file] {prefix}{item.relative_to(root)} ({item.stat().st_size} 字节)")
 
     audit("executed", action="list_files", path=path, count=len(entries))
 
@@ -318,7 +319,7 @@ def append_file(path: str, content: str, expected_chars: int, reason: str = '') 
     AppendFileArgs(path=path, content=content, expected_chars=expected_chars, reason=reason)
     temporary = None
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, write=True)
         before = target.read_bytes()
         actual = len(before.decode('utf-8'))
         if actual != expected_chars:
@@ -326,7 +327,7 @@ def append_file(path: str, content: str, expected_chars: int, reason: str = '') 
             return f'[已拦截] 文件字符偏移不匹配：当前 {actual}，请求 {expected_chars}；请先读取核对。'
         if not ask_permission('append_file', f'{path}，偏移 {actual}，新增 {len(content)} 字符', reason):
             return '[已取消] 用户未确认，文件未修改。'
-        if resolve_path(path) != target or target.read_bytes() != before:
+        if resolve_path(path, write=True) != target or target.read_bytes() != before:
             return '[已拦截] 确认期间文件已变化，请重新读取。'
         descriptor, temporary = tempfile.mkstemp(prefix='.append-', dir=target.parent)
         with os.fdopen(descriptor, 'wb') as stream:

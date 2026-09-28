@@ -64,6 +64,7 @@ def load_document(path: Path) -> str:
 @dataclass
 class DocLoader:
     dir: Path
+    confined: bool = False
 
     def load(self) -> list[dict]:
         check_memory_budget()
@@ -85,6 +86,8 @@ class DocLoader:
                 _file_events.pop(evicted).close()
             present = set()
             for path in sorted(root.rglob('*')):
+                if self.confined and not path.resolve().is_relative_to(root):
+                    continue
                 if not path.is_file() or path.suffix.lower() not in {'.txt', '.md', '.html', '.htm', '.pdf', '.docx'}:
                     continue
                 stat = path.stat()
@@ -195,7 +198,7 @@ def _cached_embeddings(texts: list[str], model, progress=None) -> np.ndarray:
 
 
 class RetrievalIndex:
-    def __init__(self, documents: list[dict], progress=None):
+    def __init__(self, documents: list[dict], progress=None, *, source_root: Path | None = None):
         check_memory_budget()
         store = text_store(config.RAG_CACHE_DIR) if config.RAG_MEMORY_LIMIT_MB else None
         self.parents: list[dict] = []
@@ -233,7 +236,7 @@ class RetrievalIndex:
                                         [row['content'] for row in self.children], self.model, progress)
         if config.RAG_BM25_PERSIST or store:
             from rag.lexical_store import PersistentBM25
-            namespace = hashlib.sha256(json.dumps([str(config.DOC_DIR.resolve()), config.RAG_PARENT_CHARS,
+            namespace = hashlib.sha256(json.dumps([str((source_root or config.DOC_DIR).resolve()), config.RAG_PARENT_CHARS,
                                                    config.RAG_CHILD_CHARS, 'jieba-bm25-v1']).encode()).hexdigest()
             self.lexical = PersistentBM25(config.RAG_CACHE_DIR / 'lexical' / f'{namespace}.sqlite',
                 TextSequence(self.parents, 'document'), [parent['id'] for parent in self.parents])
@@ -295,12 +298,12 @@ _cached_key = None
 _cached_index = None
 
 
-def get_index() -> RetrievalIndex:
+def get_index(root: Path | None = None) -> RetrievalIndex:
     """Read content to detect same-size/mtime edits; reuse all expensive work."""
     global _cached_key, _cached_index
-    loader = DocLoader(config.DOC_DIR)
+    loader = DocLoader(root or config.DOC_DIR, confined=root is not None)
     documents = loader.load()
-    key = (str(config.DOC_DIR), loader.fingerprint, config.RAG_PARENT_CHARS,
+    key = (str(root or config.DOC_DIR), root is not None, loader.fingerprint, config.RAG_PARENT_CHARS,
            config.RAG_CHILD_CHARS, config.EMBEDDING_MODEL_SOURCE,
            config.EMBEDDING_MODEL_URL, config.EMBEDDING_MODEL_NAME,
            config.EMBEDDING_MODEL_API_KEY, config.EMBEDDING_LOCAL_PATH,
@@ -314,6 +317,6 @@ def get_index() -> RetrievalIndex:
         return _cached_index
     with _lock:
         if key != _cached_key:
-            index = RetrievalIndex(documents)
+            index = RetrievalIndex(documents, source_root=root) if root is not None else RetrievalIndex(documents)
             _cached_key, _cached_index = key, index
         return _cached_index

@@ -30,7 +30,12 @@ _DEFAULT_TEMPLATE = """你是能执行任务的助手。区分用户要你实际
 
 
 def file_workflow_guide():
-    return _FILE_WORKFLOW_TEMPLATE.format(append_chars=config.FILE_APPEND_CHARS)
+    guide = _FILE_WORKFLOW_TEMPLATE.format(append_chars=config.FILE_APPEND_CHARS)
+    if config.TOOL_ROOTS:
+        guide += ('\n显式配置的只读目录：' + ', '.join('@' + name for name in config.TOOL_ROOTS)
+                  + '。可用 read_file/list_files/stat/glob 读取对应 @名称/路径，或 rag_search(source="@名称") 检索；'
+                  '写工具禁止修改这些根，复制到工作区仍需确认；run_command 看不到这些额外目录。\n')
+    return guide
 
 
 def default_prompt():

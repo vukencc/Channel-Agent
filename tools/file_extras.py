@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 import config
 from tools.base import register_tool
 from tools.sandbox import (SandboxError, ask_permission, audit, cancellation_requested,
-                           check_workspace_quota, resolve_path, sandbox_root)
+                           check_workspace_quota, resolve_path, sandbox_root, path_scope)
 
 
 class MkdirArgs(BaseModel):
@@ -48,13 +48,13 @@ def _failed(action, exc, **fields):
 
 def mkdir(path: str, parents: bool = False, reason: str = '') -> str:
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, write=True)
         check_workspace_quota()
         if target.exists():
             raise SandboxError('目标已存在，不覆盖')
         if not ask_permission('mkdir', path, reason):
             return '[已取消] 未创建目录。'
-        if cancellation_requested() or resolve_path(path) != target:
+        if cancellation_requested() or resolve_path(path, write=True) != target:
             raise SandboxError('已取消或路径发生变化')
         check_workspace_quota()
         target.mkdir(parents=parents)
@@ -87,7 +87,7 @@ def _rename_no_replace(source, destination):
 def _transfer(action, source, destination, reason):
     temporary = None
     try:
-        src, dst = resolve_path(source), resolve_path(destination)
+        src, dst = resolve_path(source, write=action == 'move'), resolve_path(destination, write=True)
         if not src.is_file() or dst.exists() or dst.is_symlink() or not dst.parent.is_dir():
             raise SandboxError('源必须是普通文件，目标必须不存在且父目录已创建')
         identity = _identity(src)
@@ -96,7 +96,7 @@ def _transfer(action, source, destination, reason):
             raise SandboxError('复制后将超过 WORKSPACE_LIMIT_MB 配额')
         if not ask_permission(action, f'{source} → {destination}', reason):
             return '[已取消] 文件未变更。'
-        if (cancellation_requested() or resolve_path(source) != src or resolve_path(destination) != dst
+        if (cancellation_requested() or resolve_path(source, write=action == 'move') != src or resolve_path(destination, write=True) != dst
                 or _identity(src) != identity or dst.exists() or dst.is_symlink()):
             raise SandboxError('取消或确认期间文件路径/内容发生变化')
         usage = check_workspace_quota()
@@ -115,7 +115,7 @@ def _transfer(action, source, destination, reason):
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
-            if (_identity(src) != identity or resolve_path(destination) != dst
+            if (_identity(src) != identity or resolve_path(destination, write=True) != dst
                     or cancellation_requested()):
                 raise SandboxError('复制期间源文件或目标路径发生变化')
             # 同文件系统 hard link 原子发布且不覆盖并发创建的目标。
@@ -175,7 +175,7 @@ def glob(pattern: str = '*', limit: int = 100) -> str:
     try:
         if Path(pattern).is_absolute() or '..' in Path(pattern).parts:
             raise SandboxError('匹配模式必须位于沙箱内')
-        root = sandbox_root()
+        root, scoped_pattern, prefix = path_scope(pattern)
         matches = []
         chars = 0
         for path in _glob_paths(root):
@@ -183,9 +183,9 @@ def glob(pattern: str = '*', limit: int = 100) -> str:
                 raise SandboxError('已取消')
             if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != root and parent.is_relative_to(root)):
                 continue
-            relative = path.relative_to(root).as_posix()
+            relative = prefix + path.relative_to(root).as_posix()
             resolve_path(relative)
-            if not _glob_match(relative, pattern):
+            if not _glob_match(path.relative_to(root).as_posix(), scoped_pattern):
                 continue
             chars += len(relative) + 8
             if len(matches) >= limit or chars > config.TOOL_MAX_OUTPUT - 128:

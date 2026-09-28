@@ -2,6 +2,7 @@ import json
 import math
 import os
 import pathlib
+import re
 from dotenv import load_dotenv
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent
@@ -248,6 +249,19 @@ SUMMARY_CONCURRENCY = env_int('SUMMARY_CONCURRENCY', 1)
 CONTEXT_SUMMARY_BACKGROUND = env_bool('CONTEXT_SUMMARY_BACKGROUND', False)
 AUX_INPUT_COST_PER_MILLION = env_float('AUX_INPUT_COST_PER_MILLION', 0)
 AUX_OUTPUT_COST_PER_MILLION = env_float('AUX_OUTPUT_COST_PER_MILLION', 0)
+try:
+    TOOL_ROOTS = json.loads(os.getenv('TOOL_ROOTS', '{}'))
+    if not isinstance(TOOL_ROOTS, dict):
+        raise ValueError
+    for name, entry in TOOL_ROOTS.items():
+        if (not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', name) or name == 'workspace'
+                or not isinstance(entry, dict) or set(entry) != {'path', 'read_only'}
+                or entry['read_only'] is not True or not isinstance(entry['path'], str) or not entry['path'].strip()):
+            raise ValueError
+        path = pathlib.Path(entry['path']).expanduser()
+        entry['path'] = str((PROJECT_ROOT / path).resolve())
+except (ValueError, TypeError, OSError):
+    raise ValueError('TOOL_ROOTS 必须是命名只读目录，例如 {"docs":{"path":"docs","read_only":true}}') from None
 try:
     AUX_MODEL_PARAMETERS = ModelParameters.model_validate_json(os.getenv('AUX_MODEL_PARAMETERS', '{}')).model_dump(exclude_none=True)
 except ValueError:

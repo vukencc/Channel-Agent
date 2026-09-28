@@ -92,21 +92,42 @@ def sandbox_root() -> Path:
     return root.resolve()
 
 
-def resolve_path(user_path: str) -> Path:
+def read_only_root(name: str) -> Path:
+    entry = config.TOOL_ROOTS.get(name)
+    if not entry or entry.get('read_only') is not True:
+        raise SandboxError(f'未配置只读根：{name}')
+    root = Path(entry['path']).absolute()
+    if root.resolve() != root or not root.is_dir():
+        raise SandboxError(f'只读根不存在或根路径发生变化：{name}')
+    return root
+
+
+def path_scope(user_path: str, *, write: bool = False) -> tuple[Path, Path, str]:
+    """额外根显式使用 @name/；未配置时完全沿用相对工作区路径。"""
+    if not user_path or not user_path.strip():
+        raise SandboxError('路径不能为空')
+    candidate = Path(user_path)
+    if candidate.is_absolute():
+        raise SandboxError(f'不允许绝对路径：{user_path}')
+    if config.TOOL_ROOTS and candidate.parts and candidate.parts[0].startswith('@'):
+        name = candidate.parts[0][1:]
+        if name == 'workspace':
+            return sandbox_root(), Path(*candidate.parts[1:]), '@workspace/'
+        root = read_only_root(name)
+        if write:
+            raise SandboxError(f'只读根禁止写入：{name}')
+        return root, Path(*candidate.parts[1:]), f'@{name}/'
+    return sandbox_root(), candidate, ''
+
+
+def resolve_path(user_path: str, *, write: bool = False) -> Path:
     """
     把用户给的相对路径解析成沙箱内的绝对路径。
 
     拒绝：空路径、绝对路径、以及解析后落在沙箱外的路径
     （`..` 上跳与符号链接都会在 resolve() 时展开，因此一并拦住）。
     """
-    if not user_path or not user_path.strip():
-        raise SandboxError("路径不能为空")
-
-    candidate = Path(user_path)
-    if candidate.is_absolute():
-        raise SandboxError(f"不允许绝对路径：{user_path}")
-
-    root = sandbox_root()
+    root, candidate, _ = path_scope(user_path, write=write)
     target = (root / candidate).resolve()   # 展开 .. 与符号链接
 
     if target != root and not target.is_relative_to(root):
