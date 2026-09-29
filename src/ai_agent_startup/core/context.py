@@ -6,6 +6,7 @@ import json
 from ai_agent_startup import config
 from ai_agent_startup.core.session_limits import limit as session_limit
 from ai_agent_startup.core.images import attachment_tokens
+from ai_agent_startup.core.messages import is_user_request
 
 
 def estimate_tokens(text: str) -> int:
@@ -70,7 +71,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 'messages': current_chars - memory_chars - extra_chars,
                 'total_chars': current_chars + schema_chars,
                 'compacted_file_parts': compacted, 'omitted_turns': omitted}
-    current = max((i for i, m in enumerate(history) if m['role'] == 'user'), default=1)
+    current = max((i for i, m in enumerate(history) if is_user_request(m)), default=1)
     recent = max(current, len(history) - 4)
     names = {}
     compacted = 0
@@ -131,7 +132,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
             ascii_sizes[i] = ascii_count
             current_tokens += token_count - tokens[i]
             sizes[i], tokens[i] = size, token_count
-    turns = [i for i, message in enumerate(history) if message['role'] == 'user']
+    turns = [i for i, message in enumerate(history) if is_user_request(message)]
     if turns:
         keep_from = turns[0]
         for next_turn in turns[1:]:
@@ -164,7 +165,7 @@ async def prepare_model_history(messages, *, judge, cache=None, builder=build_mo
     history, metrics = await asyncio.to_thread(builder, messages, **kwargs)
     if not config.CONTEXT_SUMMARY or not metrics['omitted_turns']:
         return history, metrics
-    turns = [i for i, message in enumerate(messages) if message['role'] == 'user']
+    turns = [i for i, message in enumerate(messages) if is_user_request(message)]
     removed = messages[turns[0]:turns[metrics['omitted_turns']]]
     payload = await asyncio.to_thread(bounded_json, removed, config.SUMMARY_INPUT_CHARS)
     key = hashlib.sha256(payload.encode()).hexdigest()

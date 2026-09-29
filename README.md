@@ -83,6 +83,7 @@ Ctrl+C 停止当前任务，Ctrl+Q 退出。多个会话并发执行，各自拥
 `/remember 内容` 保存记忆，`/export md` 或 `/export json` 导出实体文件；重启自动恢复 `.agent/` 下的数据。
 工具输出写入 `crud_tests/<会话ID>/`，`/where` 查看实际路径。PageUp/PageDown 浏览完整历史，Ctrl+End 跟随最新，F2 扩大对话区域。
 完整操作与持久化说明见 [CLI 指南](docs/cli.md)。
+子 Agent 创建、父子持久消息和限制见[会话工具说明](docs/session-tools.md)；本轮实现、回归验证与合成 UI 基准见[CLI/session 工具交付报告](docs/cli-session-delivery-2026-09-29.md)。
 
 ## 可选质量回归
 

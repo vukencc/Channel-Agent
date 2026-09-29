@@ -26,7 +26,7 @@ def validate_limits(values):
 
 
 def effective_limits(record):
-    overrides = validate_limits(record.get('budget_overrides', {})) if config.ENABLE_SESSION_BUDGETS else {}
+    overrides = validate_limits(record.get('budget_overrides', {})) if config.ENABLE_SESSION_BUDGETS or record.get('delegated_from') else {}
     return {name: overrides.get(name, getattr(config, name)) for name in SessionLimits.model_fields}
 
 

@@ -20,8 +20,9 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 from ai_agent_startup import config
 from ai_agent_startup.core import llm
+from ai_agent_startup.core.messages import is_user_request
 from ai_agent_startup.core.sessions import SessionManager
-from ai_agent_startup.core.storage import SessionStore
+from ai_agent_startup.core.storage import LazyRecord, SessionStore
 from ai_agent_startup.core.transcript import Transcript
 
 HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切换 · Ctrl+C 停止 · Ctrl+Q 退出
@@ -32,7 +33,7 @@ HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切�
 /platform           查看平台能力与隔离验证方式
 /usage /trace [轮次] 查看保留窗口统计及有界脱敏指标（启用可观测命令后）
 /image 路径 | 问题   从会话工作区发送图片；启用视觉后仍需确认上传
-/tasks [cancel ID]  查看当前会话委派任务或取消（启用子代理后）
+/tasks [cancel ID]  查看当前会话创建的子任务或取消
 /config [JSON|预设]  查看或设置会话预算；default 恢复全局默认
 /policy 档位         readonly/standard/trusted；default 恢复环境默认；无参数查看
 /memory scope 范围   启用管理后选择 session/project/global/default；add/search/edit 使用 JSON
@@ -72,6 +73,11 @@ class AgentCLI:
         self.page_info = (0, 0, 0)
         self._refresh_handle = None
         self._view_key = None
+        self._render_task = None
+        self._render_dirty = False
+        self._render_anchor = None
+        self._render_closed = False
+        self._drafts = {}
         self.sidebar_visible = True
         self._ui_jobs = set()
         self._disk_lock = asyncio.Lock()
@@ -80,7 +86,8 @@ class AgentCLI:
         self.sidebar = Window(FormattedTextControl(self.session_list), width=22)
         self.current = next(reversed(self.manager.sessions), None)
         if self.current is None:
-            self.current = self.manager.create().id
+            from ai_agent_startup.core.session_service import open_session
+            self.current = open_session(self.manager).id
         if store.errors:
             self.notice = '以下会话文件无法读取，已保留原文件：\n' + '\n'.join(store.errors)
         bindings = KeyBindings()
@@ -88,8 +95,16 @@ class AgentCLI:
         @bindings.add('enter', filter=Condition(lambda: self.app.layout.has_focus(self.input)))
         def send(event):
             value = self.input.text.strip()
-            self.input.text = ''
-            self.handle(value)
+            # 命令可能切换会话，不能把命令本身存为旧会话草稿。
+            command = value.startswith('/') and not value.startswith('//')
+            if command:
+                self.input.text = ''
+            accepted = self.handle(value)
+            if accepted:
+                if not command:
+                    self.input.text = ''
+            elif command:
+                self.input.text = value
 
         @bindings.add('escape', 'enter')
         def newline(event):
@@ -162,21 +177,24 @@ class AgentCLI:
 
         root = HSplit([
             Window(FormattedTextControl(lambda: [('class:header',
-                f' Agent CLI | {sum(s.busy for s in self.manager.sessions.values())} 个任务运行中 | 文件：{self.store.workspace_root.name}/{self.current[:8]}… | F1 帮助')]), height=1),
+                f' Agent CLI | {sum(s.busy for s in self.manager.sessions.values())} 个任务运行中 | '
+                f'{sum(bool(s.confirmation) for s in self.manager.sessions.values())} 个待确认 | F1 帮助')]), height=1),
             VSplit([ConditionalContainer(Frame(self.sidebar, title='会话 / Agents'),
                                           Condition(lambda: self.sidebar_visible)),
                     Frame(self.chat, title=self.conversation_title)]),
             ConditionalContainer(Frame(Window(FormattedTextControl(self.confirmation_text), height=5, wrap_lines=True),
                                        title='当前会话需要确认 · Ctrl+Y 同意 / Ctrl+R 拒绝'),
                                  Condition(lambda: bool(self.active.confirmation) or self.pending_forget == self.current)),
-            Frame(self.input, title='输入消息或 /命令'),
             Window(FormattedTextControl(self.status_text), height=1),
+            Frame(self.input, title='输入消息或 /命令 · Enter 发送 · Alt+Enter 换行'),
         ])
         self.app = Application(layout=Layout(root, focused_element=self.input), key_bindings=bindings,
                                full_screen=True, mouse_support=True, input=input, output=output,
                                min_redraw_interval=0.08, max_render_postpone_time=0.05, refresh_interval=1.0,
                                style=Style.from_dict({'header': 'bg:#1f2937 #e5e7eb bold',
-                                                      'selected': '#22d3ee bold', 'status': '#94a3b8'}))
+                                                      'selected': '#22d3ee bold', 'status': '#94a3b8',
+                                                      'ready': '#86efac', 'working': '#67e8f9',
+                                                      'queued': '#c4b5fd', 'waiting': '#fbbf24 bold', 'failed': '#f87171 bold'}))
         self.app.ttimeoutlen = 0.05
         self.render(force=True)
 
@@ -194,10 +212,13 @@ class AgentCLI:
                 if event.event_type == MouseEventType.MOUSE_UP:
                     self.select(key)
             status = LABELS.get(session.record['status'], session.record['status'])
-            parent = session.record.get('branch', {}).get('parent_id')
+            parent = session.record.get('delegated_from') or session.record.get('branch', {}).get('parent_id')
             lineage = f' · ↳{parent[:6]}' if parent else ''
-            result.append(('class:selected' if identifier == self.current else '',
-                           f'{">" if identifier == self.current else " "} {session.record["title"][:14]}\n  {identifier[:8]} · {status}{lineage}\n', click))
+            unread = self.manager.communication.pending_count(session)
+            badge = f' · 未读{unread}' if unread else ''
+            style = 'class:waiting' if session.confirmation else 'class:selected' if identifier == self.current else ''
+            result.append((style,
+                           f'{">" if identifier == self.current else " "} {session.record["title"][:14]}\n  {identifier[:8]} · {status}{lineage}{badge}\n', click))
         return result
 
     def confirmation_text(self):
@@ -216,12 +237,36 @@ class AgentCLI:
             remaining = s.record.get('last_run', {}).get('budget', {}).get('rounds_remaining')
             if remaining is not None:
                 elapsed += f' · 剩余模型轮次 {remaining}'
-        return [('class:status', f'{s.id[:8]} | {LABELS.get(s.record["status"], "")} {s.phase}{elapsed} | 上下文 {len(s.record["messages"])} 条 | Ctrl+Q 退出')]
+        status = '待确认' if s.confirmation else LABELS.get(s.record['status'], '')
+        state = s.record['status']
+        style = ('waiting' if s.confirmation or state in {'confirming', 'stopping'} else 'queued' if state == 'queued' else
+                 'failed' if state in {'error', 'interrupted'} else 'working' if state == 'running' else 'ready')
+        loading = ' · 加载历史中（可继续编辑草稿）' if self._is_loading(s.record) else ''
+        unread = self.manager.communication.pending_count(s)
+        badge = f' · Agent 未读 {unread}' if unread else ''
+        return [(f'class:status class:{style}', f'{s.id[:8]} | {status} {s.phase}{elapsed}{loading}{badge} | 上下文 {self._message_count(s.record)} 条 | Ctrl+Q 退出')]
+
+    @staticmethod
+    def _is_loading(record):
+        return isinstance(record, LazyRecord) and record.loader is not None
+
+    @staticmethod
+    def _message_count(record):
+        if isinstance(record, LazyRecord):
+            if record.loader is not None:
+                return dict.get(record, 'message_count', 0)
+            return len(dict.__getitem__(record, 'messages'))
+        return len(record['messages'])
 
     def select(self, identifier):
+        if self.current:
+            self._drafts[self.current] = self.input.text
         self.transcript = Transcript()
         self._view_key = None
         self.current = identifier
+        self.page_info = (0, 0, 0)
+        self.chat.buffer.set_document(Document('正在加载会话历史…'), bypass_readonly=True)
+        self.input.text = self._drafts.get(identifier, '')
         self.hidden.discard(identifier)
         self.notice = ''
         self.render(force=True)
@@ -238,7 +283,7 @@ class AgentCLI:
 
     def refresh(self):
         """Coalesce token/status notifications; never rebuild text in token callbacks."""
-        if not getattr(self, 'app', None) or not self.current:
+        if self._render_closed or not getattr(self, 'app', None) or not self.current:
             return
         try:
             loop = asyncio.get_running_loop()
@@ -251,26 +296,85 @@ class AgentCLI:
         if self._refresh_handle is not None:
             self._refresh_handle.cancel()
             self._refresh_handle = None
-        if not self.app or not self.current:
+        if self._render_closed or not self.app or not self.current:
             return
         session = self.active
         # Mouse/scrollbar users browsing earlier lines should not be dragged down.
         if (not force and self.chat.text and
                 self.chat.buffer.cursor_position < len(self.chat.text)):
             self.transcript.follow = False
-        key = (self.current, len(session.record['messages']), session.partial,
+        key = (self.current, self._message_count(session.record), session.partial,
                session.record.get('assessment'), session.record.get('error'), self.notice,
                self.transcript.start if not self.transcript.follow else -1)
         if force or key != self._view_key:
-            self.transcript.sync(session.record['messages'])
             extra = '\n'.join(filter(None, [session.record.get('assessment'), session.record.get('error'), self.notice]))
-            text, self.page_info = self.transcript.page(session.partial, extra)
-            if self.chat.text != text:
-                position = (len(text) if self.transcript.follow or anchor == 'end' else
-                            0 if anchor == 'start' else min(self.chat.buffer.cursor_position, len(text)))
-                self.chat.buffer.set_document(Document(text, position), bypass_readonly=True)
-            self._view_key = key
+            # 已缓存页的导航只处理可见行，不等待新的后台任务。
+            if (force and anchor is not None and self.transcript.count == key[1]
+                    and (self._render_task is None or self._render_task.done())
+                    and len(session.partial) < 8192):
+                text, self.page_info = self.transcript.page(session.partial, extra)
+                self._apply_page(text, anchor)
+                self._view_key = key
+                self.app.invalidate()
+                return
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                self.transcript.sync(session.record['messages'])
+                text, self.page_info = self.transcript.page(session.partial, extra)
+                self._apply_page(text, anchor)
+                self._view_key = key
+            else:
+                if self._render_task is not None and not self._render_task.done():
+                    self._render_dirty = True
+                    self._render_anchor = anchor
+                else:
+                    transcript = self.transcript
+                    identifier = self.current
+                    partial = session.partial
+
+                    def prepare():
+                        # 保留消息列表身份，避免每个流式刷新都重建全部历史。
+                        transcript.sync(session.record['messages'])
+                        if identifier not in self.manager.communication.latest:
+                            self.manager.communication.read(identifier, 0, 1)
+
+                    async def finish():
+                        try:
+                            await asyncio.to_thread(prepare)
+                            if self.current == identifier and self.transcript is transcript:
+                                text, self.page_info = transcript.page(partial, extra)
+                                self._apply_page(text, anchor)
+                                self._view_key = key
+                        except (OSError, ValueError, KeyError, TypeError) as exc:
+                            if self.current == identifier:
+                                self.notice = f'历史加载失败：{exc}'
+                                self._apply_page(self.notice, 'start')
+                        finally:
+                            if self._render_dirty:
+                                next_anchor = self._render_anchor
+                                self._render_dirty = False
+                                self._render_anchor = None
+                                asyncio.get_running_loop().call_soon(self.render, True, next_anchor)
+                            self.app.invalidate()
+
+                    self._render_task = asyncio.create_task(finish())
         self.app.invalidate()
+
+    def _apply_page(self, text, anchor):
+        if self.chat.text != text:
+            position = (len(text) if self.transcript.follow or anchor == 'end' else
+                        0 if anchor == 'start' else min(self.chat.buffer.cursor_position, len(text)))
+            self.chat.buffer.set_document(Document(text, position), bypass_readonly=True)
+
+    async def drain_render(self):
+        """等待当前历史准备和合并后的后继任务。"""
+        while self._render_task is not None:
+            task = self._render_task
+            await asyncio.shield(task)
+            await asyncio.sleep(0)
+            if self._render_task is task and not self._render_dirty:
+                break
 
     def disk_job(self, operation, message):
         """File export/memory operations must not stall typing on slow filesystems."""
@@ -346,7 +450,7 @@ class AgentCLI:
                 raise ValueError('请输入重发的新文本')
         else:
             index = next((i for i in range(len(session.record['messages']) - 1, 0, -1)
-                          if session.record['messages'][i]['role'] == 'user'), None)
+                          if is_user_request(session.record['messages'][i])), None)
             if index is None:
                 raise ValueError('没有可以重发的用户消息')
             text = None
@@ -398,9 +502,15 @@ class AgentCLI:
 
     def handle(self, value):
         if not value:
-            return
+            return False
+        accepted = True
         try:
             session = self.active
+            command = value.partition(' ')[0]
+            if self._is_loading(session.record) and command not in {
+                    '/new', '/switch', '/close', '/stop', '/quit', '/help', '/where', '/sidebar',
+                    '/older', '/newer', '/top', '/bottom', '/yes', '/no'}:
+                raise ValueError('历史仍在后台加载；草稿已保留，请加载完成后发送或切换其他会话')
             namespace = session.record.get('memory_namespace')
             if value.startswith('//') or not value.startswith('/'):
                 if session.confirmation:
@@ -412,7 +522,8 @@ class AgentCLI:
                 command, _, argument = value.partition(' ')
                 argument = argument.strip()
                 if command == '/new':
-                    self.select(self.manager.create(argument or '新会话').id)
+                    from ai_agent_startup.core.session_service import open_session
+                    self.select(open_session(self.manager, title=argument or '新会话').id)
                 elif command in {'/branch', '/resend', '/retry'}:
                     self.branch_command(session, command, argument)
                 elif command == '/model':
@@ -437,7 +548,7 @@ class AgentCLI:
                 elif command == '/tasks':
                     queue = self.manager.agent_tasks
                     if queue is None:
-                        raise ValueError('请显式开启 ENABLE_AGENT_TASKS')
+                        raise ValueError('尚无已加载的子任务；可让 Agent 用 create_session 创建独立任务')
                     if argument:
                         verb, _, identifier = argument.partition(' ')
                         if verb != 'cancel':
@@ -524,7 +635,11 @@ class AgentCLI:
                         raise ValueError('请先停止或等待当前任务完成')
                     self.hidden.add(session.id)
                     available = [key for key in self.manager.sessions if key not in self.hidden]
-                    self.select(available[-1] if available else self.manager.create().id)
+                    if available:
+                        self.select(available[-1])
+                    else:
+                        from ai_agent_startup.core.session_service import open_session
+                        self.select(open_session(self.manager).id)
                 elif command == '/where':
                     self.notice = '文件工作区：' + str(self.store.workspace_path(session.id)) + '\n会话记录：' + str(self.store.directory(session.id))
                 elif command == '/sidebar':
@@ -541,16 +656,20 @@ class AgentCLI:
                     raise ValueError('未知命令，输入 /help 查看可用命令')
         except (ValueError, OSError) as exc:
             self.notice = str(exc)
+            accepted = False
         self.render(force=True)
+        return accepted
 
     async def run(self):
         try:
             with patch_stdout(raw=False):
                 await self.app.run_async()
         finally:
+            self._render_closed = True
             if self._refresh_handle is not None:
                 self._refresh_handle.cancel()
                 self._refresh_handle = None
+            await self.drain_render()
             await self.manager.shutdown()
             if self._ui_jobs:
                 await asyncio.gather(*list(self._ui_jobs), return_exceptions=True)

@@ -19,6 +19,8 @@ Enter 发送，Alt+Enter 换行；Ctrl+N 新建，Ctrl+C 停止当前任务，Ct
 | 命令 | 用途 |
 |---|---|
 | `/new 名称` | 创建独立上下文与工作区的 Agent |
+| `/tools` | 查看当前会话可用工具子集；可用 `/tools all`、`/tools none` 或 `/tools 名称,...` 调整 |
+| `/tasks` | 查看本会话创建的子任务；`/tasks cancel ID` 取消任务（详见[会话工具](session-tools.md)） |
 | `/switch ID前缀` | 恢复显示或切换已加载会话 |
 | `/rename 名称` | 重命名当前会话 |
 | `/prompt 指令` | 空闲时设置当前 Agent 的系统指令 |
@@ -40,6 +42,8 @@ Enter 发送，Alt+Enter 换行；Ctrl+N 新建，Ctrl+C 停止当前任务，Ct
 其余模型请求排队；确认和工具执行不占模型槽位；`MAX_CONCURRENT_AGENTS` 和 `MAX_TOOL_ROUNDS` 控制并发数和工具轮数。
 共享 RAG 模型/索引可能等待资源锁；并发并不保证 CPU 推理加速。
 
+启动时没有已恢复会话、执行 `/new`，或 headless 新建会话时，入口会调用已注册的 `create_session` 工具一次来创建空会话，不会为此额外请求模型。模型也可调用 `create_session` 创建子 Agent；此操作要求用户确认，子 Agent 继承父会话权限档位、预算所有者和工具子集，并使用独立上下文及文件工作区。子 Agent 不能继续创建子 Agent。通信工具和完整行为限制见[会话工具](session-tools.md)。
+
 ## 文件持久化
 
 默认位置是项目的 `.agent/`，已加入 Git 忽略规则；这是长期用户数据，不是可随意清理的缓存。
@@ -51,6 +55,7 @@ Enter 发送，Alt+Enter 换行；Ctrl+N 新建，Ctrl+C 停止当前任务，Ct
     messages.jsonl 完整消息与工具结果（v2 增量日志）
     memory.md      用户保存的长期记忆；每轮模型请求时重新读取
     audit.jsonl   当前 Agent 的工具审计
+    inbox.json    父子 Agent 通信信箱（首次收信后创建）
   exports/        导出的 Markdown / JSON 文件
   cli.log         CLI 诊断日志
 crud_tests/
@@ -82,11 +87,12 @@ RAG 自动评分在后台执行，回答完成后可立即继续同一会话；�
 
 ## 验证记录
 
-最新测试数据、真实失败案例与修复说明见 [系统诊断报告](system-diagnostics-2026-09-27.md)。
+CLI/session 工具本轮实现、验证和合成界面基准见 [交付报告](cli-session-delivery-2026-09-29.md)；真实模型诊断见 [系统诊断报告](system-diagnostics-2026-09-27.md)。
 
 ## 本地交互性能与显示
 
 流式刷新合并为约 12 次/秒，缓存已完成消息；后台会话不会重复重建当前正文。
+启动时历史记录采用惰性加载，长历史的页面整理在后台线程完成；切换会话时保留各会话输入草稿，状态与通知刷新会合并处理。这些机制减少终端界面等待，不代表模型服务端生成速度提高。
 历史采用每页最多 180 个逻辑行的显示窗口；较长行仅为显示折行，不删减源内容。
 不再丢弃第 80 条以前的消息或单条 20,000 字符以后的内容，所有内容均可分页查看，导出仍是原始完整内容。
 手动浏览历史时，新回复不会抢回滚动位置；Ctrl+End 恢复跟随。

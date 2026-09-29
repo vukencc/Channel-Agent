@@ -5,7 +5,7 @@
 from ai_agent_startup.tools.base import Tool, TOOL_REGISTRY, register_tool
 
 # 导入即注册
-from ai_agent_startup.tools import command, file_crud, rag_search, web_search  # noqa: F401  (仅为了触发注册)
+from ai_agent_startup.tools import command, file_crud, rag_search, web_search, session_tools  # noqa: F401  (仅为了触发注册)
 
 from ai_agent_startup import config
 if config.ENABLE_AGENT_TASKS:

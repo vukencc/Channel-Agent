@@ -27,12 +27,15 @@ class Transcript:
     def sync(self, messages):
         if messages is not self.messages or len(messages) < self.count:
             self.messages, self.count, self.lines, self.tool_names = messages, 0, [], {}
-        for number in range(self.count, len(messages)):
+        count = len(messages)
+        for number in range(self.count, count):
             message = messages[number]
             role = message['role']
             if role == 'system':
                 continue
             label = {'user': '你', 'assistant': 'Agent', 'tool': '工具结果'}.get(role, role)
+            if '_agent_message' in message:
+                label = 'Agent 来信 · ' + message['_agent_message']['sender_id'][:8]
             if role == 'tool':
                 label += ' · ' + self.tool_names.get(message.get('tool_call_id'), '')
             self.lines += ['', f'━━ {label} · 消息 {number} ━━']
@@ -52,7 +55,8 @@ class Transcript:
                         self.lines += self.text_lines(arguments)
                 except (ValueError, KeyError):
                     self.lines += self.text_lines(call['function'].get('arguments', ''))
-        self.count = len(messages)
+        # 主线程可能在格式化期间追加消息；只提交本次实际处理的范围。
+        self.count = count
 
     def page(self, partial='', extra=''):
         tail = (['', '━━ Agent · 生成中 ━━'] + self.text_lines(partial)) if partial else []

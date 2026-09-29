@@ -190,6 +190,9 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
                 options['stream_options'] = {'include_usage': True}
             from ai_agent_startup.core.images import expand_images
             request_history = await asyncio.to_thread(expand_images, history, endpoint) if any(message.get('_attachments') for message in history) else history
+            # 本地轮次/来源标记不属于模型接口字段，且不能改动持久历史。
+            request_history = [{key: value for key, value in message.items() if key != '_agent_message'}
+                               if '_agent_message' in message else message for message in request_history]
             ticket = await reserve_request(reserved_cost(history, schemas, endpoint, options))
             try:
                 stream = await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
