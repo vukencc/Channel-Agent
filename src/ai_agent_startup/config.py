@@ -55,6 +55,71 @@ def env_path(name: str, default: str | None = None) -> pathlib.Path | None:
     path = pathlib.Path(value)
     return path if path.is_absolute() else PROJECT_ROOT / path
 
+
+def _validate_url_characters(value: str, name: str, offset: int = 0) -> None:
+    """禁止解析器会忽略的控制字符；诊断只包含配置名称及位置。"""
+    for index, character in enumerate(value):
+        if ord(character) < 32 or ord(character) == 127:
+            raise ValueError(
+                f'{name} 在位置 {offset + index}（从 0 开始）含控制字符 U+{ord(character):04X}；'
+                '请修正配置并重启进程'
+            ) from None
+
+
+def _validate_url(value: str | None, name: str, schemes: set[str]) -> str:
+    import httpx
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f'{name} 必须是非空的有效地址') from None
+    _validate_url_characters(value, name)
+    try:
+        parsed = httpx.URL(value)
+        if parsed.scheme not in schemes or not parsed.host:
+            raise ValueError
+        if parsed.port is not None and not 1 <= parsed.port <= 65535:
+            raise ValueError
+    except (httpx.InvalidURL, ValueError, TypeError):
+        raise ValueError(f'{name} 必须是有效的 {"/".join(sorted(schemes))} 地址') from None
+    return value
+
+
+def validate_http_url(value: str | None, name: str) -> str:
+    """按 HTTP 客户端规则验证端点，不修改地址或暴露其中的凭据。"""
+    return _validate_url(value, name, {'http', 'https'})
+
+
+def validate_proxy_environment() -> None:
+    """沿用 HTTPX 的代理解析与大小写优先级，不修改系统代理。"""
+    from urllib.request import getproxies
+
+    proxies = getproxies()
+
+    def variable_name(scheme: str, value: str) -> str:
+        for name in (f'{scheme}_proxy', f'{scheme.upper()}_PROXY'):
+            if os.getenv(name) == value:
+                return name
+        return f'系统 {scheme} 代理'
+
+    no_proxy = proxies.get('no', '')
+    # HTTPX 遇到任意独立的 * 项会跳过所有代理，包括格式错误的代理。
+    if any(host.strip() == '*' for host in no_proxy.split(',')):
+        return
+    offset = 0
+    for segment in no_proxy.split(','):
+        host = segment.strip()
+        start = offset + len(segment) - len(segment.lstrip())
+        _validate_url_characters(host, variable_name('no', no_proxy), start)
+        offset += len(segment) + 1
+    for scheme in ('http', 'https', 'all'):
+        value = proxies.get(scheme)
+        if value:
+            name = variable_name(scheme, value)
+            _validate_url_characters(value, name)
+            # 无协议的 host:port 是 HTTPX 支持的 HTTP 代理简写。
+            _validate_url(value if '://' in value else f'http://{value}', name,
+                          {'http', 'https', 'socks5', 'socks5h'})
+
+
 API_KEY = os.getenv("OPENCODE_API_KEY")
 BASE_URL = os.getenv("BASE_URL")
 MODEL = os.getenv("MODEL")
@@ -161,14 +226,22 @@ COMMAND_PROCESSES = env_int("COMMAND_PROCESSES", 128)
 
 def validate_runtime_config() -> None:
     """启动前集中验证，不创建目录、不打印凭据。"""
-    from urllib.parse import urlparse
     errors = []
     for name, value in [('OPENCODE_API_KEY', API_KEY), ('BASE_URL', BASE_URL), ('MODEL', MODEL)]:
         if not value or not value.strip():
             errors.append(f'{name} 缺失，请在 .env 配置')
-    url = urlparse(BASE_URL or '')
-    if url.scheme not in {'http', 'https'} or not url.hostname:
-        errors.append('BASE_URL 必须是有效的 http/https 地址')
+    endpoints = [('BASE_URL', BASE_URL)]
+    if EMBEDDING_MODEL_SOURCE == 'API':
+        endpoints.append(('EMBEDDING_MODEL_URL', EMBEDDING_MODEL_URL))
+    for name, value in endpoints:
+        try:
+            validate_http_url(value, name)
+        except ValueError as exc:
+            errors.append(str(exc))
+    try:
+        validate_proxy_environment()
+    except ValueError as exc:
+        errors.append(str(exc))
     for name, value in globals().items():
         if name.isupper() and type(value) in (int, float) and not name.startswith('RAG_THRESHOLD_') and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY', 'AUX_TIMEOUT', 'AUX_CONCURRENCY', 'MEMORY_CONCURRENCY', 'AUX_INPUT_COST_PER_MILLION', 'AUX_OUTPUT_COST_PER_MILLION', 'MODEL_RECOVERY_LIMIT'}:
             if not math.isfinite(value) or value <= 0:
@@ -202,11 +275,12 @@ def validate_runtime_config() -> None:
     for name in ('SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY', 'AUX_TIMEOUT', 'AUX_CONCURRENCY', 'MEMORY_CONCURRENCY', 'AUX_INPUT_COST_PER_MILLION', 'AUX_OUTPUT_COST_PER_MILLION'):
         if not math.isfinite(globals()[name]) or globals()[name] < 0:
             errors.append(f'{name} 必须为非负有限数字')
-    for endpoint in MODEL_FALLBACKS:
+    for index, endpoint in enumerate(MODEL_FALLBACKS):
         if endpoint.get('base_url'):
-            parsed = urlparse(endpoint['base_url'])
-            if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
-                errors.append('MODEL_FALLBACKS 的 base_url 必须是 http/https 地址')
+            try:
+                validate_http_url(endpoint['base_url'], f'MODEL_FALLBACKS[{index}].base_url')
+            except ValueError as exc:
+                errors.append(str(exc))
             if endpoint['base_url'] != BASE_URL and not endpoint.get('api_key_env'):
                 errors.append('备用服务地址不同于 BASE_URL 时必须显式指定 api_key_env')
         if endpoint.get('api_key_env') and not os.getenv(endpoint['api_key_env']):
@@ -238,6 +312,16 @@ MEMORY_INJECT_CHARS = env_int("MEMORY_INJECT_CHARS", 1200)
 MEMORY_AUTO_EXTRACT = env_bool("MEMORY_AUTO_EXTRACT", False)
 ENABLE_MEMORY_MANAGEMENT = env_bool('ENABLE_MEMORY_MANAGEMENT', False)
 ENABLE_SESSION_BRANCHES = env_bool('ENABLE_SESSION_BRANCHES', False)
+ENABLE_TASK_PLANS = env_bool('ENABLE_TASK_PLANS', False)
+TASK_PLAN_MAX_STEPS = env_int('TASK_PLAN_MAX_STEPS', 32)
+TASK_PLAN_CONTEXT_CHARS = env_int('TASK_PLAN_CONTEXT_CHARS', 2000)
+TASK_PLAN_MAX_BYTES = env_int('TASK_PLAN_MAX_BYTES', 65536)
+if not 1 <= TASK_PLAN_MAX_STEPS <= 256:
+    raise ValueError('TASK_PLAN_MAX_STEPS 必须为 1–256')
+if not 256 <= TASK_PLAN_CONTEXT_CHARS <= 16000:
+    raise ValueError('TASK_PLAN_CONTEXT_CHARS 必须为 256–16000')
+if not 1024 <= TASK_PLAN_MAX_BYTES <= 1048576:
+    raise ValueError('TASK_PLAN_MAX_BYTES 必须为 1024–1048576')
 MEMORY_SHARED = env_bool("MEMORY_SHARED", False)
 
 
@@ -263,10 +347,10 @@ MODEL_REQUESTS_PER_MINUTE = env_int('MODEL_REQUESTS_PER_MINUTE', 0)
 
 # 只允许已声明的请求参数；不接受任意网络地址或安全策略覆盖。
 from ai_agent_startup.core.model_settings import ModelParameters, ModelProfile
-from ai_agent_startup.core.permissions import PermissionRule
+from ai_agent_startup.core.permissions import PERMISSION_POLICIES, PermissionRule
 TOOL_PERMISSION_POLICY = os.getenv('TOOL_PERMISSION_POLICY', 'standard')
-if TOOL_PERMISSION_POLICY not in {'readonly', 'standard', 'trusted'}:
-    raise ValueError('TOOL_PERMISSION_POLICY 必须为 readonly/standard/trusted')
+if TOOL_PERMISSION_POLICY not in PERMISSION_POLICIES:
+    raise ValueError('TOOL_PERMISSION_POLICY 必须为 readonly/standard/trusted/smart/full_access')
 try:
     _permission_rules = json.loads(os.getenv('TOOL_PERMISSION_RULES', '[]'))
     if not isinstance(_permission_rules, list):

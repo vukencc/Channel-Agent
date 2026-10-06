@@ -21,6 +21,16 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def wait_for_io_completion(future):
+    """即使界面被连续取消，也必须等实际文件操作结束再解除维护保护。"""
+    while True:
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            if future.cancelled():
+                raise
+
+
 def finish_pending_tools(messages: list[dict]):
     """Keep API tool-call protocol valid after cancellation/crash, without replay."""
     pending = {}
@@ -31,7 +41,8 @@ def finish_pending_tools(messages: list[dict]):
             pending.pop(message['tool_call_id'], None)
     for identifier in pending:
         messages.append({'role': 'tool', 'tool_call_id': identifier,
-                         'content': '[中断] 执行结果未知，请先检查文件状态，勿自动重放操作。'})
+                         'content': '[中断] 执行结果未知，请先检查文件状态，勿自动重放操作。',
+                         '_provenance': 'recovered_unknown'})
 
 
 class LazyRecord(dict):
@@ -110,6 +121,54 @@ class SessionStore:
     def workspace_path(self, identifier: str) -> Path:
         self.directory(identifier)  # Validate ID before constructing a filesystem path.
         return self.workspace_root / identifier
+
+    def check_session_archive(self, identifier: str) -> tuple[Path, Path]:
+        """归档前只做验证，批量删除可以先检查整组会话。"""
+        directory = self.directory(identifier)
+        destination_root = self.root / '.trash'
+        if destination_root.is_symlink():
+            raise ValueError('会话回收区不能是符号链接')
+        if destination_root.exists() and not destination_root.is_dir():
+            raise ValueError('会话回收区必须是目录')
+        if not directory.is_dir() or not (directory / 'session.json').is_file():
+            raise ValueError('会话记录不存在')
+        if (directory / 'workspace').exists() or (directory / 'workspace').is_symlink():
+            raise ValueError('会话含旧版工作区；请先迁移或整理文件后删除会话')
+        if self.workspace_path(identifier).resolve().is_relative_to(directory.resolve()):
+            raise ValueError('工作区位于会话数据目录内，不能删除会话')
+        destination = destination_root / identifier
+        if destination.exists() or destination.is_symlink():
+            raise ValueError('回收区已存在同名会话，拒绝覆盖')
+        return directory, destination
+
+    def delete_session(self, identifier: str) -> Path:
+        """原子移入回收区；工作区、导出和共享记忆保留。"""
+        directory, destination = self.check_session_archive(identifier)
+        destination.parent.mkdir(exist_ok=True, mode=0o700)
+        from ai_agent_startup.core.audit_writer import append_audit
+        append_audit(self.root / 'session-lifecycle.jsonl', json.dumps({
+            'event': 'session_delete_requested', 'session_id': identifier,
+            'workspace_preserved': True, 'created_at': now()}, ensure_ascii=False), sync=config.AUDIT_SYNC)
+        directory.rename(destination)
+        return destination
+
+    def delete_sessions(self, identifiers: list[str]) -> dict[str, Path]:
+        """先验证整组；遇到文件系统错误时回滚已完成的原子重命名。"""
+        for identifier in identifiers:
+            self.check_session_archive(identifier)
+        moved = {}
+        try:
+            for identifier in identifiers:
+                moved[identifier] = self.delete_session(identifier)
+        except BaseException:
+            for identifier, archive in reversed(list(moved.items())):
+                archive.rename(self.directory(identifier))
+            from ai_agent_startup.core.audit_writer import append_audit
+            append_audit(self.root / 'session-lifecycle.jsonl', json.dumps({
+                'event': 'session_delete_rolled_back', 'session_ids': list(moved),
+                'created_at': now()}, ensure_ascii=False), sync=config.AUDIT_SYNC)
+            raise
+        return moved
 
     def workspace(self, identifier: str) -> Path:
         """Copy legacy files once; preserve originals and refuse ambiguous overwrites."""

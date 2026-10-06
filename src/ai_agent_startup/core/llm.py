@@ -38,9 +38,11 @@ def get_client() -> AsyncOpenAI:
     global _client
     with _client_lock:
         if _client is None:
+            base_url = config.validate_http_url(config.BASE_URL, 'BASE_URL')
+            config.validate_proxy_environment()
             _client = AsyncOpenAI(
                 api_key=config.API_KEY,
-                base_url=config.BASE_URL,
+                base_url=base_url,
                 default_headers={"x-opencode-session": str(uuid.uuid4())},
                 max_retries=0,
                 timeout=config.TIMEOUT,
@@ -56,13 +58,17 @@ _route = ContextVar('model_route', default=None)
 def endpoint_client(endpoint):
     if not endpoint.get('base_url') and not endpoint.get('api_key_env'):
         return get_client()
-    base_url = endpoint.get('base_url', config.BASE_URL)
+    base_url = config.validate_http_url(
+        endpoint.get('base_url') or config.BASE_URL,
+        'MODEL_FALLBACKS.base_url' if endpoint.get('base_url') else 'BASE_URL',
+    )
     key = os.getenv(endpoint['api_key_env']) if endpoint.get('api_key_env') else config.API_KEY
     if not key:
         raise ValueError('备用模型 api_key_env 未配置')
     identity = (base_url, key)
     with _client_lock:
         if identity not in _fallback_clients:
+            config.validate_proxy_environment()
             _fallback_clients[identity] = AsyncOpenAI(api_key=key, base_url=base_url,
                 max_retries=0, timeout=config.TIMEOUT)
         client = _fallback_clients[identity]
@@ -191,8 +197,9 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
             from ai_agent_startup.core.images import expand_images
             request_history = await asyncio.to_thread(expand_images, history, endpoint) if any(message.get('_attachments') for message in history) else history
             # 本地轮次/来源标记不属于模型接口字段，且不能改动持久历史。
-            request_history = [{key: value for key, value in message.items() if key != '_agent_message'}
-                               if '_agent_message' in message else message for message in request_history]
+            # 私有消息来源、证据标识与附件引用不能作为 API 消息字段发送。
+            request_history = [{key: value for key, value in message.items() if not key.startswith('_')}
+                               for message in request_history]
             ticket = await reserve_request(reserved_cost(history, schemas, endpoint, options))
             try:
                 stream = await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(

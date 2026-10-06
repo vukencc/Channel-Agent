@@ -1,6 +1,6 @@
 name = "sandbox_auditor"
 description = "Read-only security auditor for the sandbox, permissions, and audit path. Use for changes to tool execution, file/command boundaries, approvals, or audit logging."
-model = "gpt-6-astra"
+model = "gpt-6.1-sol"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 nickname_candidates = ["Warden", "Sentinel", "Custodian"]

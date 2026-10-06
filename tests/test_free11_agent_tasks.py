@@ -18,7 +18,7 @@ def store(tmp_path, monkeypatch):
     value.close()
 
 
-def test_delegate_isolated_scope_cost_owner_and_paired_result(store, monkeypatch):
+def test_delegate_shared_workspace_private_scope_cost_owner_and_paired_result(store, monkeypatch):
     monkeypatch.setattr(config, 'MODEL_REQUESTS_PER_MINUTE', 10)
     owners = []
     async def model(history, **kwargs):
@@ -40,7 +40,8 @@ def test_delegate_isolated_scope_cost_owner_and_paired_result(store, monkeypatch
         assert child.record['tool_names'] == ['read_file']
         assert child.record['budget_overrides']['MAX_TOOL_ROUNDS'] == 1
         assert owners == [parent.id]
-        assert child.id != parent.id and store.workspace(child.id) != store.workspace(parent.id)
+        assert child.id != parent.id and store.directory(child.id) != store.directory(parent.id)
+        assert manager.workspace(child) == manager.workspace(parent)
         assert len(parent.record['messages']) == 1  # 不插入未配对结果
         with pytest.raises(PermissionError):
             manager.agent_tasks.status(child.id, identifier)

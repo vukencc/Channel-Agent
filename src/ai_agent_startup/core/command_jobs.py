@@ -28,6 +28,7 @@ class CommandJobs:
         self.lock = threading.RLock()
         self.workspace_locks = {}
         self.records = {}
+        self.futures = {}
         self.events = {}
         self.closed = False
         self.executor = ThreadPoolExecutor(max_workers=config.COMMAND_JOB_CONCURRENCY, thread_name_prefix='command-job')
@@ -77,7 +78,7 @@ class CommandJobs:
         detail = f'{command}\n后台时限 {timeout:g}s；联网={network}'
         if network:
             detail += f'；白名单={config.COMMAND_NETWORK_ALLOWLIST}'
-        if not ask_permission('start_command_job', detail, reason, force_confirmation=True):
+        if not ask_permission('start_command_job', detail, reason, command=command, force_confirmation=True):
             raise PermissionError('用户未确认后台命令')
         with self.lock:
             if self.closed or context.cancelled.is_set():
@@ -86,14 +87,21 @@ class CommandJobs:
                 raise ValueError('后台任务队列已满')
             identifier = uuid.uuid4().hex
             cancelled = threading.Event()
-            self.records[identifier] = {'id': identifier, 'owner': context.root.name, 'command': command,
+            self.records[identifier] = {'id': identifier, 'owner': context.session_id or context.root.name, 'command': command,
                 'network': network, 'timeout': timeout, 'status': 'queued', 'created_at': time.time(), 'result': ''}
             self.events[identifier] = cancelled
             self._save(identifier)
             job_context = replace(context, cancelled=cancelled)
-            self.executor.submit(copy_context().run, self._run, identifier, job_context, reason)
+            future = self.executor.submit(copy_context().run, self._run, identifier, job_context, reason)
+            self.futures[identifier] = future
+            future.add_done_callback(lambda finished: self._finished(identifier, finished))
             audit('command_job_queued', job_id=identifier, timeout=timeout, network=network)
             return identifier
+
+    def _finished(self, identifier, future):
+        with self.lock:
+            if self.futures.get(identifier) is future:
+                self.futures.pop(identifier)
 
     def _run(self, identifier, context, reason):
         from ai_agent_startup.tools.command import _execute

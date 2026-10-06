@@ -85,7 +85,8 @@ def test_create_session_requires_task_confirmation_and_parent_scope(store):
         assert child.record['permission_policy'] == 'standard'
         assert child.record['tool_names'] == ['read_file']
         assert child.record['budget_overrides']['MAX_TOOL_ROUNDS'] == 1
-        assert store.workspace(child.id) != store.workspace(parent.id)
+        assert allowed.workspace(child) == allowed.workspace(parent)
+        assert store.directory(child.id) != store.directory(parent.id)
         await allowed.agent_tasks.tasks[created['task_id']]
         await allowed.shutdown()
 

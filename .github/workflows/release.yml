@@ -5,8 +5,7 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -21,12 +20,24 @@ jobs:
       OMP_NUM_THREADS: '4'
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: 校验发布标签、版本与稳定分支
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          git merge-base --is-ancestor HEAD origin/main
+          python dev/check_release.py "$RELEASE_TAG"
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
           enable-cache: true
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux
-      - run: uv sync --locked
+      - run: uv sync --locked --extra web
       - name: 验证真实隔离能力
         run: uv run python dev/ci_sandbox_probe.py
       - run: uv run pytest -m 'not integration' -q
@@ -34,6 +45,10 @@ jobs:
   image:
     needs: test
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
@@ -68,6 +83,7 @@ jobs:
   release:
     needs: image
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

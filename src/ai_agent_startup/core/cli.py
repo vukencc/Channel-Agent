@@ -11,7 +11,9 @@ from pathlib import Path
 from prompt_toolkit.application import Application
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, VSplit, Layout, Window, ConditionalContainer
+from prompt_toolkit.layout import HSplit, VSplit, Layout, Window, ConditionalContainer, FloatContainer, Float
+from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.styles import Style
@@ -24,37 +26,9 @@ from ai_agent_startup.core.messages import is_user_request
 from ai_agent_startup.core.sessions import SessionManager
 from ai_agent_startup.core.storage import LazyRecord, SessionStore
 from ai_agent_startup.core.transcript import Transcript
+from ai_agent_startup.core.cli_commands import CommandCompleter, CommandPalette, POLICY_LABELS, help_text
 
-HELP = '''Enter 发送 · Alt+Enter 换行 · Ctrl+N 新建 · Ctrl+←/→ 切换 · Ctrl+C 停止 · Ctrl+Q 退出
-/new [名称]          新建会话并启动独立 Agent
-/switch ID前缀       切换会话（也可点击左侧）
-/model 名称          切换预设模型参数；default 恢复默认；无参数列出预设
-/tools 名称,...      选择会话工具；all 全部，none 无工具；无参数查看当前子集
-/platform           查看平台能力与隔离验证方式
-/usage /trace [轮次] 查看保留窗口统计及有界脱敏指标（启用可观测命令后）
-/image 路径 | 问题   从会话工作区发送图片；启用视觉后仍需确认上传
-/tasks [cancel ID]  查看当前会话创建的子任务或取消
-/config [JSON|预设]  查看或设置会话预算；default 恢复全局默认
-/policy 档位         readonly/standard/trusted；default 恢复环境默认；无参数查看
-/memory scope 范围   启用管理后选择 session/project/global/default；add/search/edit 使用 JSON
-/branch [编号]       启用分支后复制截至该消息的历史到新会话；system=0，默认末尾
-/resend 编号 新文本  在新分支编辑并重发 user 消息；/retry 重发最后一个用户问题
-/rename 名称         重命名当前会话
-/prompt 指令         设置当前 Agent 的系统指令（空闲时）
-/remember 内容       保存当前会话的长期记忆
-/memory              查看记忆文件
-/forget              清空记忆（需要确认）
-/export [md|json]    导出对话与记忆文件
-/stop                停止当前任务
-/close               隐藏当前会话（文件保留，重启可恢复）
-/yes 或 /no          只批准或拒绝当前会话的待确认操作
-/older /newer        上一页 / 下一页完整历史
-/top /bottom         最早历史 / 跟随最新回复
-/where               查看当前文件工作区
-/sidebar             隐藏或显示会话侧栏
-/help                显示帮助
-/quit                停止后台任务、保存并退出
-以 // 开头可发送以 / 开头的普通消息。记忆和上下文仅在当前会话内使用。'''
+HELP = help_text()
 
 LABELS = {'idle': '就绪', 'queued': '排队', 'running': '运行', 'confirming': '待确认',
           'stopping': '停止中', 'cancelled': '已停止', 'error': '错误', 'interrupted': '中断恢复',
@@ -64,12 +38,17 @@ LABELS = {'idle': '就绪', 'queued': '排队', 'running': '运行', 'confirming
 class AgentCLI:
     def __init__(self, store: SessionStore, *, input=None, output=None):
         self.store = store
-        self.manager = SessionManager(store, self.refresh)
+        self.manager = SessionManager(store, self.refresh, cascade_deletions=True)
         self.hidden = set()
         self.notice = 'F1 查看帮助 · /where 查看工作区 · PageUp 浏览历史 · Ctrl+End 跟随最新'
         self.pending_forget = None
+        self.pending_delete = None
+        self.pending_cleanup = None
+        self.show_details = False
+        self._deleting = set()
+        self._command_draft = None
         self.app = None
-        self.transcript = Transcript()
+        self.transcript = Transcript(show_details=self.show_details)
         self.page_info = (0, 0, 0)
         self._refresh_handle = None
         self._view_key = None
@@ -80,8 +59,12 @@ class AgentCLI:
         self._drafts = {}
         self.sidebar_visible = True
         self._ui_jobs = set()
+        self._delete_jobs = set()
+        self._lifecycle_busy = False
         self._disk_lock = asyncio.Lock()
-        self.input = TextArea(height=2, prompt='› ', multiline=True, wrap_lines=True)
+        self.input = TextArea(height=2, prompt='› ', multiline=True, wrap_lines=True,
+                              completer=CommandCompleter(self), history=InMemoryHistory())
+        self.palette = CommandPalette(self)
         self.chat = TextArea(read_only=True, scrollbar=True, wrap_lines=True, focusable=True)
         self.sidebar = Window(FormattedTextControl(self.session_list), width=22)
         self.current = next(reversed(self.manager.sessions), None)
@@ -92,19 +75,25 @@ class AgentCLI:
             self.notice = '以下会话文件无法读取，已保留原文件：\n' + '\n'.join(store.errors)
         bindings = KeyBindings()
 
-        @bindings.add('enter', filter=Condition(lambda: self.app.layout.has_focus(self.input)))
+        @bindings.add('enter', eager=True, filter=Condition(lambda: not self.palette.visible and self.app.layout.has_focus(self.input)))
         def send(event):
             value = self.input.text.strip()
             # 命令可能切换会话，不能把命令本身存为旧会话草稿。
             command = value.startswith('/') and not value.startswith('//')
+            saved_draft = self._command_draft if command else None
+            self._command_draft = None
             if command:
-                self.input.text = ''
+                self.input.buffer.append_to_history()
+                draft = saved_draft[1] if saved_draft and saved_draft[0] == self.current else ''
+                self.input.buffer.set_document(Document(draft, len(draft)))
             accepted = self.handle(value)
             if accepted:
                 if not command:
                     self.input.text = ''
             elif command:
-                self.input.text = value
+                if saved_draft:
+                    self._command_draft = saved_draft
+                self.input.buffer.set_document(Document(value, len(value)))
 
         @bindings.add('escape', 'enter')
         def newline(event):
@@ -171,9 +160,40 @@ class AgentCLI:
         def sidebar(event):
             self.handle('/sidebar')
 
-        @bindings.add('tab')
-        def focus(event):
-            self.app.layout.focus(self.chat if self.app.layout.has_focus(self.input) else self.input)
+        @bindings.add('c-p', eager=True)
+        def commands(event):
+            self.open_palette()
+
+        @bindings.add('escape', eager=True, filter=Condition(lambda: self.palette.visible))
+        def dismiss_palette(event):
+            self.palette.close()
+
+        @bindings.add('enter', eager=True, filter=Condition(lambda: self.palette.visible))
+        def choose_palette(event):
+            self.palette.choose()
+
+        @bindings.add('up', eager=True, filter=Condition(lambda: self.palette.visible))
+        def palette_previous(event):
+            self.palette.move(-1)
+
+        @bindings.add('down', eager=True, filter=Condition(lambda: self.palette.visible))
+        def palette_next(event):
+            self.palette.move(1)
+
+        @bindings.add('tab', eager=True)
+        def complete_or_focus(event):
+            if self.palette.visible:
+                self.palette.move(1)
+                return
+            buffer = self.input.buffer
+            if (self.app.layout.has_focus(self.input)
+                    and self.input.text.startswith('/') and not self.input.text.startswith('//')):
+                if buffer.complete_state:
+                    buffer.complete_next()
+                else:
+                    buffer.start_completion(select_first=True)
+            else:
+                self.app.layout.focus(self.chat if self.app.layout.has_focus(self.input) else self.input)
 
         root = HSplit([
             Window(FormattedTextControl(lambda: [('class:header',
@@ -184,9 +204,16 @@ class AgentCLI:
                     Frame(self.chat, title=self.conversation_title)]),
             ConditionalContainer(Frame(Window(FormattedTextControl(self.confirmation_text), height=5, wrap_lines=True),
                                        title='当前会话需要确认 · Ctrl+Y 同意 / Ctrl+R 拒绝'),
-                                 Condition(lambda: bool(self.active.confirmation) or self.pending_forget == self.current)),
+                                 Condition(lambda: bool(self.active.confirmation) or self.pending_forget == self.current
+                                           or self.pending_delete == self.current
+                                           or self.pending_cleanup is not None and self.pending_cleanup[0] == self.current)),
             Window(FormattedTextControl(self.status_text), height=1),
             Frame(self.input, title='输入消息或 /命令 · Enter 发送 · Alt+Enter 换行'),
+        ])
+        root = FloatContainer(root, floats=[
+            Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=7, scroll_offset=1)),
+            Float(width=80, content=ConditionalContainer(self.palette.container,
+                                                        Condition(lambda: self.palette.visible))),
         ])
         self.app = Application(layout=Layout(root, focused_element=self.input), key_bindings=bindings,
                                full_screen=True, mouse_support=True, input=input, output=output,
@@ -222,6 +249,16 @@ class AgentCLI:
         return result
 
     def confirmation_text(self):
+        if self.pending_cleanup is not None and self.pending_cleanup[0] == self.current:
+            selection = self.pending_cleanup[1]
+            return ('确认清理：' + '、'.join(name for name, selected in selection.items() if selected) + '？\n'
+                    '缓存和旧日志将清除；会话记录移入回收区。工作区、知识库、导出和共享记忆保留。\n'
+                    '输入 /yes 或 /no；Full Access 仍须明确确认。')
+        if self.pending_delete == self.current:
+            count = len(self.manager.session_deletion_targets(self.active, cascade=True))
+            return (f'确认删除会话 {self.active.record["title"]}（{self.current}）？\n'
+                    f'该 Agent 及其委派后代共 {count} 个会话移入 .trash 回收区；工作区、导出和共享记忆保留。\n'
+                    '输入 /yes 或 Ctrl+Y 明确同意；/no 或 Ctrl+R 取消。Full Access 不跳过此确认。')
         if self.pending_forget == self.current:
             return '确认清空当前会话的 memory.md？对话历史和文件工作区将保留。'
         return self.active.confirmation['prompt'] if self.active.confirmation else ''
@@ -244,7 +281,9 @@ class AgentCLI:
         loading = ' · 加载历史中（可继续编辑草稿）' if self._is_loading(s.record) else ''
         unread = self.manager.communication.pending_count(s)
         badge = f' · Agent 未读 {unread}' if unread else ''
-        return [(f'class:status class:{style}', f'{s.id[:8]} | {status} {s.phase}{elapsed}{loading}{badge} | 上下文 {self._message_count(s.record)} 条 | Ctrl+Q 退出')]
+        policy = self.manager.permission_override or s.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY
+        mode = POLICY_LABELS.get(policy, policy)
+        return [(f'class:status class:{style}', f'{s.id[:8]} | {mode} | {status} {s.phase}{elapsed}{loading}{badge} | 上下文 {self._message_count(s.record)} 条 | Ctrl+Q 退出')]
 
     @staticmethod
     def _is_loading(record):
@@ -259,14 +298,21 @@ class AgentCLI:
         return len(record['messages'])
 
     def select(self, identifier):
+        if self.palette.visible:
+            self.palette.close()
         if self.current:
-            self._drafts[self.current] = self.input.text
-        self.transcript = Transcript()
+            if self._command_draft and self._command_draft[0] == self.current:
+                self._drafts[self.current] = self._command_draft[1]
+                self._command_draft = None
+            else:
+                self._drafts[self.current] = self.input.text
+        self.transcript = Transcript(show_details=self.show_details)
         self._view_key = None
         self.current = identifier
         self.page_info = (0, 0, 0)
         self.chat.buffer.set_document(Document('正在加载会话历史…'), bypass_readonly=True)
-        self.input.text = self._drafts.get(identifier, '')
+        draft = self._drafts.get(identifier, '')
+        self.input.buffer.set_document(Document(draft, len(draft)))
         self.hidden.discard(identifier)
         self.notice = ''
         self.render(force=True)
@@ -400,6 +446,45 @@ class AgentCLI:
         self._ui_jobs.add(task)
         task.add_done_callback(self._ui_jobs.discard)
 
+    def plan_command(self, session, argument=''):
+        """只读计划查询不占模型槽，磁盘读取仍在线程完成。"""
+        service = self.manager.task_plans
+        if service is None:
+            raise ValueError('任务计划未启用；设置 ENABLE_TASK_PLANS=true 后重启')
+        async def run():
+            try:
+                plan = await service.get(session, cursor=argument or None)
+                lines = [f'运行状态：{session.record["status"]} | 计划：{plan["status"]} | 验收：unverified']
+                if plan['plan_id']:
+                    lines.append(f'{plan["plan_id"][:8]} · revision={plan["revision"]} · {plan["goal"]}')
+                for step in plan['tasks']:
+                    lines.append(f'{step["key"]} [{step["status"]}] {step["title"]} · 依赖={step["depends_on"]}')
+                    lines.append('  验收条件：' + step['acceptance'])
+                    if step['block_reason']:
+                        lines.append('  阻塞：' + step['block_reason'])
+                    if step['execution_ref']:
+                        ref = step['execution_ref']
+                        lines.append(f'  执行：{ref["kind"]}/{ref["id"][:8]} · {ref["runtime_status"]} · 排空={ref["drained"]}')
+                    if step['result']:
+                        lines.append('  自报结果：' + step['result'])
+                    if step['evidence_refs']:
+                        lines.append('  证据：' + ', '.join(step['evidence_refs']))
+                if plan['next_cursor']:
+                    lines.append('下一页：/plan ' + plan['next_cursor'])
+                note = '\n'.join(lines)
+            except (OSError, ValueError, PermissionError) as exc:
+                note = '计划读取失败：' + str(exc)
+            self.notice = note if self.current == session.id else f'[{session.id[:8]}] {note}'
+            self.refresh()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(run())
+        else:
+            task = asyncio.create_task(run())
+            self._ui_jobs.add(task)
+            task.add_done_callback(self._ui_jobs.discard)
+
     def memory_command(self, session, argument):
         """显式管理用户记忆；修改/删除仍由当前会话的确认流程处理。"""
         from ai_agent_startup.core.memory import MemoryPatch, MemoryQuery
@@ -500,6 +585,168 @@ class AgentCLI:
             self._ui_jobs.add(task)
             task.add_done_callback(self._ui_jobs.discard)
 
+    def open_palette(self, mode='commands', query=''):
+        self.palette.open(mode, query)
+
+    def prepare_command(self, value):
+        """Keep a displaced message draft until the inserted command is submitted."""
+        if self._command_draft is None:
+            self._command_draft = (self.current, self.input.text)
+        self.input.buffer.set_document(Document(value, len(value)))
+        self.app.layout.focus(self.input)
+
+    def request_delete(self, argument):
+        if self._lifecycle_busy or self.pending_cleanup is not None:
+            raise ValueError('请先完成清理或删除操作')
+        if self._deleting:
+            raise ValueError('已有会话正在移入回收区，请等待完成')
+        matches = [key for key in self.manager.sessions if key.startswith(argument)] if argument else [self.current]
+        if len(matches) != 1:
+            raise ValueError('请指定唯一的会话 ID 前缀')
+        target = self.manager.sessions[matches[0]]
+        self.manager.check_session_deletion(target)
+        if target.confirmation or self.pending_forget == target.id or any(
+                getattr(self, name, (None,))[0] == target.id
+                for name in ('pending_memory_remove', 'pending_memory_edit')):
+            raise ValueError('请先处理选定会话的待确认操作')
+        if self.pending_delete and self.pending_delete != target.id:
+            raise ValueError('请先切换回待删除会话并用 /yes 或 /no 处理确认')
+        if self.current != target.id:
+            self.select(target.id)
+        self.pending_delete = target.id
+        self.notice = self.confirmation_text()
+
+    def request_cleanup(self, argument):
+        from ai_agent_startup.core.maintenance import maintenance_preview, maintenance_busy
+        if self._lifecycle_busy:
+            raise ValueError('正在清理或删除会话，请稍后操作')
+        if self.pending_cleanup is not None or self.pending_delete or self.pending_forget or any(
+                getattr(self, name, (None,))[0] is not None
+                for name in ('pending_memory_remove', 'pending_memory_edit')):
+            raise ValueError('请先处理已有的待确认操作')
+        if any(session.confirmation for session in self.manager.sessions.values()):
+            raise ValueError('请先处理已有的工具确认')
+        if maintenance_busy(self.manager):
+            raise ValueError('Agent 或工具仍在运行，请先停止并等待')
+        names = set(argument.replace(',', ' ').split())
+        if len(names) > 1 or names - {'cache', 'logs', 'sessions', 'all'}:
+            raise ValueError('用法：/cleanup [cache|logs|sessions|all]')
+        selection = {name: name in names or 'all' in names for name in ('cache', 'logs', 'sessions')}
+        owner = self.current
+
+        def displayed(preview):
+            if names:
+                for name, selected in selection.items():
+                    if selected and preview[name].get('error'):
+                        raise ValueError(preview[name]['error'])
+                self.pending_cleanup = (owner, selection)
+            return ('清理预览：' + json.dumps(preview, ensure_ascii=False) + '\n' +
+                    ('请切换回确认会话后输入 /yes 或 /no。' if names else
+                     '使用 /cleanup cache、logs、sessions 或 all 选择清理范围。'))
+        self.disk_job(lambda: maintenance_preview(self.manager), displayed)
+
+    def cleanup_command(self):
+        from ai_agent_startup.core.maintenance import cleanup
+        if self._lifecycle_busy:
+            raise ValueError('正在清理或删除会话，请稍后操作')
+        _, selection = self.pending_cleanup
+        self._lifecycle_busy = True
+        self.pending_cleanup = None
+
+        async def run():
+            try:
+                current_job = asyncio.current_task()
+                jobs = [job for job in self._ui_jobs if job is not current_job and not job.done()]
+                await asyncio.gather(*jobs, return_exceptions=True)
+                await self.drain_render()
+                result = await cleanup(self.manager, **selection)
+                deleted = set(result['sessions']['deleted_ids'])
+                self.hidden.difference_update(deleted)
+                for identifier in deleted:
+                    self._drafts.pop(identifier, None)
+                if self._command_draft and self._command_draft[0] in deleted:
+                    self._command_draft = None
+                if self.current in deleted:
+                    self.current = None
+                    from ai_agent_startup.core.session_service import open_session
+                    self.select(open_session(self.manager).id)
+                self.notice = '清理完成：' + json.dumps(result, ensure_ascii=False)
+            except (ValueError, OSError) as exc:
+                self.notice = str(exc)
+            finally:
+                self._lifecycle_busy = False
+                if self.current not in self.manager.sessions:
+                    self.current = None
+                    if self.manager.sessions:
+                        self.select(next(reversed(self.manager.sessions)))
+                    else:
+                        from ai_agent_startup.core.session_service import open_session
+                        self.select(open_session(self.manager).id)
+                self.refresh()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(run())
+        else:
+            job = asyncio.create_task(run())
+            self._ui_jobs.add(job)
+            job.add_done_callback(self._ui_jobs.discard)
+
+    def delete_command(self, session):
+        """Drain UI readers/writers before moving the explicitly approved session."""
+        if self._lifecycle_busy:
+            raise ValueError('正在清理或删除会话，请稍后操作')
+        targets = self.manager.session_deletion_targets(session, cascade=True)
+        for target in targets:
+            self.manager.check_session_deletion(target)
+        self._lifecycle_busy = True
+        identifiers = {target.id for target in targets}
+        self._deleting.update(identifiers)
+        self.pending_delete = None
+        self.notice = f'正在将会话 {session.id[:8]} 移入回收区…'
+
+        async def remove():
+            try:
+                current_job = asyncio.current_task()
+                while jobs := [job for job in self._ui_jobs
+                               if job is not current_job and not job.done()]:
+                    await asyncio.gather(*jobs, return_exceptions=True)
+                await self.drain_render()
+                archive = await self.manager.delete_session(session)
+                self.hidden.difference_update(identifiers)
+                for identifier in identifiers:
+                    self._drafts.pop(identifier, None)
+                if self._command_draft and self._command_draft[0] in identifiers:
+                    self._command_draft = None
+                if self.current in identifiers:
+                    self.current = None
+                    available = [key for key in self.manager.sessions if key not in self.hidden]
+                    if not available:
+                        available = list(self.manager.sessions)
+                    if available:
+                        self.select(available[-1])
+                    else:
+                        from ai_agent_startup.core.session_service import open_session
+                        self.select(open_session(self.manager).id)
+                self.notice = f'会话 {session.id[:8]} 已移入回收区：{archive}；工作区、导出文件和共享记忆保留。'
+            except (ValueError, OSError) as exc:
+                self.notice = str(exc)
+            finally:
+                self._lifecycle_busy = False
+                self._deleting.difference_update(identifiers)
+                self.refresh()
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(remove())
+        else:
+            task = asyncio.create_task(remove())
+            self._ui_jobs.add(task)
+            self._delete_jobs.add(task)
+            task.add_done_callback(self._ui_jobs.discard)
+            task.add_done_callback(self._delete_jobs.discard)
+
     def handle(self, value):
         if not value:
             return False
@@ -507,10 +754,22 @@ class AgentCLI:
         try:
             session = self.active
             command = value.partition(' ')[0]
+            if self.manager.maintenance or self._lifecycle_busy:
+                raise ValueError('正在清理数据，请稍后操作')
+            if self.pending_cleanup is not None and self.pending_cleanup[0] == session.id and command not in {
+                    '/yes', '/no', '/switch', '/sessions', '/resume', '/help', '/quit', '/where'}:
+                raise ValueError('请先用 /yes 或 /no 处理清理确认')
             if self._is_loading(session.record) and command not in {
                     '/new', '/switch', '/close', '/stop', '/quit', '/help', '/where', '/sidebar',
-                    '/older', '/newer', '/top', '/bottom', '/yes', '/no'}:
+                    '/older', '/newer', '/top', '/bottom', '/yes', '/no', '/sessions', '/resume',
+                    '/models', '/permissions', '/delete', '/del'}:
                 raise ValueError('历史仍在后台加载；草稿已保留，请加载完成后发送或切换其他会话')
+            if session.id in self._deleting and command not in {'/new', '/switch', '/sessions', '/resume', '/help', '/quit'}:
+                raise ValueError('会话正在移入回收区，请等待完成')
+            if self.pending_delete == session.id and command not in {
+                    '/yes', '/no', '/switch', '/sessions', '/resume', '/new', '/help', '/quit',
+                    '/where', '/sidebar', '/older', '/newer', '/top', '/bottom', '/delete', '/del'}:
+                raise ValueError('请先用 /yes 或 /no 处理当前会话的删除确认')
             namespace = session.record.get('memory_namespace')
             if value.startswith('//') or not value.startswith('/'):
                 if session.confirmation:
@@ -521,7 +780,24 @@ class AgentCLI:
             else:
                 command, _, argument = value.partition(' ')
                 argument = argument.strip()
-                if command == '/new':
+                if command in {'/sessions', '/resume'}:
+                    self.open_palette('sessions', argument)
+                elif command == '/models':
+                    self.open_palette('models', argument)
+                elif command == '/permissions':
+                    self.open_palette('permissions', argument)
+                elif command in {'/delete', '/del'}:
+                    self.request_delete(argument)
+                elif command == '/cleanup':
+                    self.request_cleanup(argument)
+                elif command == '/details':
+                    if argument not in {'', 'on', 'off'}:
+                        raise ValueError('用法：/details [on|off]')
+                    self.show_details = not self.show_details if not argument else argument == 'on'
+                    self.transcript = Transcript(show_details=self.show_details)
+                    self._view_key = None
+                    self.notice = '执行详情已显示。' if self.show_details else '执行详情已隐藏。'
+                elif command == '/new':
                     from ai_agent_startup.core.session_service import open_session
                     self.select(open_session(self.manager, title=argument or '新会话').id)
                 elif command in {'/branch', '/resend', '/retry'}:
@@ -545,6 +821,8 @@ class AgentCLI:
                     self.notice = json.dumps(report, ensure_ascii=False, indent=2)
                 elif command == '/image':
                     self.image_command(session, argument)
+                elif command == '/plan':
+                    self.plan_command(session, argument)
                 elif command == '/tasks':
                     queue = self.manager.agent_tasks
                     if queue is None:
@@ -563,9 +841,10 @@ class AgentCLI:
                     self.notice = json.dumps(effective_limits(session.record), ensure_ascii=False, indent=2)
                 elif command == '/policy':
                     if argument:
+                        argument = {'full': 'full_access', 'full access': 'full_access'}.get(argument, argument)
                         self.manager.set_permission_policy(session, None if argument == 'default' else argument)
                     policy = session.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY
-                    self.notice = f'当前权限策略：{policy}；预先确认规则 {len(config.TOOL_PERMISSION_RULES)} 条。trusted 未匹配规则时仍需逐次确认。'
+                    self.notice = f'当前权限模式：{POLICY_LABELS.get(policy, policy)} ({policy})；预先确认规则 {len(config.TOOL_PERMISSION_RULES)} 条。'
                 elif command == '/switch':
                     matches = [key for key in self.manager.sessions if key.startswith(argument)]
                     if not argument or len(matches) != 1:
@@ -606,7 +885,19 @@ class AgentCLI:
                     self.pending_forget = session.id
                     self.pending_forget_namespace = namespace
                 elif command in {'/yes', '/no'}:
-                    if session.confirmation:
+                    if self.pending_cleanup is not None and self.pending_cleanup[0] == session.id:
+                        if command == '/yes':
+                            self.cleanup_command()
+                        else:
+                            self.pending_cleanup = None
+                            self.notice = '已取消数据清理。'
+                    elif self.pending_delete == session.id:
+                        if command == '/yes':
+                            self.delete_command(session)
+                        else:
+                            self.pending_delete = None
+                            self.notice = '已取消会话删除。'
+                    elif session.confirmation:
                         self.manager.decide(session, command == '/yes')
                     elif getattr(self, 'pending_memory_edit', (None,))[0] == session.id:
                         _, entry_id, patch, edit_namespace = self.pending_memory_edit
@@ -641,7 +932,7 @@ class AgentCLI:
                         from ai_agent_startup.core.session_service import open_session
                         self.select(open_session(self.manager).id)
                 elif command == '/where':
-                    self.notice = '文件工作区：' + str(self.store.workspace_path(session.id)) + '\n会话记录：' + str(self.store.directory(session.id))
+                    self.notice = '文件工作区：' + str(self.manager.workspace(session)) + '\n会话记录：' + str(self.store.directory(session.id))
                 elif command == '/sidebar':
                     self.sidebar_visible = not self.sidebar_visible
                 elif command in {'/older', '/newer', '/top', '/bottom'}:
@@ -670,6 +961,12 @@ class AgentCLI:
                 self._refresh_handle.cancel()
                 self._refresh_handle = None
             await self.drain_render()
+            if self._delete_jobs:
+                for session in list(self.manager.sessions.values()):
+                    self.manager.cancel(session)
+                for task in list(self.manager.fork_tasks):
+                    task.cancel()
+                await asyncio.gather(*list(self._delete_jobs), return_exceptions=True)
             await self.manager.shutdown()
             if self._ui_jobs:
                 await asyncio.gather(*list(self._ui_jobs), return_exceptions=True)
@@ -684,7 +981,7 @@ def main():
     parser.add_argument('--prompt', help='无 TTY 单次执行；默认拒绝待确认操作')
     parser.add_argument('--json', action='store_true', help='headless 输出单个 JSON 对象')
     parser.add_argument('--session', help='headless 继续已有会话 ID 或唯一前缀')
-    parser.add_argument('--policy', choices=['readonly', 'standard', 'trusted'], help='headless 显式权限档位，默认 standard 并拒绝人工确认')
+    parser.add_argument('--policy', choices=['readonly', 'standard', 'trusted', 'smart', 'full_access'], help='headless 显式权限档位，默认 standard 并拒绝人工确认')
     args = parser.parse_args()
     if args.platform:
         from ai_agent_startup.core.platform_info import platform_info

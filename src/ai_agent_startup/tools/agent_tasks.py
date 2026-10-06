@@ -9,9 +9,9 @@ from ai_agent_startup.tools.sandbox import _context, ask_permission, audit, trun
 
 
 class DelegateArgs(BaseModel):
-    """确认后启动独立子代理；先声明任务、工具子集与轮次，用 task_status 查询结果。"""
+    """按父权限确认后启动独立上下文的子 Agent，共享父工作区；省略工具列表继承父完整工具集。当前子 Agent 不能递归委派，用 task_status 查询结果。"""
     task: str = Field(min_length=1, max_length=16000)
-    tool_names: list[str]
+    tool_names: list[str] | None = None
     max_rounds: int = Field(default=6, ge=1, le=256)
     delay_seconds: float = Field(default=0, ge=0, le=86400, allow_inf_nan=False)
 
@@ -25,7 +25,7 @@ def bridge(operation):
     if context is None or context.agent_tasks is None or context.event_loop is None:
         raise PermissionError('当前会话未启用子代理')
     async def run():
-        result = operation(context.agent_tasks, context.root.name)
+        result = operation(context.agent_tasks, context.session_id or context.root.name)
         if asyncio.iscoroutine(result):
             return await result
         return result
@@ -33,7 +33,7 @@ def bridge(operation):
     return asyncio.run_coroutine_threadsafe(run(), context.event_loop).result()
 
 
-def delegate(task, tool_names, max_rounds=6, delay_seconds=0):
+def delegate(task, tool_names=None, max_rounds=6, delay_seconds=0):
     detail = f'{task}\n工具={tool_names}；轮次={max_rounds}；延时={delay_seconds:g}s'
     if not ask_permission('delegate', detail, force_confirmation=True):
         return '[已取消] 用户未确认委派。'

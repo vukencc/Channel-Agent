@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from ai_agent_startup.core.log import get_logger
 from pathlib import Path
 from threading import RLock
+from weakref import WeakSet
 
 import numpy as np
 
@@ -27,6 +28,7 @@ logger = get_logger(__name__)
 _document_cache = OrderedDict()
 _document_lock = RLock()
 _file_events = {}
+_live_indexes = WeakSet()
 
 
 class TextHTMLParser(HTMLParser):
@@ -251,6 +253,27 @@ class RetrievalIndex:
         if store:
             store.flush()
         check_memory_budget()
+        with _lock:
+            _live_indexes.add(self)
+
+    def close(self) -> None:
+        """检索已空闲后释放磁盘映射、模型及结果引用。"""
+        close_lexical = getattr(self.lexical, 'close', None)
+        if close_lexical is not None:
+            close_lexical()
+        mapping = getattr(self.vectors, '_mmap', None)
+        if mapping is not None:
+            mapping.close()
+        self.query_cache.clear()
+        self.parents.clear()
+        self.children.clear()
+        self.by_id.clear()
+        self.model = None
+        self.lexical = None
+        self.vectors = np.empty((0, 0), dtype=np.float32)
+        self.parent_indexes = np.empty(0, dtype=np.int32)
+        if hasattr(self, 'ann_index'):
+            del self.ann_index
 
     def dense(self, query: str, limit: int, allowed: set[int] | None = None) -> list[dict]:
         check_memory_budget()
@@ -306,6 +329,20 @@ class RetrievalIndex:
 _lock = RLock()
 _cached_key = None
 _cached_index = None
+
+
+def clear_runtime_cache() -> None:
+    global _cached_key, _cached_index
+    with _lock, _document_lock:
+        for index in list(_live_indexes):
+            index.close()
+        _cached_key = _cached_index = None
+        for events in _file_events.values():
+            if events is not None:
+                events.close()
+        _file_events.clear()
+        _document_cache.clear()
+        _split_cached.cache_clear()
 
 
 def get_index(root: Path | None = None, *, track_updates: bool = False) -> RetrievalIndex:

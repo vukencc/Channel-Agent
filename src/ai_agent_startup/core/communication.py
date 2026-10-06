@@ -18,6 +18,8 @@ class SessionCommunication:
         session = self.manager.sessions.get(identifier)
         if session is None:
             raise PermissionError('会话不存在')
+        if session.deleting:
+            raise PermissionError('会话正在删除，不能读写信箱')
         return session
 
     def _path(self, identifier):
@@ -71,7 +73,8 @@ class SessionCommunication:
         context = _context.get()
         if context is None:
             context = ToolContext(self.manager.store.workspace_path(sender_id),
-                self.manager.store.directory(sender_id) / 'audit.jsonl', lambda *_: False, sender.cancelled)
+                self.manager.store.directory(sender_id) / 'audit.jsonl', lambda *_: False, sender.cancelled,
+                session_id=sender_id)
         with tool_context(context):
             audit('session_message_sent', recipient_id=recipient_id, seq=item['seq'], chars=len(content))
         return item
