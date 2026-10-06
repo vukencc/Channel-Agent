@@ -223,7 +223,7 @@ def freeze_queries():
         'calibration': ordered[:50],
         'evaluation': ordered[50:150],
     }
-    target = ROOT / 'dev/rag/archive/full_corpus/inputs/queries.json'
+    target = DATA / 'frozen-queries.json'
     content = json.dumps(manifest, ensure_ascii=False, indent=2) + '\n'
     if target.exists() and target.read_text() != content:
         raise RuntimeError('Frozen query manifest differs; refusing to replace it')

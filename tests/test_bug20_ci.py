@@ -8,7 +8,7 @@ def test_ci_runs_locked_offline_suite_and_probes_real_sandbox():
     assert 'pull_request:' in text
     assert 'uv sync --locked' in text
     assert "pytest -m 'not integration' -q" in text
-    assert 'dev/ci_sandbox_probe.py' in text
+    assert 'scripts/ci_sandbox_probe.py' in text
     assert 'continue-on-error' not in text
     assert 'workflow_dispatch:' in text and 'actions/cache@' in text
 

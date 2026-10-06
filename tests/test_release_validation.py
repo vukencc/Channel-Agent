@@ -2,7 +2,7 @@
 
 import pytest
 
-from dev.check_release import validate_release
+from scripts.check_release import validate_release
 
 
 @pytest.fixture

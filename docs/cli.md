@@ -145,7 +145,7 @@ CLI/session 工具本轮实现、验证和合成界面基准见 [交付报告](c
 `.agent/cli.log` 中的 `model_metrics`、`tool_metrics` 及各会话 `session.json` 的 `last_run` 记录首包、首个可见输出、最大帧间隔、总时长和工具用时。
 工具用时包含用户确认等待；字符数不是 token 数。诊断日志不记录思考正文；思考详情保存在私有会话历史中。
 
-可运行 `uv run python -m dev.diagnose --live --runs 3 --thinking disabled --read-timeout 60` 做真实模型工程探测。
+可运行 `uv run python -m scripts.diagnose --live --runs 3 --thinking disabled --read-timeout 60` 做真实模型工程探测。
 它会使用当前 API 配额，在临时隔离工作区自动确认测试操作；仅保存测试输出至 `.cache/reports/system-diagnostics/`，不修改真实会话。
 
 
@@ -160,7 +160,7 @@ CLI/session 工具本轮实现、验证和合成界面基准见 [交付报告](c
 流超时、截断或无效调用最多触发一次“小步骤恢复”，不会重放已经执行的工具；第二次失败即停止并保留已完成工作。
 每轮默认最多 24 次模型交互，模型每次会看到剩余次数并预留收尾。用尽后显示“阶段保存·可继续”，持久保存为 checkpoint，重启后也可继续；不会宣称任务已经全部完成。
 
-使用 `dev.diagnose` 的 `--replay-session .agent/<ID>/session.json` 可在临时工作区重放该会话最后一条用户要求。
+使用 `scripts.diagnose` 的 `--replay-session .agent/<ID>/session.json` 可在临时工作区重放该会话最后一条用户要求。
 该选项复制历史与工作区，不修改原始记录；每个测试任务最多 240 秒，测试确认自动批准，输出含私有会话副本，应保留在忽略目录。
 详细故障与复验见 [长文件修复报告](large-file-recovery.md)。
 

@@ -47,8 +47,8 @@ chore: 更新依赖锁定
 
 ```bash
 uv run pytest -m 'not integration' -q          # 离线回归，必须全绿
-uv run pytest tests/test_context.py -q          # 针对性回归
-uv run python dev/ci_sandbox_probe.py          # Linux：真实 Bubblewrap/prlimit 探测
+uv run pytest tests/test_command.py -q           # 针对性回归
+uv run python scripts/ci_sandbox_probe.py      # Linux：真实 Bubblewrap/prlimit 探测
 ```
 
 可选（需要本地模型或公开语料）：

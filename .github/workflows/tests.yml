@@ -38,7 +38,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux
       - run: uv sync --locked --extra web
       - name: 验证真实隔离能力，不静默跳过
-        run: uv run python dev/ci_sandbox_probe.py
+        run: uv run python scripts/ci_sandbox_probe.py
       - run: uv run pytest -m 'not integration' -q
   integration:
     if: github.event_name == 'workflow_dispatch' && inputs.integration
@@ -61,9 +61,9 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: .cache/rag
-          key: rag-models-v1-${{ hashFiles('dev/rag/prepare_assets.py', 'dev/rag/inputs/quality.json') }}
+          key: rag-models-v1-${{ hashFiles('scripts/rag/prepare_assets.py', 'scripts/rag/inputs/quality.json') }}
       - run: |
-          uv run python dev/rag/prepare_assets.py --only embedding
-          uv run python dev/rag/prepare_assets.py --only reranker
-          uv run python dev/rag/prepare_assets.py --only corpus
+          uv run python scripts/rag/prepare_assets.py --only embedding
+          uv run python scripts/rag/prepare_assets.py --only reranker
+          uv run python scripts/rag/prepare_assets.py --only corpus
       - run: uv run pytest -m integration -q

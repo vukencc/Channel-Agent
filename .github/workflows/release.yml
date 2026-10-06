@@ -31,7 +31,7 @@ jobs:
         run: |
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           git merge-base --is-ancestor HEAD origin/main
-          python dev/check_release.py "$RELEASE_TAG"
+          python scripts/check_release.py "$RELEASE_TAG"
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
@@ -39,7 +39,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux
       - run: uv sync --locked --extra web
       - name: 验证真实隔离能力
-        run: uv run python dev/ci_sandbox_probe.py
+        run: uv run python scripts/ci_sandbox_probe.py
       - run: uv run pytest -m 'not integration' -q
 
   image:

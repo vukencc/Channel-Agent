@@ -8,5 +8,5 @@ def test_legacy_module_has_no_second_agent_loop():
 
 
 def test_contributor_test_paths_match_repository():
-    text = Path('AGENTS.md').read_text()
+    text = Path('CONTRIBUTING.md').read_text()
     assert 'tests/test_command.py' in text

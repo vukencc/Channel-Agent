@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from dev.rag.dataset import load_inputs
+from scripts.rag.dataset import load_inputs
 
 
 @pytest.fixture

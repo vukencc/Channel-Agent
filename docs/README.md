@@ -15,6 +15,7 @@
 - [平台设计](platform-design.md)：headless/API/MCP/多模态与容器后端的边界契约。
 - [Codex 多代理系统](codex-multiagent.md)：子代理角色、触发条件、并行与写入策略、扩展与验证。
 - [发布说明](release.md)：版本冻结、标签与发布清单。
+- [贡献指南](../CONTRIBUTING.md)：开发、验证与提交约定；跟踪的 CI/RAG 工具位于 `scripts/`，`dev/`、`.codex/` 与 `AGENTS.md` 是本地资产，不随 clone 分发。
 
 ## 交付与过程记录（重构前布局）
 

@@ -1,8 +1,8 @@
 # Codex 多代理（subagent）协作系统
 
-本文说明本仓库为 OpenAI Codex CLI 设计的子代理系统：它由哪些文件组成、Codex 在什么
-情况下启动哪个子代理、并行与写入冲突如何处理，以及如何扩展。目标读者是维护者和
-Codex 本身（`AGENTS.md` 中的路由规则是 Codex 读取的调度策略）。
+本文说明维护者可在本地工作区使用的 OpenAI Codex CLI 子代理系统：它由哪些文件组成、Codex 在什么
+情况下启动哪个子代理、并行与写入冲突如何处理，以及如何扩展。`.codex/` 与
+`AGENTS.md` 是本地维护资产，不纳入版本控制，也不会随 clone 分发；本页描述其约定供本地使用。
 
 ## 背景与目标
 
@@ -14,7 +14,7 @@ Codex 支持多代理工作流：主代理（`/root`）可以用 `spawn_agent` �
 
 - **必须显式请求才会 spawn。** 系统提示中的 `<multi_agent_mode>` 明确说明：除非用户或
   适用的 `AGENTS.md`/skill 指令明确要求委派或并行代理，否则不要启动子代理。因此本项目把
-  调度策略写进根 `AGENTS.md`，作为常驻的显式指令。
+  调度策略写进本地根目录 `AGENTS.md`，作为常驻的显式指令。
 - **并发槽位有限。** 当前构建提供 4 个并发槽位（含根代理），并建议批量不超过 3 个 worker。
 - **共享工作区。** 所有代理使用同一个容器、同一个工作目录；任一代理的改动立即对其他代理
   可见，因此并行写入同一文件会产生冲突。
@@ -36,7 +36,7 @@ Codex 支持多代理工作流：主代理（`/root`）可以用 `spawn_agent` �
     reviewer.toml             # reviewer：只读缺陷优先评审
     docs-writer.toml          # docs_writer：文档同步
     perf-analyst.toml         # perf_analyst：性能测量
-AGENTS.md                     # “Multi-agent Workflow” 章节：调度策略（Codex 读取）
+AGENTS.md                     # 本地 “Multi-agent Workflow” 章节：调度策略（Codex 读取）
 docs/codex-multiagent.md      # 本文
 ```
 
@@ -99,7 +99,7 @@ docs/codex-multiagent.md      # 本文
 
 子代理改完代码后，**最终验证由主线程负责**：运行
 `uv run pytest -m 'not integration' -q`；若涉及工具或沙箱边界，再运行
-`uv run python dev/ci_sandbox_probe.py`。
+`uv run python scripts/ci_sandbox_probe.py`。
 
 ## 兼容与回退
 
@@ -129,7 +129,7 @@ docs/codex-multiagent.md      # 本文
 
 ## 相关文档
 
-- 仓库约定与调度策略：[AGENTS.md](../AGENTS.md)
+- 本地仓库约定与调度策略：根目录 `AGENTS.md`（仅本地文件，不随 clone 分发）
 - 贡献流程：[CONTRIBUTING.md](../CONTRIBUTING.md)
 - 沙箱语义：[sandbox.md](sandbox.md)
 - RAG 工程与验证：[rag.md](rag.md)
