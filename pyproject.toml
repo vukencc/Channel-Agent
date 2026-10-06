@@ -1,6 +1,6 @@
 [project]
 name = "ai-agent-startup"
-version = "0.2.0"
+version = "0.2.1"
 description = "一个带工具调用（function calling）的最小流式对话 Agent"
 requires-python = ">=3.12"
 dependencies = [
@@ -20,8 +20,10 @@ dependencies = [
 
 [project.scripts]
 ai-agent-startup = "ai_agent_startup.main:main"
+ai-agent-web = "ai_agent_startup.web.server:main"
 
 [project.optional-dependencies]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1"]
 documents = ["pypdf", "python-docx"]
 vision = ["Pillow>=12,<13"]
 ann = [

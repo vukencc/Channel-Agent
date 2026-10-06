@@ -55,3 +55,16 @@ def default_prompt():
 
 FILE_WORKFLOW_GUIDE = file_workflow_guide()
 DEFAULT_PROMPT = default_prompt()
+
+
+def permission_mode_guide(policy: str) -> str:
+    if policy == 'smart':
+        return ('\n当前权限模式为 Smart：本地规则自动允许已验证的低风险操作，'
+                '高风险和未知风险由具体工具申请用户确认。你应判断内容敏感性和操作影响，'
+                '在工具 reason 中说明风险；本地无法识别的敏感内容计划，'
+                '若当前工具集包含 request_permission，则先用它主动申请。'
+                '该申请不改变权限档位，也不替代具体工具的安全检查。拒绝或超时后停止该操作，不换工具绕过。')
+    if policy == 'full_access':
+        return ('\n当前权限模式为 Full Access：用户已允许直接调用当前工具集，不再申请工具确认。'
+                '路径边界、隔离沙箱、只读目录、配额、超时和审计仍有效；不得绕过。')
+    return ''

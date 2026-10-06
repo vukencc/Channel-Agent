@@ -6,6 +6,7 @@ import logging
 from ai_agent_startup import config
 from ai_agent_startup.core.llm import call_model
 from ai_agent_startup.core.sessions import SessionManager
+from ai_agent_startup.core.session_service import open_session
 
 
 def redact_result(value):
@@ -44,7 +45,7 @@ async def run_headless(store, prompt: str, *, session_id: str | None = None,
                 raise ValueError('session 必须是唯一的已保存会话 ID 或前缀')
             session = matches[0]
         else:
-            session = manager.create('Headless 会话')
+            session = open_session(manager, 'Headless 会话')
         start = len(session.record['messages'])
         manager.submit(session, prompt)
         try:

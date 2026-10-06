@@ -168,13 +168,17 @@ async def submit_image(manager, session, path, prompt):
     submitted = False
     try:
         await manager.flush()
-        root = await _drained_thread(manager.store.workspace, session.id)
-        data = await _drained_thread(prepare_image, root, path)
+        root = await _drained_thread(manager.workspace, session)
+        def prepare_locked():
+            guard = manager.command_jobs.guard if manager.command_jobs is not None else manager.workspaces.guard
+            with guard(root, session.cancelled):
+                return prepare_image(root, path)
+        data = await _drained_thread(prepare_locked)
         loop = asyncio.get_running_loop()
         def approve():
             context = ToolContext(root, manager.store.directory(session.id) / 'audit.jsonl',
                 lambda detail, timeout: manager._confirm(session, loop, detail, timeout), session.cancelled,
-                permission_policy=manager.permission_override or session.record.get('permission_policy'))
+                permission_policy=manager.permission_override or session.record.get('permission_policy'), session_id=session.id)
             with tool_context(context):
                 detail = f'{path}；标准化 JPEG {len(data)} 字节；sha256={hashlib.sha256(data).hexdigest()}；目标={urlparse(config.BASE_URL or "").hostname}/{model}。后续上下文可能向同一模型再次发送。'
                 allowed = ask_permission('image_upload', detail, force_confirmation=True)

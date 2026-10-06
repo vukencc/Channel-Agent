@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 from threading import RLock
+from weakref import WeakSet
 
 from ai_agent_startup import config
 
@@ -17,6 +18,11 @@ class ByteCache:
         self.limit, self.bytes = limit, 0
         self.items = OrderedDict()
         self.lock = RLock()
+
+    def clear(self) -> None:
+        with self.lock:
+            self.items.clear()
+            self.bytes = 0
 
     def get(self, key):
         with self.lock:
@@ -38,6 +44,8 @@ class ByteCache:
 
 
 _cache = ByteCache(0)
+_stores = WeakSet()
+_stores_lock = RLock()
 
 
 def shared_cache():
@@ -63,13 +71,16 @@ def check_memory_budget(extra_bytes=0):
 
 class TextStore:
     def __init__(self, directory):
+        self.lock = RLock()
+        self._closed = False
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / 'text-content.sqlite'
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('CREATE TABLE IF NOT EXISTS texts (id TEXT PRIMARY KEY, content TEXT NOT NULL)')
-        self.lock = RLock()
         self.pending = 0
+        with _stores_lock:
+            _stores.add(self)
 
     def put(self, text):
         key = hashlib.sha256(text.encode()).hexdigest()
@@ -98,14 +109,28 @@ class TextStore:
             self.db.commit()
             self.pending = 0
 
+    def close(self) -> None:
+        with self.lock:
+            if hasattr(self, 'db') and not self._closed:
+                self.db.close()
+                self._closed = True
+
     def __del__(self):
-        if hasattr(self, 'db'):
-            self.db.close()
+        self.close()
 
 
 @lru_cache(maxsize=4)
 def text_store(directory):
     return TextStore(directory)
+
+
+def clear_runtime_cache() -> None:
+    with _stores_lock:
+        stores = list(_stores)
+    for store in stores:
+        store.close()
+    text_store.cache_clear()
+    _cache.clear()
 
 
 class TextRecord(Mapping):

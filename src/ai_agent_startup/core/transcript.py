@@ -6,7 +6,8 @@ class Transcript:
     PAGE_LINES = 180
     LINE_CHARS = 160
 
-    def __init__(self):
+    def __init__(self, *, show_details=True):
+        self.show_details = show_details
         self.messages = None
         self.count = 0
         self.lines = []
@@ -27,19 +28,29 @@ class Transcript:
     def sync(self, messages):
         if messages is not self.messages or len(messages) < self.count:
             self.messages, self.count, self.lines, self.tool_names = messages, 0, [], {}
-        for number in range(self.count, len(messages)):
+        count = len(messages)
+        for number in range(self.count, count):
             message = messages[number]
             role = message['role']
             if role == 'system':
                 continue
+            for call in message.get('tool_calls', []):
+                self.tool_names[call['id']] = call['function']['name']
+            if not self.show_details and (role == 'tool' or (
+                    role == 'assistant' and not message.get('content') and message.get('tool_calls'))):
+                continue
             label = {'user': '你', 'assistant': 'Agent', 'tool': '工具结果'}.get(role, role)
+            if '_agent_message' in message:
+                label = 'Agent 来信 · ' + message['_agent_message']['sender_id'][:8]
             if role == 'tool':
                 label += ' · ' + self.tool_names.get(message.get('tool_call_id'), '')
             self.lines += ['', f'━━ {label} · 消息 {number} ━━']
             self.lines += self.text_lines(message.get('content') or '')
+            if self.show_details and message.get('reasoning_content'):
+                self.lines += ['┌ 思考详情', *self.text_lines(message['reasoning_content'])]
             for reference in message.get('_attachments', []):
                 self.lines += [f'图片附件 · {reference.get("sha256", "")[:16]}… · 已批准模型 {reference.get("model", "")}']
-            for call in message.get('tool_calls', []):
+            for call in message.get('tool_calls', []) if self.show_details else []:
                 name = call['function']['name']
                 self.tool_names[call['id']] = name
                 self.lines += ['┌ 工具调用：' + name]
@@ -52,7 +63,8 @@ class Transcript:
                         self.lines += self.text_lines(arguments)
                 except (ValueError, KeyError):
                     self.lines += self.text_lines(call['function'].get('arguments', ''))
-        self.count = len(messages)
+        # 主线程可能在格式化期间追加消息；只提交本次实际处理的范围。
+        self.count = count
 
     def page(self, partial='', extra=''):
         tail = (['', '━━ Agent · 生成中 ━━'] + self.text_lines(partial)) if partial else []

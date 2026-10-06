@@ -1,0 +1,19 @@
+# Project-scoped Codex configuration for the Channel-Agent (ai-agent-startup) repo.
+#
+# The subagent roster itself lives in `.codex/agents/*.toml`; the dispatch policy
+# lives in the root `AGENTS.md`. Design notes: docs/codex-multiagent.md.
+
+# Keep the full root -> cwd AGENTS.md chain in context as instructions grow.
+project_doc_max_bytes = 65536
+
+[features]
+# Subagent workflows (spawn_agent / followup_task / wait_agent). Stable in Codex,
+# set explicitly so the intent is visible in the repo.
+multi_agent = true
+
+[agents]
+# Concurrency cap. Current Codex builds expose 4 slots including the root agent;
+# the dispatch policy keeps batches to at most three workers.
+max_threads = 4
+# Keep delegation flat: children may spawn, but we do not rely on deeper nesting.
+max_depth = 1

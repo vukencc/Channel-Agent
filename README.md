@@ -12,13 +12,13 @@ uv run ai-agent-startup
 
 ## 模板与分支开发
 
-本仓库作为模板基线维护：`main` 保持可用，历史版本用注解 tag 冻结（当前 `v0.2.0`）。
+本仓库作为模板基线维护：`main` 保持可用，历史版本用注解 tag 冻结（当前 `v0.2.1`）。
 
 ```bash
 # 从基线开启一个新方向
-git switch -c feat/<topic> v0.2.0
+git switch -c feat/<topic> v0.2.1
 # 并行开发（不来回切分支）
-git worktree add ../ai-agent-<topic> v0.2.0 -b feat/<topic>
+git worktree add ../ai-agent-<topic> v0.2.1 -b feat/<topic>
 ```
 
 较大分歧方向可在 GitHub 上用「Use this template」新建独立仓库（只复制默认分支内容）。
@@ -27,7 +27,7 @@ git worktree add ../ai-agent-<topic> v0.2.0 -b feat/<topic>
 ## Docker（开包即用）
 
 ```bash
-cp .env.example .env                                   # 填入模型凭据
+if [ ! -f .env ]; then cp .env.example .env; fi        # 首次使用时创建并填写模型凭据
 docker pull ghcr.io/vukencc/channel-agent:v0.2.1       # 或 docker load < ai-agent-startup-v0.2.1-image.tar.gz
 docker run --rm -it --env-file .env -e TERM=xterm-256color \
   -v ai-agent-state:/data/state -v ai-agent-sandbox:/data/sandbox -v ai-agent-rag:/data/rag-cache \
@@ -36,6 +36,7 @@ docker run --rm -it --env-file .env -e TERM=xterm-256color \
 
 容器已内置 CPU 版 torch 与混合 RAG 依赖（约 2.3GB）；首次 `rag_search` 会自动下载本地模型到
 `/data/rag-cache`。命令沙箱、headless、compose、镜像归档与发布见 [Docker 指南](docs/docker.md)。
+本地构建镜像见 [Docker 指南](docs/docker.md)。
 
 ## 结构
 
@@ -60,7 +61,7 @@ data/raw/              应用知识库
 ## 验证
 
 ```bash
-uv run pytest -m 'not integration'          # 离线回归（当前基线：319 passed, 2 skipped, 5 deselected）
+uv run pytest -m 'not integration'          # 离线回归
 uv run python dev/ci_sandbox_probe.py       # Linux：真实 Bubblewrap/prlimit 探测
 # 已有本地模型与公开语料时：
 RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run pytest -m integration -q
@@ -83,8 +84,11 @@ uv run python -m dev.rag.run_engineering
 `uv run ai-agent-startup` 现在启动全屏 Agent CLI。Ctrl+N 新建会话，左侧切换 Agent，Enter 发送，
 Ctrl+C 停止当前任务，Ctrl+Q 退出。多个会话并发执行，各自拥有历史、记忆和工作区。
 `/remember 内容` 保存记忆，`/export md` 或 `/export json` 导出实体文件；重启自动恢复 `.agent/` 下的数据。
-工具输出写入 `crud_tests/<会话ID>/`，`/where` 查看实际路径。PageUp/PageDown 浏览完整历史，Ctrl+End 跟随最新，F2 扩大对话区域。
-完整操作与持久化说明见 [CLI 指南](docs/cli.md)。
+每个根会话拥有独立项目工作区，子 Agent 自动共享直接父 Agent 的项目文件；上下文、记忆和审计仍独立。工具输出写入对应根会话的 `crud_tests/<会话ID>/`，`/where` 查看实际路径。PageUp/PageDown 浏览完整历史，Ctrl+End 跟随最新，F2 扩大对话区域。
+完整操作与持久化说明见 [CLI 指南](docs/cli.md)，命令选择、权限模式和会话回收见 [CLI 命令与权限模式](docs/cli-command-modes.md)。
+子 Agent 创建、父子持久消息和限制见[会话工具说明](docs/session-tools.md)；本轮实现、回归验证与合成 UI 基准见[CLI/session 工具交付报告](docs/cli-session-delivery-2026-09-29.md)。
+可选本机浏览器界面安装与使用见 [WebUI 指南](docs/web-ui.md)。WebUI 默认无需令牌并只监听本机，支持预览并清理缓存、日志及会话记录；它与 CLI 共用会话状态目录，同一状态目录不能同时由两个进程打开。
+可选任务计划默认关闭，启用后的工具与限制见 [任务计划使用说明](docs/task-plans.md)。
 
 ## 可选质量回归
 

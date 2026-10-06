@@ -18,16 +18,16 @@ uv run ai-agent-startup --platform        # 平台/沙箱能力说明
 ## 分支模型
 
 - `main` 是模板/稳定分支，只通过 PR 合入，不直接 push、不 force push。
-- 历史版本用注解 tag 冻结（当前基线 `v0.1.0`），tag 一旦推送不再移动。
+- 历史版本用注解 tag 冻结（当前基线 `v0.2.1`），tag 一旦推送不再移动。
 - 新方向从基线 tag 开分支，而不是从 `main` 的最新提交随意分叉：
 
 ```bash
-git switch -c feat/<topic> v0.1.0
+git switch -c feat/<topic> v0.2.1
 # 并行开发（避免反复切分支）
-git worktree add ../ai-agent-<topic> v0.1.0 -b feat/<topic>
+git worktree add ../ai-agent-<topic> v0.2.1 -b feat/<topic>
 ```
 
-- 分支前缀：`feat/`、`fix/`、`perf/`、`docs/`、`ci/`、`chore/`、`exp/`（实验性方向）。
+- 分支前缀：`feat/`、`fix/`、`perf/`、`docs/`、`ci/`、`chore/`、`exp/`（实验性方向）、`codex/`（Codex 工作分支）。
 - 长期分歧较大的方向建议用 GitHub「Use this template」新建独立仓库，避免同仓长期分叉。
 
 ## 提交信息

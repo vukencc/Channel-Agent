@@ -2,7 +2,7 @@ name: Regression tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'feat/**', 'fix/**', 'perf/**', 'docs/**', 'ci/**', 'chore/**', 'exp/**', 'codex/**']
   workflow_dispatch:
     inputs:
       integration:
@@ -36,7 +36,7 @@ jobs:
           python-version: '3.12'
           enable-cache: true
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux
-      - run: uv sync --locked
+      - run: uv sync --locked --extra web
       - name: 验证真实隔离能力，不静默跳过
         run: uv run python dev/ci_sandbox_probe.py
       - run: uv run pytest -m 'not integration' -q

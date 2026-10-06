@@ -23,7 +23,7 @@ def current_jobs():
     context = _context.get()
     if context is None or context.job_manager is None:
         raise PermissionError('当前会话未启用后台命令')
-    return context.job_manager, context.root.name
+    return context.job_manager, context.session_id or context.root.name
 
 
 def start_command_job(command, reason='', network=False, timeout=None):

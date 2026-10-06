@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### Added
+- 可配置的 Agent 任务计划工具，支持依赖步骤、执行关联、证据记录与中断恢复；CLI 提供只读查看，WebUI 提供只读计划看板。该功能默认关闭。
+- 可选本机 WebUI，支持会话管理、任务监控、文件预览及清理缓存、日志和会话记录。
+- CLI 命令搜索与补全、会话权限模式选择、会话回收维护，以及 Smart 风险规则和显式权限申请。
+
+### Changed
+- CI 对常用开发分支 push 执行回归并安装 WebUI 可选依赖；发布 tag 校验包版本、锁文件、更新日志、注解格式及 `main` 提交，并新增 PR 模板。
+
+### Fixed
+- 共享工作区的文件与图片读取和命令操作共用锁，避免父目录符号链接竞态。
+- 修复取消后 Web 计划读取、归档计划分页、CLI 清理与删除并发互等，以及发送期间新草稿被覆盖的问题。
+
+## [0.2.1] - 2026-09-28
+
+### Changed
+- Docker 镜像和开发环境固定使用 PyTorch CPU 索引，默认 reranker 使用 CPU 推理并缩小镜像体积。
+
 ## [0.2.0] - 2026-09-28
 
 ### Changed
@@ -35,7 +52,8 @@
 - 全量模型推理峰值内存、RAG p95/吞吐权衡、真实视觉服务、Windows/macOS 原生能力尚未验收，详见 `docs/optimization-delivery.md`。
 - 容器后端（Docker/Podman 作为命令沙箱）仅有设计契约，未实现，见 `docs/platform-design.md`。
 
-[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/vukencc/Channel-Agent/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vukencc/Channel-Agent/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/vukencc/Channel-Agent/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/vukencc/Channel-Agent/releases/tag/v0.1.0

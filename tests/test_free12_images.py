@@ -1,5 +1,7 @@
 import asyncio
 import json
+import threading
+from contextlib import contextmanager
 
 import pytest
 from PIL import Image
@@ -136,4 +138,63 @@ def test_retry_image_turn_copies_attachment_into_new_branch(setup, monkeypatch):
         assert seen[-1][1]['type'] == 'image_url'
         assert '_attachments' in child.record['messages'][-2]
         await manager.shutdown()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('command_jobs_enabled', [False, True])
+def test_image_preparation_waits_for_workspace_writer(setup, monkeypatch, command_jobs_enabled):
+    from ai_agent_startup.core import images
+
+    monkeypatch.setattr(config, 'ENABLE_COMMAND_JOBS', command_jobs_enabled)
+    attempted, prepared = threading.Event(), threading.Event()
+
+    def fake_prepare(root, path):
+        prepared.set()
+        return b'jpeg data'
+
+    monkeypatch.setattr(images, 'prepare_image', fake_prepare)
+
+    async def model(*args, **kwargs):
+        pytest.fail('denied image should not invoke model')
+
+    async def run():
+        manager = SessionManager(setup, model=model, confirmation_handler=lambda *_: False)
+        release, entered = threading.Event(), threading.Event()
+        holder = None
+        try:
+            session = manager.create()
+            await manager.flush()
+            root = manager.workspace(session)
+            owner = manager.command_jobs if command_jobs_enabled else manager.workspaces
+            original_guard = owner.guard
+
+            @contextmanager
+            def observed_guard(path, cancelled):
+                attempted.set()
+                with original_guard(path, cancelled):
+                    yield
+
+            monkeypatch.setattr(owner, 'guard', observed_guard)
+
+            def hold_writer():
+                with original_guard(root, threading.Event()):
+                    entered.set()
+                    release.wait(timeout=5)
+
+            holder = threading.Thread(target=hold_writer, daemon=True)
+            holder.start()
+            assert await asyncio.to_thread(entered.wait, 2)
+            upload = asyncio.create_task(images.submit_image(manager, session, 'photo.png', 'describe'))
+            assert await asyncio.to_thread(attempted.wait, 2)
+            assert not prepared.is_set()
+            assert not upload.done()
+            release.set()
+            assert await asyncio.wait_for(upload, 2) is False
+            assert prepared.is_set()
+        finally:
+            release.set()
+            if holder is not None:
+                await asyncio.to_thread(holder.join, 2)
+            await manager.shutdown()
+
     asyncio.run(run())

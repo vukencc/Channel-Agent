@@ -65,6 +65,7 @@ class ToolContext:
     job_manager: object | None = None
     agent_tasks: object | None = None
     event_loop: object | None = None
+    session_id: str | None = None
 
 
 _context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)
@@ -159,7 +160,7 @@ def _audit_path() -> Path:
 def audit(event: str, **fields) -> None:
     """写一条审计记录（文件 + 日志）。审计写入失败不影响主流程。"""
     context = _context.get()
-    prefix = _audit_prefix(context.root.name if context else None,
+    prefix = _audit_prefix((context.session_id or context.root.name) if context else None,
         context.turn_id if context else None, context.tool_call_id if context else None,
         _audit_second(int(time.time())), event)
     if not _audit_keys.isdisjoint(fields):
@@ -212,9 +213,10 @@ def confirm(prompt: str, timeout: float) -> bool:
 
 
 def current_policy() -> str:
+    from ai_agent_startup.core.permissions import PERMISSION_POLICIES
     context = _context.get()
     policy = context.permission_policy if context and context.permission_policy is not None else config.TOOL_PERMISSION_POLICY
-    if policy not in {'readonly', 'standard', 'trusted'}:
+    if policy not in PERMISSION_POLICIES:
         raise SandboxError('无效权限策略，拒绝执行')
     return policy
 
@@ -253,6 +255,18 @@ def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[st
         audit('confirm', action=action, detail=detail, reason=reason, allowed=False,
               decision_source='readonly_policy' if policy == 'readonly' else 'cancelled')
         return False
+    if policy == 'full_access':
+        audit('confirm', action=action, detail=detail, reason=reason, allowed=True,
+              decision_source='full_access')
+        return True
+    if policy == 'smart' and not force_confirmation:
+        from ai_agent_startup.core.permissions import evaluate_operation_risk
+        risk = evaluate_operation_risk(action, detail, paths=paths, command=command)
+        if not risk.requires_confirmation:
+            allowed = not cancellation_requested()
+            audit('confirm', action=action, detail=detail, reason=reason, allowed=allowed,
+                  decision_source='smart_safe' if allowed else 'cancelled')
+            return allowed
     if policy == 'trusted' and not force_confirmation:
         try:
             rule = _trusted_rule(action, paths, command)

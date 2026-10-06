@@ -202,4 +202,4 @@ def glob(pattern: str = '*', limit: int = 100) -> str:
 def register_file_extras():
     for name, model in [('mkdir', MkdirArgs), ('move', TransferArgs), ('copy', TransferArgs),
                         ('stat', StatArgs), ('glob', GlobArgs)]:
-        register_tool(model, name=name, concurrency='read' if name in {'stat', 'glob'} else 'serial')(globals()[name])
+        register_tool(model, name=name, concurrency='read' if name in {'stat', 'glob'} else 'serial', workspace_access=True)(globals()[name])

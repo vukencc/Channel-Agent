@@ -14,8 +14,8 @@ from ai_agent_startup.tools.sandbox import audit
 
 
 class AgentTasks:
-    def __init__(self, manager):
-        if not config.ENABLE_SESSION_BUDGETS:
+    def __init__(self, manager, *, require_budget_config=True):
+        if require_budget_config and not config.ENABLE_SESSION_BUDGETS:
             raise ValueError('ENABLE_AGENT_TASKS 需要 ENABLE_SESSION_BUDGETS')
         self.manager = manager
         self.directory = manager.store.root / 'agent-tasks'
@@ -37,11 +37,13 @@ class AgentTasks:
 
     async def _save(self, identifier):
         body = json.dumps(self.records[identifier], ensure_ascii=False)
-        await asyncio.to_thread(self.manager.store.atomic_write, self.directory / (identifier + '.json'), body)
+        # 调用工具的默认线程池可能已满；持久化不能反向等待该线程池。
+        await asyncio.get_running_loop().run_in_executor(self.manager.store.writer,
+            self.manager.store.atomic_write, self.directory / (identifier + '.json'), body)
 
-    async def start(self, parent, task, tool_names, max_rounds, delay_seconds=0):
+    async def start(self, parent, task, tool_names, max_rounds, delay_seconds=0, *, title=None, workspace_mode=None):
         """内部入口；调用方须先完成委派确认。"""
-        if self.closed or self.manager.closing or parent.cancelled.is_set():
+        if self.closed or self.manager.closing or parent.cancelled.is_set() or parent.deleting:
             raise ValueError('父会话已取消或任务管理器正在关闭')
         if parent.record.get('delegated_from'):
             raise ValueError('子代理不能递归委派')
@@ -51,9 +53,10 @@ class AgentTasks:
             raise ValueError('延时必须在 0..86400 秒之间')
         parent_tools = parent.record.get('tool_names', config.MODEL_TOOL_NAMES)
         allowed = set(TOOL_REGISTRY if parent_tools is None else parent_tools)
-        forbidden = {'delegate', 'start_command_job'}
-        if not isinstance(tool_names, list) or not all(isinstance(name, str) for name in tool_names) or not set(tool_names) <= allowed - forbidden:
-            raise ValueError('子代理工具必须为父会话工具子集，且不得委派或启动长命令')
+        if tool_names is None:
+            tool_names = list(TOOL_REGISTRY if parent_tools is None else parent_tools)
+        if not isinstance(tool_names, list) or not all(isinstance(name, str) for name in tool_names) or not set(tool_names) <= allowed:
+            raise ValueError('子代理工具必须为父会话工具子集')
         limits = effective_limits(parent.record)
         if type(max_rounds) is not int or not 1 <= max_rounds <= min(256, limits['MAX_TOOL_ROUNDS']):
             raise ValueError('子代理轮次不得超过父会话有效上限')
@@ -61,14 +64,30 @@ class AgentTasks:
         limits = validate_limits(limits)
         if sum(record['status'] in {'queued', 'running'} for record in self.records.values()) >= config.AGENT_TASK_MAX_ACTIVE:
             raise ValueError('子代理活动队列已满')
+        self.manager.workspaces.binding(parent)
+        workspace_mode = self.manager.workspaces.validate_mode(
+            'shared' if workspace_mode is None else workspace_mode)
+        workspace_guide = ('与直接调用者共享项目工作区，操作同一组项目文件；上下文、状态和记忆仍独立。'
+            if workspace_mode == 'shared' else '独立工作区；调用者工作区中的文件不会自动复制。')
+        communication = ''
+        if 'send_session_message' in tool_names:
+            communication += '可用 send_session_message 向调用者报告进展或请求信息。'
+        if 'read_session_messages' in tool_names:
+            communication += '可用 read_session_messages 分页读取自己的信箱。'
+        if not communication:
+            communication = '当前工具子集未提供信箱通信工具；完成后由任务结果向调用者返回信息。'
         # 在首次 await 前登记，防止并发委派绕过队列容量。
         identifier = uuid.uuid4().hex
-        child = self.manager.create('子任务 · ' + task[:24], parent.record['messages'][0]['content'] + '\n[子任务] 独立空工作区，只执行所给任务；不可递归委派。')
+        child = self.manager.create(title or '子任务 · ' + task[:24], parent.record['messages'][0]['content'] +
+            '\n[子任务] ' + workspace_guide + '只执行所给任务；不可递归委派。'
+            f'调用者会话 ID：{parent.id}。实际可用工具：{", ".join(tool_names) or "无"}。' + communication,
+            workspace_mode=workspace_mode, parent=parent)
         child.record.update(delegated_from=parent.id, budget_owner_id=parent.record.get('budget_owner_id', parent.id),
             permission_policy=self.manager.permission_override or parent.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY,
             model_profile=parent.record.get('model_profile'), tool_names=list(dict.fromkeys(tool_names)),
             budget_overrides=limits, memory_namespace='session')
         record = {'id': identifier, 'owner': parent.id, 'child_id': child.id, 'status': 'queued',
+                  'workspace_mode': workspace_mode, 'workspace_id': child.record['workspace_owner_id'],
                   'created_at': time.time(), 'due_at': time.time() + delay_seconds, 'task': task, 'error': '', 'result': ''}
         self.records[identifier] = record
         try:

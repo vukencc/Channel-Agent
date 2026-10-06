@@ -23,7 +23,8 @@ def web_search(query: str, max_results: int = 5, search_depth: str = 'basic') ->
     args = WebSearchArgs(query=query, max_results=max_results, search_depth=search_depth)
     if not config.WEB_SEARCH_API_KEY:
         return '[不可用] 请配置 WEB_SEARCH_API_KEY；不会使用无密钥模式。'
-    if config.WEB_SEARCH_CONFIRM != 'off':
+    from ai_agent_startup.tools.sandbox import current_policy
+    if config.WEB_SEARCH_CONFIRM != 'off' or current_policy() in {'smart', 'full_access'}:
         if not ask_permission('web_search', query, '此查询将发送至 Tavily'):
             audit('web_search', query=query, status='denied')
             return '[已取消] 未发送网络查询。'
