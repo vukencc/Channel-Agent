@@ -24,16 +24,19 @@ git worktree add ../ai-agent-<topic> v0.2.1 -b feat/<topic>
 较大分歧方向可在 GitHub 上用「Use this template」新建独立仓库（只复制默认分支内容）。
 贡献规范见 [贡献指南](CONTRIBUTING.md)，版本与标签流程见 [发布说明](docs/release.md)。
 
-## Docker
+## Docker（开包即用）
 
 ```bash
-docker build -f docker/Dockerfile --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t ai-agent-startup:v0.2.1 .
+if [ ! -f .env ]; then cp .env.example .env; fi        # 首次使用时创建并填写模型凭据
+docker pull ghcr.io/vukencc/channel-agent:v0.2.1       # 或 docker load < ai-agent-startup-v0.2.1-image.tar.gz
 docker run --rm -it --env-file .env -e TERM=xterm-256color \
   -v ai-agent-state:/data/state -v ai-agent-sandbox:/data/sandbox -v ai-agent-rag:/data/rag-cache \
-  ai-agent-startup:v0.2.1
+  ghcr.io/vukencc/channel-agent:v0.2.1
 ```
 
-headless、模型缓存、命令沙箱权限与镜像保存/推送见 [Docker 指南](docs/docker.md)。
+容器已内置 CPU 版 torch 与混合 RAG 依赖（约 2.3GB）；首次 `rag_search` 会自动下载本地模型到
+`/data/rag-cache`。命令沙箱、headless、compose、镜像归档与发布见 [Docker 指南](docs/docker.md)。
+本地构建镜像见 [Docker 指南](docs/docker.md)。
 
 ## 结构
 
