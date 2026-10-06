@@ -24,7 +24,7 @@ def validate_release(tag: str, project: dict, lock: dict, changelog: str) -> Non
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     if len(sys.argv) != 2:
-        raise SystemExit("Usage: python dev/check_release.py v<major>.<minor>.<patch>")
+        raise SystemExit("Usage: python scripts/check_release.py v<major>.<minor>.<patch>")
     try:
         validate_release(
             sys.argv[1],

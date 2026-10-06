@@ -48,7 +48,9 @@ src/ai_agent_startup/  应用包
   tools/               工具注册、文件操作与命令沙箱
   rag/                 分块、编码、检索、融合与重排
 tests/                 默认回归与真实模型集成测试
-dev/                   开发辅助：诊断、性能基准、RAG 数据准备与历史报告
+scripts/               跟踪的 CI 探测与 RAG 数据/质量工具
+dev/                   本地开发资料、基准、归档与历史报告（不随 clone 分发）
+.codex/、AGENTS.md      本地 Codex 配置与指令（不随 clone 分发）
 docker/                Dockerfile 与 compose（.dockerignore 必须在仓库根）
 docs/                  使用文档与历史交付记录
 data/raw/              应用知识库
@@ -56,17 +58,17 @@ data/raw/              应用知识库
 ```
 
 应用可作为包安装（`uv sync --locked` 后使用 `uv run ai-agent-startup` 启动）。
-暂停的全量评测在 `dev/rag/archive/full_corpus/`，不参与默认测试。
+暂停的全量评测归档在 `dev/rag/archive/full_corpus/`；仅在保留该本地目录的工作区可用，不参与默认测试。
 
 ## 验证
 
 ```bash
 uv run pytest -m 'not integration'          # 离线回归
-uv run python dev/ci_sandbox_probe.py       # Linux：真实 Bubblewrap/prlimit 探测
+uv run python scripts/ci_sandbox_probe.py   # Linux：真实 Bubblewrap/prlimit 探测
 # 已有本地模型与公开语料时：
 RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run pytest -m integration -q
-uv run python -m dev.rag.prepare_engineering
-uv run python -m dev.rag.run_engineering
+uv run python -m scripts.rag.prepare_engineering
+uv run python -m scripts.rag.run_engineering
 ```
 
 模型准备和配置见 [RAG 文档](docs/rag.md)。小规模验证不自动校准阈值。
@@ -93,7 +95,7 @@ Ctrl+C 停止当前任务，Ctrl+Q 退出。多个会话并发执行，各自拥
 ## 可选质量回归
 
 冻结公开 qrels 的小候选池入口与报告见 [质量校准说明](docs/rag-quality.md)。
-`uv run python -m dev.rag.quality --corpus /path/to/corpus.parquet --output /tmp/new-quality-run`，
+`uv run python -m scripts.rag.quality --corpus /path/to/corpus.parquet --output /tmp/new-quality-run`，
 需显式配置本地 EMBEDDING_LOCAL_PATH/RERANK_LOCAL_PATH。输入和输出分开；修改阈值或模型须附校准与留出报告，不自动覆盖默认配置。
 
 ## 许可证

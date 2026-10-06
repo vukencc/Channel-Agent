@@ -19,18 +19,17 @@ RUN_RAG_INTEGRATION=1 OPENBLAS_NUM_THREADS=1 \
 
 ## 小规模公开数据验证
 
-`dev/rag/inputs/engineering.json` 固定了公开 T2Retrieval 的 300 篇文档 ID、5 条查询、源文件和子集校验值。
+`scripts/rag/inputs/engineering.json` 固定了公开 T2Retrieval 的 300 篇文档 ID、5 条查询、源文件和子集校验值。
 文档按 ID 的 SHA-256 排序选择，不依据查询、相关性标签或检索结果挑选。
 
 首次准备需要下载公开语料及模型（已有资源会复用）：
 
 ```bash
-uv run python dev/rag/prepare_assets.py --only corpus
-uv run python dev/rag/prepare_assets.py --only embedding
-uv run python dev/rag/prepare_assets.py --only reranker
-uv run python -m dev.rag.prepare_engineering
-# 可选 INT8 加速：输入应为原始 FP32 模型。
-uv run python dev/rag/quantize_embedding.py
+uv run python scripts/rag/prepare_assets.py --only corpus
+uv run python scripts/rag/prepare_assets.py --only embedding
+uv run python scripts/rag/prepare_assets.py --only reranker
+uv run python -m scripts.rag.prepare_engineering
+# 可选 INT8 加速：需使用保留在本地 `dev/` 目录中的量化工具，输入应为原始 FP32 模型。
 ```
 
 准备程序流式读取完整 Parquet、验证 SHA-256，只提取固定文档到
@@ -40,7 +39,7 @@ uv run python dev/rag/quantize_embedding.py
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 RAG_THREADS=4 \
   EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
-  uv run python -m dev.rag.run_engineering
+  uv run python -m scripts.rag.run_engineering
 ```
 
 `prepare_engineering` 支持 `--source/--manifest/--output`；`run_engineering` 支持
@@ -75,8 +74,8 @@ API embeddings 继续支持，不附加本地 BGE 专用查询指令。
 ## 暂停的全量评测
 
 全量 118,605 文档、50 校准查询、100 评测查询的流程归档至
-[archive/full_corpus](../dev/rag/archive/full_corpus/README.md)。
-它不属于默认 pytest，不参与工程测试，只有显式执行归档命令才运行。
+[本地 archive/full_corpus](../dev/rag/archive/full_corpus/README.md)。
+该归档仅在已有本地 `dev/` 目录的工作区可用，不随 clone 分发；它不属于默认 pytest，不参与工程测试，只有显式执行归档命令才运行。
 原始基线源码和固定查询完整保留；全量产物仍仅留本地，不代表已完成质量验收。
 
 ## 文件增量更新与加载器

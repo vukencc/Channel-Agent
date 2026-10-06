@@ -35,7 +35,7 @@ def calibrate(rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--manifest', type=Path, default=Path('dev/rag/inputs/quality.json'))
+    parser.add_argument('--manifest', type=Path, default=Path('scripts/rag/inputs/quality.json'))
     parser.add_argument('--corpus', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()

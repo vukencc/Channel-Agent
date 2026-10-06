@@ -1,6 +1,6 @@
 """Bounded engineering probes. --live explicitly uses the configured paid API.
 
-Run from the repository root: uv run python -m dev.diagnose --live --runs 3
+Run from the repository root: uv run python -m scripts.diagnose --live --runs 3
 Outputs remain in ignored .cache/reports; real user sessions are never modified.
 """
 import argparse

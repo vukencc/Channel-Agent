@@ -1,6 +1,6 @@
 # 小规模公开标注质量回归（BUG-13）
 
-输入为 C-MTEB/T2Retrieval 原始公开语料和 qrels，未自编标注；固定清单在 `dev/rag/inputs/quality.json`，含三份原文件 SHA256。
+输入为 C-MTEB/T2Retrieval 原始公开语料和 qrels，未自编标注；固定清单在 `scripts/rag/inputs/quality.json`，含三份原文件 SHA256。
 查询 ID 按 SHA256 排序前 10，前 5 校准、后 5 留出；343 篇候选文档是公开正例与固定哈希抽样 300 篇背景的并集。
 这是受限候选池回归，不能估计全库召回率，也不能证明重排一定优于向量；禁止据模型结果选样。
 
@@ -9,9 +9,9 @@
 ```bash
 EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=/path/to/embedding-int8 \
 RERANK_LOCAL_PATH=/path/to/reranker OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 \
-uv run python -m dev.rag.quality --corpus /path/to/corpus.parquet --output /tmp/new-quality-run
+uv run python -m scripts.rag.quality --corpus /path/to/corpus.parquet --output /tmp/new-quality-run
 # 可选集成回归，沿用以上本地模型环境变量：
-RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run pytest dev/tests/test_bug13_quality.py -m integration -q
+RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run pytest tests/test_bug13_quality.py -m integration -q
 ```
 
 真实运行使用 BGE-small-zh-v1.5 INT8 与 mmarco-mMiniLMv2-L12-H384-v1；无模型更换、无默认阈值修改。

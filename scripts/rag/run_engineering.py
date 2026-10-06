@@ -13,7 +13,7 @@ from ai_agent_startup.rag.embedding import get_embedding_model, local_model_path
 from ai_agent_startup.rag.index import RetrievalIndex
 from ai_agent_startup.rag.rerank import local_reranker_path
 from ai_agent_startup.rag.tool import rag_search
-from dev.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, load_inputs
+from scripts.rag.dataset import DEFAULT_CORPUS, DEFAULT_MANIFEST, load_inputs
 
 
 def main():

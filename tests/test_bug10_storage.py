@@ -44,7 +44,7 @@ def test_uncommitted_journal_tail_is_not_replayed_and_v1_backup_preserved(tmp_pa
 
 def test_diagnostic_replay_accepts_v2_without_modifying_source(tmp_path, monkeypatch):
     from ai_agent_startup import config
-    from dev import diagnose
+    from scripts import diagnose
     from ai_agent_startup.core.sessions import SessionManager
     monkeypatch.setattr(config, 'SANDBOX_DIR', tmp_path / 'work')
     for name in ('REASONING_EFFORT', 'THINKING_MODE', 'RAG_ASSESS'):
