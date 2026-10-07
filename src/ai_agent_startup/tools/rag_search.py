@@ -38,7 +38,10 @@ class RagSearchArgs(BaseModel):
         default="normal",
         description="检索广度：narrow 少而精，normal 平衡，wide 取更多片段",
     )
-    source: str = Field(default='', description='留空使用默认知识库；名称选择 RAG_SOURCES 知识库；@名称 选择 TOOL_ROOTS 只读目录')
+    source: str = Field(default='', description=(
+        '留空使用默认知识库；history 检索当前会话历史摘要；名称选择 RAG_SOURCES 知识库；@名称 选择 TOOL_ROOTS 只读目录'
+        if config.ENABLE_STRUCTURED_CONTEXT and 'history' not in config.RAG_SOURCES else
+        '留空使用默认知识库；名称选择 RAG_SOURCES 知识库；@名称 选择 TOOL_ROOTS 只读目录'))
     top_k: int | None = Field(default=None, ge=1, le=config.RAG_MAX_TOP_K, strict=True,
                              description='显式返回数量上限，留空按 breadth 决定')
     updated_after: datetime | None = Field(default=None, description='仅检索此 ISO 8601 时间之后修改的文件，必须带时区，例如 2026-01-01T00:00:00Z')
@@ -66,6 +69,20 @@ def rag_search(query: str, strictness: str = "normal", breadth: str = "normal", 
         if updated_after.tzinfo is None:
             raise ValueError('updated_after 必须带时区')
         options['updated_after'] = updated_after.timestamp()
+    if source == 'history' and config.ENABLE_STRUCTURED_CONTEXT and source not in config.RAG_SOURCES:
+        if updated_after is not None:
+            raise ValueError('历史摘要检索不支持 updated_after')
+        if strictness != 'normal':
+            raise ValueError('历史摘要检索不支持 strictness；没有校准的历史重排阈值')
+        if breadth not in {'narrow', 'normal', 'wide'}:
+            raise ValueError('breadth 必须是 narrow、normal 或 wide')
+        limit = top_k if top_k is not None else {'narrow': 2, 'normal': 4, 'wide': 8}[breadth]
+        if limit > 20:
+            raise ValueError('历史摘要检索最多返回 20 条')
+        from ai_agent_startup.tools.context_history import history_search as _history_search
+
+        audit('read', action='rag_search', source='history')
+        return _history_search(query, limit=limit, method='hybrid')
     if source:
         try:
             if source.startswith('@'):

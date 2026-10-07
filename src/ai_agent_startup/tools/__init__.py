@@ -8,6 +8,8 @@ from ai_agent_startup.tools.base import Tool, TOOL_REGISTRY, register_tool
 from ai_agent_startup.tools import command, file_crud, rag_search, web_search, session_tools, permission_request  # noqa: F401  (仅为了触发注册)
 
 from ai_agent_startup import config
+if config.ENABLE_STRUCTURED_CONTEXT:
+    from ai_agent_startup.tools import context_history  # noqa: F401
 if config.ENABLE_TASK_PLANS:
     from ai_agent_startup.tools.task_plans import register_task_plans
     register_task_plans()

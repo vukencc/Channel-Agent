@@ -10,6 +10,10 @@ uv sync --locked
 uv run ai-agent-startup
 ```
 
+```bash
+uv run --extra web ai-agent-web
+```
+
 ## 模板与分支开发
 
 本仓库作为模板基线维护：`main` 保持可用，历史版本用注解 tag 冻结（当前 `v0.2.1`）。
@@ -72,6 +76,8 @@ uv run python -m scripts.rag.run_engineering
 ```
 
 模型准备和配置见 [RAG 文档](docs/rag.md)。小规模验证不自动校准阈值。
+完整环境配置索引与本地 `.env` 同步方式见[配置说明](docs/configuration.md)。
+结构化对话历史与上下文压缩为可选功能，默认关闭；配置和安全边界见[上下文管理说明](docs/context-management.md)。
 
 ## 依赖维护
 

@@ -6,6 +6,8 @@
 - [CLI 命令与权限模式](cli-command-modes.md)：命令选择器、风险确认模式与会话回收。
 - [会话工具](session-tools.md)：会话创建、子 Agent 和父子通信。
 - [任务计划使用说明](task-plans.md)：启用计划工具、维护步骤与查看 CLI/Web 状态。
+- [配置说明](configuration.md)：环境变量优先级、`.env` 同步与功能配置索引。
+- [结构化历史与上下文管理](context-management.md)：分块历史、压缩、检索与可选监督器配置。
 - [任务状态与计划设计](task-state-design.md)：实现边界、数据模型和后续阶段方案。
 - [本机 WebUI](web-ui.md)：本地浏览器管理、配置、并发状态与文件预览边界。
 - [沙箱说明](sandbox.md)：文件工具、命令隔离、资源限制与长文件编辑。
