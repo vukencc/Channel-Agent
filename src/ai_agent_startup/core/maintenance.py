@@ -149,7 +149,8 @@ def inspect_logs(manager, *, clear=False, writable=False) -> dict:
 
 
 def maintenance_busy(manager) -> bool:
-    if manager.closing or manager.maintenance or manager.tool_workers or manager.fork_tasks or manager.plan_operations:
+    if (manager.closing or manager.maintenance or manager.tool_workers or manager.fork_tasks
+            or manager.plan_operations or getattr(manager, 'context_operations', ())):
         return True
     try:
         for session in manager.sessions.values():

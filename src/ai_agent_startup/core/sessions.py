@@ -80,6 +80,7 @@ class SessionManager:
         self.budget_ledger = BudgetLedger(store.root) if (config.SESSION_COST_LIMIT or config.DAILY_COST_LIMIT or config.MODEL_REQUESTS_PER_MINUTE) else None
         self.pending_saves = set()
         self.plan_operations = set()
+        self.context_operations = set()
         self.tool_workers = set()
         self.summary_tasks = set()
         self.fork_tasks = set()
@@ -89,6 +90,10 @@ class SessionManager:
         if config.ENABLE_TASK_PLANS:
             from ai_agent_startup.core.task_plans import TaskPlans
             self.task_plans = TaskPlans(self)
+        self.history_context = None
+        if config.ENABLE_STRUCTURED_CONTEXT:
+            from ai_agent_startup.core.history_context import HistoryContext
+            self.history_context = HistoryContext(self)
         self.communication = SessionCommunication(self)
         from ai_agent_startup.core.command_jobs import CommandJobs
         self.command_jobs = CommandJobs(store) if config.ENABLE_COMMAND_JOBS else None
@@ -175,7 +180,8 @@ class SessionManager:
 
     async def flush(self):
         while True:
-            pending = self.pending_saves | (self.plan_operations - {asyncio.current_task()})
+            pending = (self.pending_saves | self.context_operations
+                       | (self.plan_operations - {asyncio.current_task()}))
             if not pending:
                 break
             try:
@@ -604,6 +610,8 @@ class SessionManager:
                 self.communication.latest.pop(target.id, None)
                 if self.task_plans is not None:
                     self.task_plans.forget(target.id)
+                if self.history_context is not None:
+                    self.history_context.forget(target.id)
             self.notify()
             return moved
         finally:
@@ -728,18 +736,26 @@ class SessionManager:
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
                 extra_chars = len(memory_text) - len(memory) + len(FILE_WORKFLOW_GUIDE) + 1 + len(budget_text)
-                if config.MODEL_STABLE_PREFIX:
-                    history[0]['content'] += '\n' + FILE_WORKFLOW_GUIDE
-                    history.append({'role': 'system', 'content': memory_text + budget_text})
-                else:
-                    history[0]['content'] += memory_text + '\n' + FILE_WORKFLOW_GUIDE + budget_text
                 schemas = filter_schemas(TOOL_SCHEMAS, session.record.get('tool_names', config.MODEL_TOOL_NAMES))
                 schedule_summary = partial(self._schedule_summary, session) if config.CONTEXT_SUMMARY_BACKGROUND else None
-                history, context_metrics = await prepare_model_history(history, judge=partial(self._complete, session_id=session.id),
-                    cache=session.context_summaries, builder=build_model_history, schemas=schemas,
-                    schedule_summary=schedule_summary,
-                    memory_chars=len(memory), extra_chars=extra_chars)
+                if self.history_context is not None:
+                    session.phase = '整理上下文：分块、预算检查与监督'
+                    self.notify()
+                    history, context_metrics = await self.history_context.prepare(session, history,
+                        schemas=schemas, runtime='\n' + FILE_WORKFLOW_GUIDE + budget_text, memory=memory)
+                else:
+                    if config.MODEL_STABLE_PREFIX:
+                        history[0]['content'] += '\n' + FILE_WORKFLOW_GUIDE
+                        history.append({'role': 'system', 'content': memory_text + budget_text})
+                    else:
+                        history[0]['content'] += memory_text + '\n' + FILE_WORKFLOW_GUIDE + budget_text
+                    history, context_metrics = await prepare_model_history(history, judge=partial(self._complete, session_id=session.id),
+                        cache=session.context_summaries, builder=build_model_history, schemas=schemas,
+                        schedule_summary=schedule_summary,
+                        memory_chars=len(memory), extra_chars=extra_chars)
                 session.record['last_run']['context'] = context_metrics
+                session.phase = '等待模型响应'
+                self.notify()
                 while True:
                     try:
                         reply = await self._call_model(history, session_id=session.id,
@@ -762,14 +778,20 @@ class SessionManager:
                         recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
                             '请基于当前工具结果继续：只输出一个小步骤，优先分页读取或 edit_file 局部替换；'
                             '每次新增内容尽量不超过 2000 字符，不要输出整份文件，不得重复已成功操作。')
-                        if config.MODEL_STABLE_PREFIX:
-                            history.append({'role': 'system', 'content': recovery_notice})
+                        if self.history_context is not None:
+                            # 从持久原文重新组装，不能将带标题的模型窗口再次作为原始历史归档。
+                            history, recovery_context = await self.history_context.prepare(session,
+                                [dict(message) for message in session.record['messages']], schemas=schemas,
+                                runtime='\n' + FILE_WORKFLOW_GUIDE + budget_text + recovery_notice, memory=memory)
                         else:
-                            history[0]['content'] += recovery_notice
-                        history, recovery_context = await prepare_model_history(history, judge=partial(self._complete, session_id=session.id),
-                        cache=session.context_summaries, builder=build_model_history, schemas=schemas,
-                        schedule_summary=schedule_summary,
-                        memory_chars=len(memory), extra_chars=extra_chars + len(recovery_notice))
+                            if config.MODEL_STABLE_PREFIX:
+                                history.append({'role': 'system', 'content': recovery_notice})
+                            else:
+                                history[0]['content'] += recovery_notice
+                            history, recovery_context = await prepare_model_history(history, judge=partial(self._complete, session_id=session.id),
+                                cache=session.context_summaries, builder=build_model_history, schemas=schemas,
+                                schedule_summary=schedule_summary,
+                                memory_chars=len(memory), extra_chars=extra_chars + len(recovery_notice))
                         session.record['last_run']['recovery_context'] = recovery_context
                 session.record['messages'].append(reply)
                 session.partial = ''
@@ -920,3 +942,5 @@ class SessionManager:
         if self.rag_executor:
             self.rag_executor.shutdown(wait=True)
         await self.flush()
+        if self.history_context is not None:
+            await self.history_context.close()
