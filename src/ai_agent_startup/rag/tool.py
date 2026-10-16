@@ -2,6 +2,7 @@
 from time import perf_counter
 
 from ai_agent_startup import config
+from ai_agent_startup.core.debug_runtime import debug_span
 from ai_agent_startup.rag.cancellation import check_cancelled
 from ai_agent_startup.rag.fusion import reciprocal_rank_fusion
 from ai_agent_startup.rag.index import DocLoader, RetrievalIndex, get_index
@@ -41,7 +42,9 @@ def rag_search(query: str, top_k: int | None = None, strictness: str = 'normal',
         raise ValueError('Candidate budgets and RRF k must be positive')
     check_cancelled()
     started = perf_counter()
-    index = (get_index(track_updates=True) if updated_after is not None else get_index()) if index is None else index
+    if index is None:
+        with debug_span('rag.index'):
+            index = get_index(track_updates=True) if updated_after is not None else get_index()
     allowed = ({i for i, row in enumerate(index.parents) if row['metadata'].get('updated_at', float('-inf')) > updated_after}
                if updated_after is not None else None)
     times = {'index': perf_counter() - started}
@@ -51,26 +54,30 @@ def rag_search(query: str, top_k: int | None = None, strictness: str = 'normal',
         check_cancelled()
         then = perf_counter()
         search_options = {'allowed': allowed} if allowed is not None else {}
-        stages['vector'] = index.dense(query, max(config.RAG_CANDIDATES, limit), **search_options)
+        with debug_span('rag.vector'):
+            stages['vector'] = index.dense(query, max(config.RAG_CANDIDATES, limit), **search_options)
         times['vector'] = perf_counter() - then
         check_cancelled()
         then = perf_counter()
-        stages['bm25'] = index.bm25(query, max(config.RAG_CANDIDATES, limit), **search_options)
+        with debug_span('rag.bm25'):
+            stages['bm25'] = index.bm25(query, max(config.RAG_CANDIDATES, limit), **search_options)
         times['bm25'] = perf_counter() - then
         check_cancelled()
         then = perf_counter()
-        stages['rrf'] = reciprocal_rank_fusion([stages['vector'], stages['bm25']], config.RAG_RRF_K)
+        with debug_span('rag.rrf'):
+            stages['rrf'] = reciprocal_rank_fusion([stages['vector'], stages['bm25']], config.RAG_RRF_K)
         times['rrf'] = perf_counter() - then
         budget = config.RAG_RERANK_BY_BREADTH.get(breadth, config.RAG_RERANK_TOP_N)
         candidates = stages['rrf'][:max(budget, limit)]
         check_cancelled()
         then = perf_counter()
-        values = get_reranker().score(query, [index.by_id[row['id']]['document'] for row in candidates])
-        stages['rerank'] = sorted(
-            [{'id': row['id'], 'score': score, 'rrf_rank': i + 1}
-             for i, (row, score) in enumerate(zip(candidates, values, strict=True))],
-            key=lambda row: (-row['score'], row['rrf_rank'], row['id']),
-        )
+        with debug_span('rag.rerank'):
+            values = get_reranker().score(query, [index.by_id[row['id']]['document'] for row in candidates])
+            stages['rerank'] = sorted(
+                [{'id': row['id'], 'score': score, 'rrf_rank': i + 1}
+                 for i, (row, score) in enumerate(zip(candidates, values, strict=True))],
+                key=lambda row: (-row['score'], row['rrf_rank'], row['id']),
+            )
         times['rerank'] = perf_counter() - then
         scores = {name: {row['id']: row['score'] for row in rows} for name, rows in stages.items()}
     selected = [row for row in stages['rerank'] if row['score'] >= threshold][:limit]

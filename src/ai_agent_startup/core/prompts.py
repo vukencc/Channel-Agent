@@ -10,6 +10,12 @@ _FILE_WORKFLOW_TEMPLATE = """当前文件工具协议（适用于新会话和恢
 - 每次先实际完成当前小修改，再处理下一部分；不要先输出完整长代码或长计划再调用工具。新建长页面也分拆资源，update_file 仅适合小文件全文更新。
 - 一般编程/绘图任务不要默认调用 rag_search；仅当用户指定本地知识库或已知其内容相关时使用。检索内容明显无关时停止检索，不靠降低阈值将无关材料当依据。
 - 工具失败应按具体错误修正。超时不表示已执行，已成功的操作不得重复执行；缺失的文件内容通过工具读取，不猜测。
+- 工程任务先用已注册的 inspect_environment 探测；宿主安装、沙箱可见、能运行脚本不同，不能仅凭 command -v/--version 宣称用户未安装。
+- 缺依赖先读 manifest/lockfile，调用已注册的 prepare_project_environment 安装，再用 run_command 真实 build/test；Node/npm 在已配置时用 runtime_profile="node"。遵守确认、网络白名单和资源上限，不做宿主安装/sudo；缺少运行时绑定时报告配置阻碍。
+- 安装报错同时出现网络额度、EFBIG、超时等诊断时，先解决所报告的资源边界；不能仅凭 ERESOLVE 或版本 undefined 认定依赖冲突，更不能盲目 --force/--legacy-peer-deps。使用 prepare_project_environment 明确申请安装额度，不反复启动同一失败安装。
+- 不用 nohup、后台 & 或 sleep 轮询掩盖安装失败；未启用受管后台命令工具时，使用有界前台准备工具。准备工具已成功后才运行构建；权限拒绝或额度仍不足时如实报告阻碍。
+- 静态语法检查只是补充，安装成功不是测试通过。受拒绝、超时、网络或配额阻碍时，如实列出尝试、错误、未运行的测试，不自行跳过并宣称完成。
+- 用户指定的函数签名、字段、异常类型、退出码等均为验收契约，委派时完整传达并实际覆盖测试；不能用不兼容的自定义设计替代。自写测试通过后，仍应逐条核对原始要求和跨模块调用。
 """
 
 _DEFAULT_TEMPLATE = """你是能执行任务的助手。区分用户要你实际操作与仅咨询方法：
@@ -42,10 +48,12 @@ def file_workflow_guide():
 
 def default_prompt():
     if config.SYSTEM_PROMPT_FILE is not None:
+        from ai_agent_startup.core.session_limits import limit as session_limit
+        input_chars = session_limit('MODEL_INPUT_CHARS')
         try:
             with config.SYSTEM_PROMPT_FILE.open(encoding='utf-8') as stream:
-                text = stream.read(config.MODEL_INPUT_CHARS + 1)
-            if not text.strip() or len(text) > config.MODEL_INPUT_CHARS:
+                text = stream.read(input_chars + 1)
+            if not text.strip() or len(text) > input_chars:
                 raise ValueError
             return text
         except (OSError, UnicodeError, ValueError):
@@ -59,12 +67,17 @@ DEFAULT_PROMPT = default_prompt()
 
 def permission_mode_guide(policy: str) -> str:
     if policy == 'smart':
-        return ('\n当前权限模式为 Smart：本地规则自动允许已验证的低风险操作，'
+        return ('\n当前权限模式为智能申请（smart）：本地规则自动允许已验证的低风险操作，'
                 '高风险和未知风险由具体工具申请用户确认。你应判断内容敏感性和操作影响，'
                 '在工具 reason 中说明风险；本地无法识别的敏感内容计划，'
                 '若当前工具集包含 request_permission，则先用它主动申请。'
                 '该申请不改变权限档位，也不替代具体工具的安全检查。拒绝或超时后停止该操作，不换工具绕过。')
     if policy == 'full_access':
-        return ('\n当前权限模式为 Full Access：用户已允许直接调用当前工具集，不再申请工具确认。'
+        return ('\n当前权限模式为完全访问（full_access）：用户已允许直接调用当前工具集，不再申请工具确认。'
                 '路径边界、隔离沙箱、只读目录、配额、超时和审计仍有效；不得绕过。')
+    if policy == 'readonly':
+        return '\n当前权限模式为只读（readonly）：仅使用允许的读取工具，不得写入、执行命令或绕过检查。'
+    if policy in {'standard', 'trusted'}:
+        return ('\n当前权限模式显示为智能申请，当前会话保留旧版保守确认规则。'
+                '按工具的实际确认要求执行；拒绝或超时后停止该操作，不得换工具绕过。')
     return ''

@@ -1,72 +1,61 @@
 # 贡献指南
 
-## 快速开始
+## 准备环境
+
+项目要求 Python 3.12+。从仓库根目录安装锁定依赖（含 WebUI 可选依赖），只在 `.env` 不存在时创建本地配置：
 
 ```bash
-uv sync --locked
-cp .env.example .env   # 仅在 .env 不存在时；填写模型凭据
-uv run ai-agent-startup         # 交互式全屏 CLI
+uv sync --locked --extra web
+if [ ! -f .env ]; then cp .env.example .env; fi
 ```
 
-无图形终端时使用 headless 入口（默认拒绝一切待确认操作）：
+填写模型服务凭据后，可启动全屏 CLI 或本机 WebUI：
 
 ```bash
-uv run ai-agent-startup --prompt "把 hello 保存到 hello.txt 并读回" --json
-uv run ai-agent-startup --platform        # 平台/沙箱能力说明
+uv run --no-sync ai-agent-startup
+uv run --no-sync ai-agent-web
 ```
 
-## 分支模型
+CLI 支持 headless 单次任务：`uv run --no-sync ai-agent-startup --prompt "任务" --json --policy readonly`；`--platform` 只报告平台能力。Headless 默认 `readonly`，待确认操作会拒绝。可用选项以 `uv run --no-sync ai-agent-startup --help` 为准。
 
-- `main` 是模板/稳定分支，只通过 PR 合入，不直接 push、不 force push。
-- 历史版本用注解 tag 冻结（当前基线 `v0.2.1`），tag 一旦推送不再移动。
-- 新方向从基线 tag 开分支，而不是从 `main` 的最新提交随意分叉：
+## 开发流程
 
-```bash
-git switch -c feat/<topic> v0.2.1
-# 并行开发（避免反复切分支）
-git worktree add ../ai-agent-<topic> v0.2.1 -b feat/<topic>
-```
+开始前检查当前分支和工作区，保留已有未提交改动与用户数据。不要为了开始工作切回旧 tag；在当前基线状态上创建主题分支，或使用独立 clone/worktree。合并到 `main` 通过 PR，不直接 push 或 force push。分支和发布约定见[发布说明](docs/release.md)。
 
-- 分支前缀：`feat/`、`fix/`、`perf/`、`docs/`、`ci/`、`chore/`、`exp/`（实验性方向）、`codex/`（Codex 工作分支）。
-- 长期分歧较大的方向建议用 GitHub「Use this template」新建独立仓库，避免同仓长期分叉。
-
-## 提交信息
-
-使用前缀加简短说明，正文写清行为变化与验证命令：
+建议使用 `feat/`、`fix/`、`perf/`、`docs/`、`ci/`、`chore/` 前缀。提交信息用简短前缀说明行为，例如：
 
 ```text
-feat: 支持命名知识库的时间过滤
-fix: 修正 headless 模式下确认默认值
-perf: 有界缓存重排结果
-docs: 补充 Docker 使用说明
-ci: 标签触发镜像发布
+feat: 支持命名知识库过滤
+fix: 修复 headless 确认行为
+perf: 限制重排缓存
+docs: 更新 WebUI 指南
+ci: 校验发布版本
 chore: 更新依赖锁定
 ```
 
-## 测试
+## 验证
 
 ```bash
-uv run pytest -m 'not integration' -q          # 离线回归，必须全绿
-uv run pytest tests/test_command.py -q           # 针对性回归
-uv run python scripts/ci_sandbox_probe.py      # Linux：真实 Bubblewrap/prlimit 探测
+uv run --no-sync pytest -m 'not integration' -q
+uv run --no-sync pytest tests/test_command.py -q
+uv run --no-sync python scripts/ci_sandbox_probe.py
 ```
 
-可选（需要本地模型或公开语料）：
+沙箱探测需要 Linux 上的 Bubblewrap/prlimit 环境。真实模型集成测试需要本地模型与公开语料：
 
 ```bash
-RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=<parquet> uv run pytest -m integration -q
+RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run --no-sync pytest -m integration -q
 ```
 
-## PR 清单
+CI 和常用脚本位于 `scripts/`，不是 `dev/`。测试、安全边界和配置细节见[文档索引](docs/README.md)。
 
-- [ ] 离线测试全绿；针对性测试覆盖新行为与失败路径
-- [ ] 未放宽安全语义：沙箱 fail-closed、确认、审计、路径边界、工具调用配对
-- [ ] 新配置写入 `.env.example`，行为变化同步 `docs/`
-- [ ] 依赖变更同步 `uv.lock`（`uv lock` / `uv sync --locked`）
-- [ ] 未提交用户数据：`.agent/`、`crud_tests/`、`logs/`、`.cache/`、`.env`
-- [ ] 性能改动附优化前后测量方法与数字
+## Pull Request
 
-## 发布
+- 说明用户可见行为变化，并列出实际运行的验证命令与结果。
+- 新配置同步写入 `.env.example` 和相关文档；依赖变化同步更新 `uv.lock`。
+- 保持沙箱 fail-closed、权限确认、路径边界和审计规则。
+- 不提交 `.env`、`.agent/`、`crud_tests/`、`logs/` 或 `.cache/` 中的本地状态和生成数据。
 
-版本冻结、tag 与 Release 流程见 [发布说明](docs/release.md)。
-Docker 构建与运行见 [Docker 指南](docs/docker.md)。
+## 发布与容器
+
+版本冻结和标签流程见[发布说明](docs/release.md)；Docker 构建与运行见[Docker 指南](docs/docker.md)。

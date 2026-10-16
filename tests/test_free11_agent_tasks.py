@@ -13,6 +13,7 @@ from ai_agent_startup.core.budgets import active_budget
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', True, raising=False)
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 24)
     value = SessionStore(tmp_path / 'state', tmp_path / 'work')
     yield value
     value.close()

@@ -21,6 +21,7 @@ class EmptyArgs(BaseModel):
 @pytest.fixture
 def store(tmp_path, monkeypatch, sandbox_env):
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', False)
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 24)
     monkeypatch.setattr(config, 'MEMORY_AUTO_EXTRACT', False)
     monkeypatch.setattr(config, 'RAG_ASSESS', False)
     monkeypatch.setattr(config, 'TOOL_CONCURRENCY', 4)

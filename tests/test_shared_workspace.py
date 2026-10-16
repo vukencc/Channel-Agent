@@ -14,6 +14,7 @@ from ai_agent_startup.core.storage import SessionStore
 @pytest.fixture
 def store(tmp_path, monkeypatch, sandbox_env):
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 24)
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', False)
     value = SessionStore(tmp_path / 'state', sandbox_env)
     yield value

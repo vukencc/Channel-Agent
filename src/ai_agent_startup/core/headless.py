@@ -33,7 +33,7 @@ class RedactingFormatter(logging.Formatter):
 
 
 async def run_headless(store, prompt: str, *, session_id: str | None = None,
-                       policy: str = 'standard', model=call_model) -> dict:
+                       policy: str = 'readonly', model=call_model) -> dict:
     if not prompt.strip():
         raise ValueError('prompt 不能为空')
     manager = SessionManager(store, model=model, confirmation_handler=lambda *_: False,

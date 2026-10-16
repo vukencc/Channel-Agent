@@ -7,18 +7,20 @@
     meta: { policies: [], models: [], tools: [], limits: {} }, sessions: new Map(),
     activeId: null, openTabs: [], drafts: new Map(), history: new Map(),
     runtime: {}, tasks: [], commands: [], tasksRevision: 0, sidebarView: "sessions", filePath: "",
-    monitorTab: "agents", monitorOpen: false, connected: false, connectionState: "connecting",
+    monitorTab: "agents", monitorOpen: true, connected: false, connectionState: "connecting",
     sending: new Set(), loading: new Set(), pendingHistory: new Set(), snapshotVersion: 0, streamAbort: null, streamGeneration: 0,
     retryTimer: null, retryCount: 0, taskTimer: null, clockTimer: null,
     paletteItems: [], paletteIndex: 0, slashItems: [], slashIndex: 0,
-    settingsId: null, memoryId: null, settingsAllTools: true, filesGeneration: 0,
+    quickId: null, quickKind: null, quickSaving: false, settingsId: null, memoryId: null, settingsAllTools: true, filesGeneration: 0,
     eventState: null, eventFrame: null, renderSignatures: {},
     maintenance: null, maintenanceLoading: false, maintenanceGeneration: 0, cleanupPending: false,
     planOwner: null, planView: null, planLoading: false, planGeneration: 0,
+    selectionGeneration: 0, planHydrationKey: null,
+    layout: { left: 246, right: 310, split: 52 }, modelLibrary: [], defaultModel: null, editingModel: null, modelSaving: false,
   };
   const policyLabels = {
     read_only: "只读", readonly: "只读", read: "只读", ask: "逐次确认", confirm: "逐次确认",
-    standard: "标准", safe: "安全", balanced: "标准", trusted: "信任", smart: "智能", auto: "自动",
+    standard: "智能申请", safe: "智能申请", balanced: "智能申请", trusted: "智能申请", smart: "智能申请", auto: "智能申请",
     full: "完全访问", full_access: "完全访问", unrestricted: "完全访问", bypass: "完全访问",
   };
   const phaseLabels = {
@@ -94,21 +96,23 @@
   function selectedSession() { return state.sessions.get(state.activeId); }
   function phaseLabel(session) {
     if (session?.confirmation) return "等待确认";
-    const phase = session?.phase || session?.status || "idle";
-    return phaseLabels[phase] || (session?.busy ? "运行中" : phase);
+    const phase = typeof session?.phase === "string" && session.phase.trim() ? session.phase : session?.status || "idle";
+    return phaseLabels[phase] || String(phase).replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120);
   }
   function isError(session) { return ["error", "failed"].includes(session?.status) || ["error", "failed"].includes(session?.phase); }
   function statusClass(session) { return session?.confirmation ? "waiting" : isError(session) ? "error" : session?.busy ? "busy" : ""; }
   function normalizeOptions(items, kind) {
     if (!Array.isArray(items)) return [];
     return items.map((item) => {
-      if (typeof item === "string") return { value: item, label: kind === "policy" ? policyLabels[item] || item : item, description: "" };
+      const model = kind === "model" ? state.modelLibrary.find((saved) => saved.id === (typeof item === "string" ? item : item.id)) : null;
+      const modelLabel = model ? [model.name || model.id, model.model].filter(Boolean).join(" · ") : null;
+      if (typeof item === "string") return { value: item, label: kind === "policy" ? policyLabels[item] || item : modelLabel || item, description: "" };
       const value = item.id ?? item.name ?? item.value ?? item.key ?? item.profile ?? item.policy;
-      return { value: String(value ?? ""), label: item.label || item.title || item.display_name || (kind === "policy" ? policyLabels[value] : null) || String(value ?? ""), description: item.description || item.help || "" };
+      return { value: String(value ?? ""), label: modelLabel || item.label || item.title || item.display_name || (kind === "model" ? item.name : null) || (kind === "policy" ? policyLabels[value] : null) || String(value ?? ""), description: item.description || item.help || "" };
     }).filter((item) => item.value);
   }
   function optionLabel(items, value, kind) {
-    if (!value) return kind === "policy" ? "默认权限" : "默认模型";
+    if (!value) return kind === "policy" ? "默认权限" : state.defaultModel ? `默认 · ${state.defaultModel}` : "默认模型";
     return normalizeOptions(items, kind).find((item) => item.value === value)?.label || (kind === "policy" ? policyLabels[value] : null) || value;
   }
   function workspaceLabel(session) { return session?.parent_id ? (session.workspace_mode === "isolated" ? "历史独立工作区" : "父项目工作区") : "项目工作区"; }
@@ -138,6 +142,165 @@
   }
   function updateJumpButton() { $("jump-bottom").hidden = nearBottom() || !state.activeId; }
 
+  const LAYOUT_STORAGE_KEY = "agent-workspace-layout-v1";
+  function clampLayout(value, width) {
+    const finite = (key, fallback) => typeof value?.[key] === "number" && Number.isFinite(value[key]) ? value[key] : fallback;
+    // Reserve the activity rail, both drag handles and a readable conversation.
+    const available = Math.max(440, width - 52 - 12 - 420);
+    const left = Math.round(Math.max(190, Math.min(360, available - 250, finite("left", 246))));
+    const right = Math.round(Math.max(250, Math.min(460, available - left, finite("right", 310))));
+    const split = Math.max(24, Math.min(78, finite("split", 52)));
+    return { left, right, split };
+  }
+  function persistLayout() {
+    try { localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(state.layout)); } catch { /* Storage may be disabled. */ }
+  }
+  function applyLayout() {
+    // Keep preferred dimensions through a temporary smaller window.
+    const actual = clampLayout(state.layout, $("workspace").clientWidth);
+    const root = $("workspace");
+    root.style.setProperty("--sidebar-width", `${actual.left}px`);
+    root.style.setProperty("--inspector-width", `${actual.right}px`);
+    root.style.setProperty("--inspector-split", `${actual.split}%`);
+    const available = Math.max(440, root.clientWidth - 52 - 12 - 420);
+    [["sidebar-resizer", actual.left, Math.min(360, available - actual.right)], ["inspector-resizer", actual.right, Math.min(460, available - actual.left)], ["inspector-splitter", actual.split, 78]].forEach(([id, value, maximum]) => {
+      $(id).setAttribute("aria-valuenow", String(Math.round(value)));
+      $(id).setAttribute("aria-valuemax", String(Math.round(maximum)));
+    });
+  }
+  function initLayout() {
+    try { state.layout = clampLayout(JSON.parse(localStorage.getItem(LAYOUT_STORAGE_KEY)), Math.max(1400, $("workspace").clientWidth)); } catch { /* Use default dimensions. */ }
+    applyLayout();
+    [["sidebar-resizer", "left"], ["inspector-resizer", "right"], ["inspector-splitter", "split"]].forEach(([id, dimension]) => {
+      const handle = $(id); let drag = null;
+      const update = (amount) => {
+        state.layout = clampLayout({ ...state.layout, [dimension]: amount }, $("workspace").clientWidth);
+        applyLayout();
+      };
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const actual = clampLayout(state.layout, $("workspace").clientWidth);
+        drag = { start: dimension === "split" ? event.clientY : event.clientX, size: actual[dimension], pointer: event.pointerId };
+        handle.setPointerCapture(event.pointerId); document.body.classList.add("resizing");
+      });
+      handle.addEventListener("pointermove", (event) => {
+        if (!drag || event.pointerId !== drag.pointer) return;
+        const distance = (dimension === "split" ? event.clientY : event.clientX) - drag.start;
+        update(drag.size + (dimension === "right" ? -distance : dimension === "split" ? distance / Math.max(1, $("inspector").clientHeight) * 100 : distance));
+      });
+      const finish = () => { if (drag) { drag = null; document.body.classList.remove("resizing"); persistLayout(); } };
+      handle.addEventListener("pointerup", finish); handle.addEventListener("pointercancel", finish); handle.addEventListener("lostpointercapture", finish);
+      handle.addEventListener("keydown", (event) => {
+        const backward = dimension === "split" ? "ArrowUp" : "ArrowLeft", forward = dimension === "split" ? "ArrowDown" : "ArrowRight";
+        if (![backward, forward, "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const step = (dimension === "split" ? 2 : 12) * (event.shiftKey ? 3 : 1);
+        const actual = clampLayout(state.layout, $("workspace").clientWidth);
+        update(event.key === "Home" ? Number(handle.getAttribute("aria-valuemin")) : event.key === "End" ? Number(handle.getAttribute("aria-valuemax")) : actual[dimension] + (event.key === forward ? 1 : -1) * (dimension === "right" ? -step : step));
+        persistLayout();
+      });
+    });
+    window.addEventListener("resize", applyLayout);
+  }
+  function activityPhase(session, tools, connection) {
+    if (connection !== "connected") return "connection";
+    if (session?.confirmation) return "waiting";
+    if (!session?.busy) {
+      if (["cancelled", "canceled"].includes(session?.status)) return "cancelled";
+      if (session?.status === "stopped") return "stopped";
+      if (["error", "failed"].includes(session?.status)) return "error";
+    }
+    const phase = String(session?.phase || "").toLowerCase();
+    if (/context|compact|summary|上下文|压缩|摘要/.test(phase)) return "context";
+    if (tools.some((tool) => /search|rag|browse|搜索|检索/.test(String(tool.name))) || /search|rag|搜索|检索/.test(phase)) return "search";
+    if (tools.length || /tool|工具/.test(phase)) return "tools";
+    if (session?.busy) return "thinking";
+    if (["error", "failed"].includes(session?.status)) return "error";
+    return "idle";
+  }
+  function taskDistribution(plan, tasks) {
+    const statuses = { active: 0, waiting: 0, completed: 0 };
+    const count = (status, amount) => {
+      if (!Number.isFinite(amount) || amount <= 0) return;
+      const bucket = ["completed", "done", "failed", "cancelled", "canceled", "error", "stopped"].includes(status) ? "completed" : ["pending", "queued", "waiting", "blocked", "interrupted"].includes(status) ? "waiting" : "active";
+      statuses[bucket] += amount;
+    };
+    // A bound child task represents a plan step, so choose one source of counts.
+    if (plan && !["none", "archived"].includes(plan.status)) Object.entries(plan.counts || {}).forEach(([status, amount]) => count(status, amount));
+    else tasks.forEach((task) => count(task.status || task.state || "pending", 1));
+    return statuses;
+  }
+  function projectPlanSummary(plan) {
+    if (!plan || typeof plan !== "object" || !Number.isInteger(plan.revision) || plan.revision < 0) return null;
+    const counts = {};
+    ["pending", "in_progress", "waiting", "blocked", "interrupted", "completed", "failed", "cancelled"].forEach((status) => {
+      const count = plan.counts?.[status]; if (Number.isInteger(count) && count >= 0) counts[status] = count;
+    });
+    return { plan_id: typeof plan.plan_id === "string" ? plan.plan_id : null, revision: plan.revision,
+      status: typeof plan.status === "string" ? plan.status : "none", verification: plan.verification === "verified" ? "verified" : "unverified",
+      counts, ready: Array.isArray(plan.ready) ? plan.ready.filter((key) => typeof key === "string") : [],
+      execution_signature: typeof plan.execution_signature === "string" ? plan.execution_signature : "" };
+  }
+  function mergePlanSummary(owner, plan, captured) {
+    const session = state.sessions.get(owner), summary = projectPlanSummary(plan);
+    if (!session || !summary) return false;
+    const current = session.plan;
+    // A newer SSE plan or runtime signature takes precedence over an older GET.
+    if (current && (current.revision > summary.revision ||
+        (current !== captured && (!captured || current.plan_id !== captured.plan_id ||
+          (current.revision === summary.revision && current.execution_signature !== captured.execution_signature))))) return false;
+    state.sessions.set(owner, { ...session, plan: summary });
+    return true;
+  }
+  async function hydrateSelectedPlan() {
+    const session = selectedSession();
+    if (!state.meta.task_plans_enabled || !session || session.plan) return;
+    const owner = session.id, generation = state.selectionGeneration, captured = session.plan;
+    const key = `${generation}:${owner}:missing`;
+    if (state.planHydrationKey === key) return;
+    state.planHydrationKey = key;
+    try {
+      const plan = await jsonApi(`/api/sessions/${encodeURIComponent(owner)}/plan?limit=1`);
+      if (generation !== state.selectionGeneration || owner !== state.activeId) return;
+      if (mergePlanSummary(owner, plan, captured)) renderConversationStatus();
+    } catch { /* Plan details are optional; chat and live events remain available. */ }
+  }
+  function renderInspector() {
+    const session = selectedSession(), tools = (Array.isArray(state.runtime.active_tools) ? state.runtime.active_tools : []).filter((tool) => tool.session_id === session?.id);
+    const phase = activityPhase(session, tools, state.connectionState);
+    const labels = { idle: "准备就绪", thinking: "正在思考", tools: "正在执行工具", search: "正在搜索", connection: "正在连接", context: "正在整理上下文", waiting: "等待你的确认", error: "运行遇到问题", cancelled: "已取消", stopped: "已停止" };
+    $("agent-visual").dataset.phase = phase;
+    setText("activity-label", state.connectionState === "offline" ? "连接中断，正在重试" : labels[phase]);
+    setText("activity-session-name", session?.title || "等待任务");
+    setText("activity-description", phase === "cancelled" ? "本轮任务已取消。发送消息可继续这个会话。" : phase === "stopped" ? "本轮运行已停止。发送消息可继续这个会话。" : tools.length ? tools.map((tool) => tool.name || "工具").join(" · ") : session?.busy ? phaseLabel(session) : session?.confirmation ? "在对话中确认操作后继续。" : "发起对话后，运行状态会在这里更新。");
+    document.querySelectorAll("[data-activity]").forEach((item) => item.classList.toggle("active", item.dataset.activity === phase));
+    const context = session?.context_status || {}, capacityKnown = Number.isFinite(context.capacity_utilization);
+    const ratio = capacityKnown ? context.capacity_utilization : context.utilization;
+    const utilization = Number.isFinite(ratio) ? Math.max(0, Math.min(100, Math.round(ratio * 100))) : null;
+    setText("context-percent", utilization == null ? "—" : `${utilization}%`);
+    $("context-meter-fill").style.width = `${utilization || 0}%`;
+    $("context-meter").setAttribute("aria-valuetext", utilization == null ? "首次模型调用后更新上下文占用" : `${capacityKnown ? "输入估算占声明容量" : "工作预算占用"} ${utilization}%`);
+    setText("context-capacity-note", Number.isFinite(context.sent_tokens) && Number.isFinite(context.input_limit_tokens)
+      ? `输入约 ${context.sent_tokens.toLocaleString()} / ${(context.context_capacity_tokens || context.input_limit_tokens).toLocaleString()} tokens · 工作预算 ${Math.round((context.utilization || 0) * 100)}%（含预留）`
+      : "容量尚未声明；当前显示本地工作预算");
+    if (utilization == null) $("context-meter").removeAttribute("aria-valuenow"); else $("context-meter").setAttribute("aria-valuenow", String(utilization));
+    $("context-meter").title = $("context-progress").textContent;
+    const plan = session?.plan && !["none", "archived"].includes(session.plan.status) ? session.plan : null, counts = plan?.counts || {}, total = Object.values(counts).filter(Number.isFinite).reduce((sum, count) => sum + Math.max(0, count), 0), completed = Math.max(0, counts.completed || 0);
+    const percent = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
+    $("plan-meter-fill").style.width = `${percent}%`; $("plan-meter").setAttribute("aria-valuenow", String(percent));
+    $("plan-meter").setAttribute("aria-valuetext", `${completed}/${total} 步完成，${plan?.verification === "verified" ? "已验证" : "仍待验收"}`);
+    setText("plan-inspector-hint", plan ? `${total} 个步骤 · ${plan.verification === "verified" ? "验收已验证" : "完成后仍需验收"}` : session ? "可让 Agent 为复杂任务创建计划。" : "选择会话后查看计划。");
+    const statuses = taskDistribution(plan, [...state.tasks, ...state.commands]);
+    const signature = JSON.stringify(statuses);
+    if (state.renderSignatures.distribution !== signature) {
+      state.renderSignatures.distribution = signature;
+      const fragment = document.createDocumentFragment();
+      [["active", "执行中"], ["waiting", "待执行"], ["completed", "已结束"]].forEach(([key, label]) => { const card = element("div", `distribution-item ${key}`); card.append(element("strong", "", statuses[key]), element("span", "", label)); fragment.append(card); });
+      $("task-distribution").replaceChildren(fragment);
+    }
+  }
+
   async function connect() {
     if (state.ready || state.connecting) return;
     state.connecting = true; clearTimeout(state.retryTimer);
@@ -146,14 +309,17 @@
       const meta = await jsonApi("/api/meta");
       const snapshot = await jsonApi("/api/sessions");
       state.meta = meta; state.ready = true; state.retryCount = 0;
+      $("debug-link").hidden = !meta.debug_enabled;
       showError("connection-error", null); applySnapshot(snapshot);
       const remembered = sessionStorage.getItem("agent-workspace-session");
       const initial = state.sessions.has(remembered) ? remembered : state.sessions.keys().next().value;
       if (initial) selectSession(initial); else showWelcome();
       startEvents(); refreshTasks(true);
+      // Model labels are supplementary; a library failure must not delay chat.
+      loadModels().then(() => { if (state.activeId) renderConversationStatus(); if ($("settings-dialog").open) fillSelect("settings-model", state.meta.models, $("settings-model").value, "model"); }).catch(() => {});
       clearInterval(state.taskTimer); clearInterval(state.clockTimer);
       state.taskTimer = setInterval(() => {
-        if (state.monitorOpen && state.ready) refreshTasks(true);
+        if (state.ready && !document.hidden) refreshTasks(true);
         if ($("plan-dialog").open && state.ready) refreshPlan(true);
       }, 8000);
       state.clockTimer = setInterval(() => { if (state.monitorOpen && state.monitorTab === "tools") renderMonitor(); }, 1000);
@@ -176,7 +342,7 @@
     state.connectionState = kind; state.connected = kind === "connected";
     $("connection-dot").className = "connection-dot " + (kind === "connected" ? "connected" : kind === "offline" ? "offline" : "");
     setText("connection-label", kind === "connected" ? "已连接" : kind === "offline" ? "连接中断 · 重试中" : "正在连接");
-    renderComposer(); renderConnectionActions();
+    renderComposer(); renderConnectionActions(); renderInspector();
   }
   function scheduleSnapshot(snapshot) {
     state.eventState = snapshot;
@@ -232,7 +398,12 @@
     if (!snapshot || !Array.isArray(snapshot.sessions)) return;
     state.snapshotVersion++;
     const oldActive = selectedSession();
-    const incoming = new Map(snapshot.sessions.filter((session) => !state.deletedIds.has(session.id)).map((session) => [session.id, { ...state.sessions.get(session.id), ...session }]));
+    const incoming = new Map(snapshot.sessions.filter((session) => !state.deletedIds.has(session.id)).map((session) => {
+      const previous = state.sessions.get(session.id), merged = { ...previous, ...session };
+      // A snapshot queued before plan hydration may still contain a lazy null.
+      if (previous?.plan && (!session.plan || session.plan.revision < previous.plan.revision)) merged.plan = previous.plan;
+      return [session.id, merged];
+    }));
     for (const id of state.sessions.keys()) if (!incoming.has(id)) {
       state.history.delete(id); state.drafts.delete(id); state.pendingHistory.delete(id); state.sending.delete(id);
     }
@@ -279,7 +450,8 @@
         title.append(element("span", "", session.title || "未命名会话"));
         if (session.unread && session.id !== state.activeId) title.append(element("span", "unread-badge", typeof session.unread === "number" ? session.unread : "新"));
         const subtitle = element("div", "session-item-subtitle");
-        subtitle.append(element("span", "small-status-dot " + statusClass(session)), element("span", "", phaseLabel(session)), element("span", "", "·"), element("span", "", session.parent_id ? "子 Agent" : workspaceLabel(session)));
+        subtitle.append(element("span", "small-status-dot " + statusClass(session)), element("span", "", phaseLabel(session)), element("span", "session-scope-caption", "·"), element("span", "session-scope-caption", session.parent_id ? "子 Agent" : workspaceLabel(session)));
+        row.title = `${session.title || "未命名会话"} · ${phaseLabel(session)} · ${session.parent_id ? "子 Agent" : workspaceLabel(session)}`;
         body.append(title, subtitle); row.append(icon, body);
         row.addEventListener("click", () => selectSession(session.id)); fragment.append(row);
       });
@@ -324,14 +496,16 @@
   }
   function saveDraft() { if (state.activeId) state.drafts.set(state.activeId, $("message-input").value); }
   function showWelcome() {
-    state.activeId = null; $("welcome").hidden = false; $("conversation").hidden = true;
+    if ($("quick-dialog").open) $("quick-dialog").close();
+    state.activeId = null; renderArchiveLink(); state.selectionGeneration++; state.planHydrationKey = null; $("welcome").hidden = false; $("conversation").hidden = true;
     sessionStorage.removeItem("agent-workspace-session"); renderSessions(); renderTabs(); renderRuntime();
     $("jump-bottom").hidden = true;
   }
   function selectSession(id) {
     if (!state.sessions.has(id)) return;
     if (id === state.activeId) { $("sidebar").classList.remove("mobile-open"); return; }
-    saveDraft(); state.activeId = id;
+    if ($("quick-dialog").open) $("quick-dialog").close();
+    saveDraft(); state.activeId = id; state.selectionGeneration++; state.planHydrationKey = null;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
     sessionStorage.setItem("agent-workspace-session", id);
     $("welcome").hidden = true; $("conversation").hidden = false;
@@ -343,12 +517,13 @@
     if (history) renderMessages(history, true);
     else { $("messages").replaceChildren(); $("conversation-start").hidden = true; $("load-history").hidden = true; }
     renderLiveMessage(); scrollBottom(true); loadConversation(id);
+    hydrateSelectedPlan();
     if (state.sidebarView === "files") loadFiles("");
   }
   async function loadConversation(id, { before = null, quiet = false } = {}) {
     if (state.loading.has(id)) { if (before === null) state.pendingHistory.add(id); return; }
     state.loading.add(id);
-    const version = state.snapshotVersion;
+    const version = state.snapshotVersion, initialPlan = state.sessions.get(id)?.plan;
     if (id === state.activeId && !quiet) $("history-loading").hidden = false;
     const oldHeight = $("message-scroll").scrollHeight, oldTop = $("message-scroll").scrollTop;
     const atBottom = nearBottom();
@@ -357,8 +532,10 @@
       const data = await jsonApi(sessionPath(id, `?${query}`));
       if (!state.sessions.has(id)) return;
       const current = state.sessions.get(id), mergedSession = { ...current, ...data };
+      if (current.plan && (!data.plan || current.plan.revision > data.plan.revision ||
+          (current.plan !== initialPlan && current.plan.revision === data.plan.revision))) mergedSession.plan = current.plan;
       if (version !== state.snapshotVersion) {
-        for (const key of ["busy", "phase", "status", "confirmation", "partial", "partial_display", "partial_reasoning", "title", "permission_policy", "model_profile", "tool_names", "workspace_mode", "parent_id", "unread", "total_messages"]) {
+        for (const key of ["busy", "phase", "status", "confirmation", "partial", "partial_display", "partial_reasoning", "title", "permission_policy", "model_profile", "tool_names", "workspace_mode", "parent_id", "unread", "total_messages", "context_status", "plan", "error"]) {
           if (key in current) mergedSession[key] = current[key];
         }
       }
@@ -523,7 +700,8 @@
     for (const key of history.nodes.keys()) if (!currentKeys.has(key)) history.nodes.delete(key);
     $("messages").replaceChildren(fragment);
     $("load-history").hidden = history.nextBefore == null || history.nextBefore <= 0;
-    $("conversation-start").hidden = history.records.some(({ message }) => hasNarrative(message)) || Boolean(selectedSession()?.busy);
+    const session = selectedSession();
+    $("conversation-start").hidden = history.records.length > 0 || history.total > 0 || history.nextBefore > 0 || session?.total_messages > 0 || Boolean(session?.busy);
   }
   function renderConversationStatus() {
     const session = selectedSession(); if (!session) return;
@@ -534,11 +712,41 @@
     setText("status-permission", optionLabel(state.meta.policies, session.permission_policy, "policy"));
     setText("status-model", optionLabel(state.meta.models, session.model_profile, "model"));
     setText("composer-model-label", optionLabel(state.meta.models, session.model_profile, "model"));
+    setText("composer-permission-label", optionLabel(state.meta.policies, session.permission_policy, "policy"));
+    renderArchiveLink();
     setText("file-workspace-label", workspaceLabel(session));
+    renderSessionProgress(session);
+    renderInspector();
     const confirmation = session.confirmation;
     $("confirmation-card").hidden = !confirmation;
     if (confirmation) setText("confirmation-prompt", plainContent(confirmation.prompt));
     renderComposer();
+  }
+  function renderSessionProgress(session) {
+    const signature = JSON.stringify([session.id, session.context_status, session.plan, state.meta.task_plans_enabled]);
+    if (state.renderSignatures.progress === signature) return;
+    state.renderSignatures.progress = signature;
+    const context = session.context_status || {}, items = [];
+    if (Number.isFinite(context.context_capacity_tokens)) items.push(`声明容量 ${context.context_capacity_tokens.toLocaleString()} tokens（本地配置）`);
+    if (Number.isFinite(context.sent_tokens)) items.push(`输入估算 ${context.sent_tokens.toLocaleString()} tokens`);
+    if (Number.isFinite(context.schema_tokens)) items.push(`工具描述 ${context.schema_tokens.toLocaleString()} tokens`);
+    if (Number.isFinite(context.provider_input_tokens)) items.push(`上次供应商输入 ${context.provider_input_tokens.toLocaleString()} tokens`);
+    if (Number.isFinite(context.input_limit_tokens)) items.push(`工作上限 ${context.input_limit_tokens.toLocaleString()}，输出预留 ${context.response_reserve_tokens?.toLocaleString() || "0"}`);
+    if (Number.isFinite(context.utilization)) items.push(`上下文预算 ${(context.utilization * 100).toFixed(0)}%`);
+    else if (Number.isFinite(context.sent_tokens)) items.push(`上下文约 ${context.sent_tokens.toLocaleString()} tokens`);
+    if (Number.isFinite(context.archived_chunks)) items.push(`已归档 ${context.archived_chunks} 块`);
+    const supervision = { evaluated: "已检查", already_compacted: "相同历史已压缩，无需重复", cooldown: "新增历史尚少，无需重复整理", hard_budget: "额度不足，直接整理", not_due: "未到检查间隔", below_threshold: "占用未达阈值，无需检查", disabled: "未启用", insufficient_history: "历史不足", unavailable: "不可用", unknown: "状态未知" };
+    if (context.structured) items.push(`监督：${supervision[context.supervisor] || (context.supervisor_enabled ? "等待检查" : "未启用")}`);
+    if (context.summary_kind === "extractive_fallback" || context.summary === "failed_or_over_budget") items.push("摘要：已降级");
+    if (context.compact_reason === "high_utilization_and_variance") items.push(`${context.compacted === true ? "本次压缩" : "压缩判定"}：高占用且价值差异过大`);
+    else if (context.compact_reason === "context_insufficient") items.push(`${context.compacted === true ? "本次压缩" : "压缩判定"}：上下文额度不足`);
+    else if (context.compact_reason === "budget_risk") items.push("压缩判定：预算风险");
+    else if (context.compact_reason === "value_variance") items.push("压缩判定：价值差异");
+    setText("context-progress", items.join(" · ") || "上下文指标：首次模型调用后更新");
+    const plan = session.plan && !["none", "archived"].includes(session.plan.status) ? session.plan : null, counts = plan?.counts || {}, total = Object.values(counts).filter(Number.isFinite).reduce((sum, count) => sum + Math.max(0, count), 0);
+    const labels = { completed: "已完成", failed: "失败", cancelled: "已取消", in_progress: "进行中", pending: "待执行", waiting: "等待执行", blocked: "受阻", interrupted: "已中断" };
+    setText("plan-progress", plan ? `计划 ${counts.completed || 0}/${total} 步 · ${labels[plan.status] || "待执行"} · 验收${plan.verification === "verified" ? "已验证" : "未验证"}` : "查看任务计划");
+    $("plan-progress").hidden = !state.meta.task_plans_enabled && !plan;
   }
   function renderLiveMessage() {
     const session = selectedSession(); if (!session) return;
@@ -557,7 +765,11 @@
     const pending = state.sending.has(session.id), busy = Boolean(session.busy);
     $("send-message").disabled = pending || busy || !$("message-input").value.trim() || !state.ready;
     $("stop-agent").hidden = !busy; $("send-message").hidden = busy;
-    setText("composer-status", state.connectionState === "offline" ? "连接已断开，正在重试…" : session.confirmation ? "确认操作后，Agent 将继续" : pending ? "正在发送…" : busy ? phaseLabel(session) : "准备就绪");
+    const optionsDisabled = pending || busy || !state.ready || state.quickSaving;
+    ["composer-model", "composer-permission", "status-model", "status-permission"].forEach((id) => { $(id).disabled = optionsDisabled; });
+    const status = state.connectionState === "offline" ? "连接已断开，正在重试…" : session.confirmation ? "确认操作后，Agent 将继续" : pending ? "正在发送…" : busy ? phaseLabel(session) : "准备就绪";
+    setText("composer-status", busy ? `${status} · 可编辑草稿，任务完成后再发送` : status);
+    if ($("quick-dialog").open) renderQuickOptions();
   }
   function resizeInput() { const input = $("message-input"); input.style.height = "auto"; input.style.height = `${Math.min(190, Math.max(69, input.scrollHeight))}px`; }
   async function sendMessage(event) {
@@ -732,15 +944,77 @@
   }
   function fillSelect(id, items, value, kind) {
     const node = $(id); node.replaceChildren();
-    const defaultOption = element("option", "", kind === "policy" ? "继承默认权限" : "继承默认模型"); defaultOption.value = ""; node.append(defaultOption);
+    if (kind !== "policy") {
+      const defaultOption = element("option", "", state.defaultModel ? `默认 · ${state.defaultModel}` : "继承默认模型"); defaultOption.value = ""; node.append(defaultOption);
+    }
     const options = normalizeOptions(items, kind);
     if (value && !options.some((item) => item.value === value)) options.push({ value, label: optionLabel(items, value, kind) });
     options.forEach((item) => { const option = element("option", "", item.label); option.value = item.value; node.append(option); });
     node.value = value || "";
   }
+  function renderArchiveLink() {
+    const link = $("open-context-archive");
+    link.hidden = !state.meta.debug_enabled || !state.activeId;
+    link.href = state.activeId ? `/debug?${new URLSearchParams({ session: state.activeId, context: "1" })}` : "/debug";
+  }
+  function renderQuickOptions() {
+    const session = state.sessions.get(state.quickId), kind = state.quickKind;
+    if (!session || !["model", "policy"].includes(kind)) return;
+    const disabled = Boolean(session.busy || state.sending.has(session.id) || state.quickSaving);
+    const options = [...(kind === "model" ? [{ value: "", label: optionLabel([], null, kind), description: "继承服务默认配置" }] : []), ...normalizeOptions(kind === "model" ? state.meta.models : state.meta.policies, kind)];
+    const selected = kind === "model" ? session.model_profile : session.permission_policy;
+    const signature = JSON.stringify([session.id, kind, selected, disabled, options]);
+    if (state.renderSignatures.quick === signature) return;
+    state.renderSignatures.quick = signature;
+    setText("quick-hint", session.busy ? "任务运行中；完成后可以修改。" : state.quickSaving ? "正在保存…" : "选择后立即用于此会话。以下选项由本地服务提供。");
+    const choices = options.map((option) => {
+      const button = element("button", "quick-option"); button.type = "button"; button.disabled = disabled;
+      button.setAttribute("aria-pressed", String((selected || "") === option.value));
+      const text = element("span", "quick-option-text"); text.append(element("strong", "", option.label));
+      if (option.description) text.append(element("small", "", option.description));
+      button.append(text, element("span", "quick-option-check", (selected || "") === option.value ? "✓" : ""));
+      button.addEventListener("click", () => saveQuickSetting(option.value)); return button;
+    });
+    $("quick-options").replaceChildren(...choices);
+  }
+  function openQuickPicker(kind) {
+    const session = selectedSession();
+    if (!session || session.busy || state.sending.has(session.id) || state.quickSaving || !state.ready) return;
+    state.quickId = session.id; state.quickKind = kind; state.renderSignatures.quick = null;
+    showError("quick-error", null); setText("quick-title", kind === "model" ? "选择模型" : "操作权限");
+    renderQuickOptions(); $("quick-dialog").showModal();
+  }
+  async function saveQuickSetting(value) {
+    const id = state.quickId, kind = state.quickKind, session = state.sessions.get(id);
+    if (!session || session.busy || state.sending?.has(id) || state.quickSaving || !["model", "policy"].includes(kind)) return;
+    state.quickSaving = true; showError("quick-error", null); renderQuickOptions();
+    try {
+      const field = kind === "model" ? "model_profile" : "permission_policy";
+      const updated = await jsonApi(sessionPath(id), { method: "PATCH", body: { [field]: value || null } });
+      if (state.sessions.has(id)) state.sessions.set(id, { ...state.sessions.get(id), [field]: updated[field] ?? (value || null) });
+      if (state.quickId === id && state.quickKind === kind && $("quick-dialog").open) $("quick-dialog").close();
+      renderSessions(); renderTabs();
+    } catch (error) {
+      if (state.quickId === id && state.quickKind === kind && $("quick-dialog").open) showError("quick-error", error);
+    } finally {
+      state.quickSaving = false; renderQuickOptions();
+      if (state.activeId) renderConversationStatus();
+    }
+  }
+  function handleWorkspaceShortcut(event) {
+    if (event.isComposing || event.keyCode === 229 || event.altKey || !(event.ctrlKey || event.metaKey) || !state.ready || state.cleanupPending) return;
+    const key = event.key.toLowerCase();
+    if (key === "o" && event.shiftKey) {
+      event.preventDefault(); document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); openNew();
+    } else if (key === "l" && !event.shiftKey) {
+      event.preventDefault(); document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); focusInput();
+    } else if (["k", "p"].includes(key)) {
+      event.preventDefault(); if (!$("command-dialog").open) { document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); openCommand(); }
+    }
+  }
   function policyDescription() {
     const option = normalizeOptions(state.meta.policies, "policy").find((item) => item.value === $("settings-policy").value);
-    const descriptions = { readonly: "允许读取与安全查询；阻止写入及其他有副作用的操作。", standard: "读取操作可直接执行；写入、命令等操作遵循确认规则。", trusted: "仅匹配显式预先确认规则时自动批准，其余操作仍需确认。", smart: "已验证的低风险操作可自动批准；其余操作需要确认。", full_access: "工具调用自动批准，保留沙箱、路径、配额及审计检查；删除会话仍需确认。" };
+    const descriptions = { readonly: "允许读取与安全查询；阻止写入及其他有副作用的操作。", smart: "已验证的低风险操作可自动批准；高风险或未知操作需要申请。旧会话的保守确认规则继续有效。", full_access: "工具调用自动批准，保留沙箱、路径、配额及审计检查；删除会话仍需确认。" };
     setText("settings-policy-description", option?.description || descriptions[$("settings-policy").value] || "使用服务的默认权限策略；需要确认的操作会在对话中显示。");
   }
   async function openSettings() {
@@ -757,12 +1031,79 @@
     });
     $("settings-tools").replaceChildren(fragment); $("settings-dialog").showModal();
   }
+  function resetModelForm() {
+    state.editingModel = null; $("model-form").reset();
+    $("model-api-key").value = "";
+    setText("model-form-title", "添加模型"); setText("model-key-hint", "本地服务无需密钥时可留空；编辑时留空保留现有密钥。");
+    showError("models-error", null);
+  }
+  async function loadModels() {
+    const data = await jsonApi("/api/models");
+    state.defaultModel = typeof data.default_model === "string" ? data.default_model : null;
+    // The public library intentionally contains no API key values.
+    state.modelLibrary = (data.models || []).map((item) => ({ id: item.id, name: item.name, model: item.model, base_url: item.base_url, context_tokens: item.context_tokens, response_reserve_tokens: item.response_reserve_tokens, has_api_key: Boolean(item.has_api_key), editable: !item.read_only && item.editable !== false && !item.builtin && !item.built_in, source: item.source }));
+    renderModels();
+  }
+  async function openModels() {
+    resetModelForm(); $("models-dialog").showModal();
+    $("model-list").replaceChildren(element("p", "field-hint", "正在读取模型…"));
+    try { await loadModels(); } catch (error) { showError("models-error", error); }
+  }
+  function renderModels() {
+    const fragment = document.createDocumentFragment();
+    state.modelLibrary.forEach((model) => {
+      const row = element("article", "model-entry"), info = element("div", "model-entry-info"), actions = element("div", "model-entry-actions");
+      info.append(element("strong", "", model.name || model.id), element("span", "", model.model), element("small", "", model.has_api_key ? "已配置密钥" : "未配置密钥"));
+      const select = element("button", "text-button", "选择"); select.type = "button";
+      select.addEventListener("click", () => {
+        // Saving the surrounding session form applies the selection.
+        fillSelect("settings-model", state.meta.models, model.id, "model");
+        $("models-dialog").close(); toast("已选择模型，保存会话设置后生效。");
+      }); actions.append(select);
+      if (model.editable) {
+        const edit = element("button", "text-button", "编辑"); edit.type = "button";
+        edit.addEventListener("click", () => { resetModelForm(); state.editingModel = model.id; $("model-name").value = model.name || ""; $("model-id").value = model.model || ""; $("model-base-url").value = model.base_url || ""; $("model-context-tokens").value = model.context_tokens ?? ""; $("model-response-reserve").value = model.response_reserve_tokens ?? ""; setText("model-form-title", "编辑模型"); setText("model-key-hint", "留空保留现有密钥；修改服务地址须重新输入对应密钥。"); $("model-name").focus(); });
+        const remove = element("button", "text-button danger-hover", "删除"); remove.type = "button"; remove.addEventListener("click", () => deleteModel(model, remove));
+        actions.append(edit, remove);
+      }
+      row.append(info, actions); fragment.append(row);
+    });
+    if (!state.modelLibrary.length) fragment.append(element("p", "field-hint", "还没有保存的模型。添加连接后即可选择。"));
+    $("model-list").replaceChildren(fragment);
+  }
+  async function refreshModelOptions(selected) {
+    const meta = await jsonApi("/api/meta"); state.meta = meta;
+    fillSelect("settings-model", state.meta.models, selected ?? $("settings-model").value, "model");
+    if (state.activeId) renderConversationStatus();
+  }
+  async function saveModel(event) {
+    event.preventDefault(); if (state.modelSaving) return;
+    state.modelSaving = true; $("model-submit").disabled = true; $("model-reset").disabled = true; showError("models-error", null);
+    try {
+      const id = state.editingModel;
+      const body = { name: $("model-name").value.trim(), model: $("model-id").value.trim(), base_url: $("model-base-url").value.trim(), api_key: $("model-api-key").value,
+        context_tokens: $("model-context-tokens").value ? Number($("model-context-tokens").value) : null,
+        response_reserve_tokens: $("model-response-reserve").value ? Number($("model-response-reserve").value) : null };
+      const saved = await jsonApi(id ? `/api/models/${encodeURIComponent(id)}` : "/api/models", { method: id ? "PUT" : "POST", body });
+      $("model-api-key").value = "";
+      await loadModels(); await refreshModelOptions(saved.id); resetModelForm(); toast("模型已保存，可在会话中选择。");
+    } catch (error) { showError("models-error", error); }
+    finally { $("model-api-key").value = ""; state.modelSaving = false; $("model-submit").disabled = false; $("model-reset").disabled = false; }
+  }
+  async function deleteModel(model, button) {
+    if (!window.confirm(`删除模型「${model.name || model.id}」？`)) return;
+    button.disabled = true; showError("models-error", null);
+    try { await jsonApi(`/api/models/${encodeURIComponent(model.id)}`, { method: "DELETE", body: {} }); await loadModels(); await refreshModelOptions(); if (state.editingModel === model.id) resetModelForm(); toast("模型已删除。"); }
+    catch (error) { showError("models-error", error); button.disabled = false; }
+  }
   async function saveSettings(event) {
     event.preventDefault(); const id = state.settingsId; if (!id) return;
     $("settings-submit").disabled = true; showError("settings-error", null);
     const tools = [...$("settings-tools").querySelectorAll("input:checked")].map((input) => input.value);
     try {
-      const body = { title: $("settings-title").value.trim() || "未命名会话", permission_policy: $("settings-policy").value || null, model_profile: $("settings-model").value || null, tool_names: state.settingsAllTools ? null : tools };
+      const body = { title: $("settings-title").value.trim() || "未命名会话", model_profile: $("settings-model").value || null, tool_names: state.settingsAllTools ? null : tools };
+      // 修改标题/模型不应隐式升级旧会话的保守确认规则。
+      if ($("settings-policy").value !== state.sessions.get(state.settingsId)?.permission_policy) body.permission_policy = $("settings-policy").value || null;
       const updated = await jsonApi(sessionPath(id), { method: "PATCH", body });
       state.sessions.set(id, { ...state.sessions.get(id), ...updated }); $("settings-dialog").close(); renderSessions(); renderTabs();
       if (state.activeId === id) { renderConversationStatus(); if (state.sidebarView === "files") loadFiles(""); }
@@ -848,13 +1189,19 @@
     const calls = state.runtime.active_model_calls ?? 0;
     setText("runtime-summary", `${activeCount} Agent · ${Array.isArray(calls) ? calls.length : calls} 模型调用 · ${tools.length} 工具`);
     if (!state.activeId) { setText("status-permission", "默认权限"); setText("status-model", "默认模型"); }
+    renderInspector();
   }
   function toggleMonitor(force) {
-    state.monitorOpen = force ?? !state.monitorOpen; $("monitor").hidden = !state.monitorOpen; $("activity-monitor").classList.toggle("active", state.monitorOpen);
+    const mobile = window.matchMedia("(max-width: 979px)").matches;
+    const next = force ?? (mobile ? !$("inspector").classList.contains("mobile-open") : !state.monitorOpen);
+    if (mobile) $("inspector").classList.toggle("mobile-open", next);
+    state.monitorOpen = next; $("monitor").hidden = !state.monitorOpen; $("activity-monitor").classList.toggle("active", state.monitorOpen);
     if (state.monitorOpen) { renderMonitor(); refreshTasks(true); }
+    applyLayout();
   }
   function monitorTable(headers, widths) {
     const table = element("table", "monitor-table"), head = element("thead"), row = element("tr"), body = element("tbody");
+    table.dataset.kind = state.monitorTab;
     headers.forEach((header, index) => { const cell = element("th", "", header); if (widths[index]) cell.style.width = widths[index]; row.append(cell); });
     head.append(row); table.append(head, body); return { table, body };
   }
@@ -925,10 +1272,11 @@
   async function refreshPlan(quiet = false) {
     const owner = state.planOwner;
     if (!owner || state.planLoading) return;
-    const generation = state.planGeneration; state.planLoading = true;
+    const generation = state.planGeneration, captured = state.sessions.get(owner)?.plan; state.planLoading = true;
     try {
       const plan = await jsonApi(`/api/sessions/${encodeURIComponent(owner)}/plan?limit=256`);
       if (generation !== state.planGeneration || state.planOwner !== owner || !$("plan-dialog").open) return;
+      if (mergePlanSummary(owner, plan, captured) && state.activeId === owner) renderConversationStatus();
       state.planView = plan; showError("plan-error", null);
       const runtime = state.sessions.get(owner);
       setText("plan-summary", `${runtime?.title || owner} · 运行：${runtime?.status || "unknown"} · 计划：${plan.status} · revision ${plan.revision} · 验收：${plan.verification}`);
@@ -1050,12 +1398,18 @@
   $("message-scroll").addEventListener("scroll", updateJumpButton, { passive: true }); $("jump-bottom").addEventListener("click", () => scrollBottom(true));
   $("load-history").addEventListener("click", () => { const history = state.history.get(state.activeId); if (history?.nextBefore != null) { $("load-history").disabled = true; loadConversation(state.activeId, { before: history.nextBefore }); } });
   $("confirmation-allow").addEventListener("click", () => answerConfirmation(true)); $("confirmation-deny").addEventListener("click", () => answerConfirmation(false));
-  ["open-settings", "activity-settings", "composer-model", "status-permission", "status-model"].forEach((id) => $(id).addEventListener("click", openSettings));
+  ["open-settings", "activity-settings"].forEach((id) => $(id).addEventListener("click", openSettings));
+  ["composer-model", "status-model"].forEach((id) => $(id).addEventListener("click", () => openQuickPicker("model")));
+  ["composer-permission", "status-permission"].forEach((id) => $(id).addEventListener("click", () => openQuickPicker("policy")));
+  $("quick-settings").addEventListener("click", () => { $("quick-dialog").close(); openSettings(); });
   $("settings-form").addEventListener("submit", saveSettings); $("settings-policy").addEventListener("change", policyDescription);
+  $("manage-models").addEventListener("click", openModels); $("model-form").addEventListener("submit", saveModel); $("model-reset").addEventListener("click", resetModelForm);
+  $("models-dialog").addEventListener("close", () => { $("model-api-key").value = ""; });
   $("tools-all").addEventListener("click", () => { state.settingsAllTools = true; $("settings-tools").querySelectorAll("input").forEach((input) => { input.checked = true; }); });
   $("tools-none").addEventListener("click", () => { state.settingsAllTools = false; $("settings-tools").querySelectorAll("input").forEach((input) => { input.checked = false; }); });
   $("open-memory").addEventListener("click", openMemory); $("memory-form").addEventListener("submit", saveMemory);
   $("refresh-plan").addEventListener("click", () => refreshPlan());
+  $("plan-progress").addEventListener("click", openPlan);
   $("rename-session").addEventListener("click", renameSession); $("delete-session").addEventListener("click", deleteSession);
   $("export-session").addEventListener("click", () => $("export-dialog").showModal()); document.querySelectorAll("[data-export]").forEach((button) => button.addEventListener("click", () => exportSession(button.dataset.export)));
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => switchSidebar(button.dataset.view)));
@@ -1063,6 +1417,7 @@
   $("refresh-files").addEventListener("click", () => loadFiles(state.filePath)); $("file-up").addEventListener("click", () => loadFiles(state.filePath.split("/").slice(0, -1).join("/")));
   $("copy-file").addEventListener("click", () => copyText($("preview-content").textContent));
   ["activity-monitor", "status-monitor"].forEach((id) => $(id).addEventListener("click", () => toggleMonitor())); $("close-monitor").addEventListener("click", () => toggleMonitor(false));
+  $("inspector-close").addEventListener("click", () => { $("inspector").classList.remove("mobile-open"); });
   document.querySelectorAll("[data-monitor]").forEach((button) => button.addEventListener("click", () => activateMonitorTab(button.dataset.monitor))); $("refresh-tasks").addEventListener("click", () => refreshTasks());
   $("open-command").addEventListener("click", openCommand);
   $("command-input").addEventListener("input", () => { state.paletteIndex = 0; renderCommands(); });
@@ -1071,11 +1426,7 @@
     if (["ArrowDown", "ArrowUp"].includes(event.key) && state.paletteItems.length) { event.preventDefault(); state.paletteIndex = (state.paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + state.paletteItems.length) % state.paletteItems.length; renderCommands(); }
     else if (event.key === "Enter") { event.preventDefault(); runCommand(state.paletteIndex); }
   });
-  document.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && ["k", "p"].includes(event.key.toLowerCase()) && state.ready && !state.cleanupPending) {
-      event.preventDefault(); if (!$("command-dialog").open) { document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); openCommand(); }
-    }
-  });
+  document.addEventListener("keydown", handleWorkspaceShortcut);
   document.querySelectorAll(".dialog-close").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
   document.querySelectorAll("dialog").forEach((dialog) => {
     dialog.addEventListener("click", (event) => { if (event.target === dialog && !(dialog.id === "maintenance-dialog" && state.cleanupPending)) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); } });
@@ -1084,5 +1435,5 @@
   window.addEventListener("online", () => { if (!state.connected) reconnect(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && state.ready) { refreshSessions(); if (state.monitorOpen) refreshTasks(true); } });
   if (/Mac|iPhone|iPad/.test(navigator.platform)) { setText("command-shortcut", "⌘ K"); setText("welcome-command-shortcut", "⌘ K"); }
-  connect();
+  initLayout(); $("activity-monitor").classList.toggle("active", state.monitorOpen); renderInspector(); renderMonitor(); connect();
 })();

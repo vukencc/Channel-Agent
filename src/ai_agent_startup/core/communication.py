@@ -68,6 +68,10 @@ class SessionCommunication:
                 raise ValueError('信箱已满；不会丢弃历史或自动重试')
             self.manager.store.atomic_write(self._path(recipient_id), body)
             self.latest[recipient_id] = item['seq']
+            # 持久提交后、释放信箱锁前发布，保证并发 read 不会先于 sent。
+            if self.manager.debug.enabled:
+                self.manager.debug.event('message.sent', session_id=sender_id, related_session_id=recipient_id,
+                    message_seq=item['seq'], turn_id=sender.record.get('last_run', {}).get('turn_id'), state='completed')
         # 直接内部调用同样保留发送方审计，不记录消息正文。
         from ai_agent_startup.tools.sandbox import _context
         context = _context.get()
@@ -92,4 +96,9 @@ class SessionCommunication:
                         raise ValueError('单条信件超过 TOOL_MAX_OUTPUT；请提高输出上限后重试读取，信件已保留')
                     break
                 page.append(item)
+            if self.manager.debug.enabled:
+                for item in page:
+                    self.manager.debug.event('message.read', session_id=recipient_id,
+                        related_session_id=item['sender_id'], message_seq=item['seq'], state='completed',
+                        turn_id=self._session(recipient_id).record.get('last_run', {}).get('turn_id'))
             return {'messages': page, 'next_seq': page[-1]['seq'] if page else after_seq}

@@ -7,7 +7,18 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-PERMISSION_POLICIES = frozenset({'readonly', 'standard', 'trusted', 'smart', 'full_access'})
+PERMISSION_POLICIES = frozenset({'full_access', 'smart', 'readonly'})
+LEGACY_PERMISSION_POLICIES = frozenset({'standard', 'trusted'})
+ACCEPTED_PERMISSION_POLICIES = PERMISSION_POLICIES | LEGACY_PERMISSION_POLICIES
+
+
+def public_permission_policy(policy: str) -> str:
+    """将历史策略显示为当前档位；不会修改存储值或扩大执行权限。"""
+    if policy in LEGACY_PERMISSION_POLICIES:
+        return 'smart'
+    if policy not in PERMISSION_POLICIES:
+        raise ValueError('无效权限策略')
+    return policy
 
 
 class OperationRisk(BaseModel):

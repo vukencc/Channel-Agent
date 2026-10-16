@@ -1,6 +1,7 @@
 """隔离命令的有界 CONNECT 网关；只允许明确授权的公网域名及 443 端口。"""
 from contextvars import copy_context
 import ipaddress
+import math
 from pathlib import Path
 import re
 import select
@@ -52,14 +53,52 @@ def resolve_destination(authority: str) -> tuple[str, list[tuple]]:
 
 class NetworkProxy:
     """一次命令一个代理，连接数、累计双向字节及连接时间均有上限。"""
-    def __init__(self):
+    def __init__(self, *, max_bytes: int | None = None,
+                 max_connections: int | None = None, timeout: float | None = None):
+        self.max_bytes = config.COMMAND_NETWORK_MAX_BYTES if max_bytes is None else max_bytes
+        self.max_connections = config.COMMAND_NETWORK_MAX_CONNECTIONS if max_connections is None else max_connections
+        self.timeout = config.COMMAND_NETWORK_TIMEOUT if timeout is None else timeout
+        if (type(self.max_bytes) is not int or self.max_bytes <= 0
+                or type(self.max_connections) is not int or self.max_connections <= 0
+                or isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float))
+                or not math.isfinite(self.timeout) or self.timeout <= 0):
+            raise ValueError('网络字节/连接配额须为正整数，连接时限须为有限正数')
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.sockets: set[socket.socket] = set()
         self.threads: list[threading.Thread] = []
         self.transferred = 0
         self.connections = 0
+        self.denials: list[str] = []
+        self._audited_denials: set[str] = set()
         self.context = copy_context()
+
+    def _usage(self) -> dict:
+        with self.lock:
+            return {'bytes': self.transferred, 'connections': self.connections,
+                    'max_bytes': self.max_bytes, 'max_connections': self.max_connections,
+                    'timeout_seconds': self.timeout}
+
+    def _record_denial(self, code: str, reason: str, *, host: str = '', connected: bool = False,
+                       error: str = 'PermissionError') -> None:
+        usage = self._usage()
+        summary = (f'{reason}（累计字节 {usage["bytes"]}/{self.max_bytes}；'
+                   f'生命周期连接 {usage["connections"]}/{self.max_connections}；'
+                   f'连接时限 {self.timeout:g}s）')
+        with self.lock:
+            # 已耗尽的连接可反复重连，但不能借宿主审计写入绕过网络/文件额度。
+            if code in self._audited_denials or len(self._audited_denials) >= 8:
+                return
+            self._audited_denials.add(code)
+            if len(self.denials) < 8 and summary not in self.denials:
+                self.denials.append(summary)
+        audit('network_closed', host=host, error=error, connected=connected,
+              denial_code=code, denial_reason=reason, **usage)
+
+    def denial_summary(self) -> str:
+        """仅返回本地拒绝类型，不返回请求头、凭据或响应正文。"""
+        with self.lock:
+            return '；'.join(self.denials)
 
     def __enter__(self):
         validate_network_config()
@@ -69,7 +108,7 @@ class NetworkProxy:
         try:
             self.listener.bind(str(self.path))
             self.path.chmod(0o600)
-            self.listener.listen(config.COMMAND_NETWORK_MAX_CONNECTIONS)
+            self.listener.listen(self.max_connections)
             self.listener.settimeout(.1)
             self.acceptor = threading.Thread(target=self._accept, daemon=True)
             self.acceptor.start()
@@ -88,11 +127,15 @@ class NetworkProxy:
             except OSError:
                 break
             with self.lock:
-                allowed = self.connections < config.COMMAND_NETWORK_MAX_CONNECTIONS and _dns_slots.acquire(False)
+                exhausted = self.connections >= self.max_connections
+                allowed = not exhausted and _dns_slots.acquire(False)
                 if allowed:
                     self.connections += 1
                     self.sockets.add(client)
             if not allowed:
+                self.context.copy().run(self._record_denial,
+                    'connection_limit' if exhausted else 'dns_capacity',
+                    '命令网络生命周期连接数超限' if exhausted else '网络 DNS 解析容量已满')
                 client.close()
                 continue
             thread = threading.Thread(target=self.context.copy().run, args=(self._serve, client), daemon=True)
@@ -104,7 +147,7 @@ class NetworkProxy:
         host = ''
         connected = False
         try:
-            client.settimeout(config.COMMAND_NETWORK_TIMEOUT)
+            client.settimeout(self.timeout)
             header = bytearray()
             while not header.endswith(b'\r\n\r\n'):
                 data = client.recv(1)
@@ -120,7 +163,7 @@ class NetworkProxy:
             # 使用本次已验证数值地址，避免连接阶段重新解析造成 DNS rebinding。
             family, kind, protocol, _, address = addresses[0]
             upstream = socket.socket(family, kind, protocol)
-            upstream.settimeout(config.COMMAND_NETWORK_TIMEOUT)
+            upstream.settimeout(self.timeout)
             with self.lock:
                 if self.stop.is_set():
                     return
@@ -128,21 +171,34 @@ class NetworkProxy:
             upstream.connect(address)
             client.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
             connected = True
-            deadline = time.monotonic() + config.COMMAND_NETWORK_TIMEOUT
-            audit('network_connect', host=host, port=443, peer=address[0])
-            while not self.stop.is_set() and time.monotonic() < deadline:
-                readable, _, _ = select.select([client, upstream], [], [], .1)
+            deadline = time.monotonic() + self.timeout
+            audit('network_connect', host=host, port=443, peer=address[0], **self._usage())
+            while not self.stop.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('网络连接时限已到')
+                readable, _, _ = select.select([client, upstream], [], [], min(.1, remaining))
                 for source in readable:
                     data = source.recv(16384)
                     if not data:
                         return
                     with self.lock:
-                        if self.transferred + len(data) > config.COMMAND_NETWORK_MAX_BYTES:
+                        if self.transferred + len(data) > self.max_bytes:
                             raise PermissionError('命令网络累计字节超限')
                         self.transferred += len(data)
                     (upstream if source is client else client).sendall(data)
         except (OSError, ValueError, UnicodeError) as exc:
-            audit('network_closed', host=host, error=type(exc).__name__, connected=connected)
+            # PermissionError 文本均由本模块的固定边界检查生成。
+            denial = str(exc)[:160] if isinstance(exc, PermissionError) else type(exc).__name__
+            code = {'命令网络累计字节超限': 'byte_limit',
+                    '域名不在白名单内': 'host_not_allowed',
+                    '拒绝非公网单播或 IPv6 过渡 DNS 结果': 'nonpublic_dns',
+                    '只支持精确域名:443': 'invalid_destination',
+                    '无效代理请求': 'invalid_request',
+                    '只支持 HTTPS CONNECT': 'invalid_method'}.get(denial, 'connection_error')
+            if isinstance(exc, TimeoutError):
+                code, denial = 'connection_timeout', '命令网络连接时限已到'
+            self._record_denial(code, denial, host=host, connected=connected, error=type(exc).__name__)
             if not connected:
                 try:
                     client.sendall(b'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n')
@@ -168,4 +224,4 @@ class NetworkProxy:
                     pass
                 stream.close()
         self.directory.cleanup()
-        audit('network_finished', bytes=self.transferred, connections=self.connections)
+        audit('network_finished', **self._usage())

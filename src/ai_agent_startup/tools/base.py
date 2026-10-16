@@ -14,6 +14,7 @@ class Tool:
     fn: Callable[..., object]
     timeout_s: float | None = None
     concurrency: str = "serial"
+    holds_read_slot: bool = True
     workspace_access: bool = False
 
     @property
@@ -31,10 +32,10 @@ class Tool:
 TOOL_REGISTRY: dict[str, Tool] = {}
 
 
-def register_tool(args_model: type[BaseModel], name: str | None = None, *, timeout_s=None, concurrency="serial", workspace_access=False):
+def register_tool(args_model: type[BaseModel], name: str | None = None, *, timeout_s=None, concurrency="serial", workspace_access=False, holds_read_slot=True):
     """装饰器：把一个普通函数注册成工具，自动登记名字、schema 和执行函数。"""
     def decorator(fn: Callable[..., object]) -> Callable[..., object]:
         tool_name = name or fn.__name__
-        TOOL_REGISTRY[tool_name] = Tool(name=tool_name, args_model=args_model, fn=fn, timeout_s=timeout_s, concurrency=concurrency, workspace_access=workspace_access)
+        TOOL_REGISTRY[tool_name] = Tool(name=tool_name, args_model=args_model, fn=fn, timeout_s=timeout_s, concurrency=concurrency, workspace_access=workspace_access, holds_read_slot=holds_read_slot)
         return fn
     return decorator

@@ -10,19 +10,22 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_agent_startup import config
 from ai_agent_startup.core.llm import call_model, TOOL_SCHEMAS
-from ai_agent_startup.core.permissions import PERMISSION_POLICIES
+from ai_agent_startup.core.model_settings import ModelParameters
+from ai_agent_startup.core.permissions import PERMISSION_POLICIES, public_permission_policy
 from ai_agent_startup.core.session_service import open_session
 from ai_agent_startup.core.sessions import SessionManager
-from ai_agent_startup.core.storage import LazyRecord, SessionStore
+from ai_agent_startup.core.storage import LazyRecord, SessionStore, wait_for_io_completion
 from ai_agent_startup.core.tool_settings import filter_schemas
 from ai_agent_startup.tools.sandbox import SandboxError, ToolContext, audit, resolve_path, tool_context
 from ai_agent_startup.web.files import directory_entries, text_preview
+from ai_agent_startup.web.context_status import context_status, public_run_error
 
 
 class Arguments(BaseModel):
@@ -39,9 +42,19 @@ class Message(Arguments):
 
 class Settings(Arguments):
     title: str | None = Field(default=None, min_length=1, max_length=120)
-    permission_policy: Literal['readonly', 'standard', 'trusted', 'smart', 'full_access'] | None = None
+    permission_policy: Literal['readonly', 'smart', 'full_access'] | None = None
     model_profile: str | None = None
     tool_names: list[str] | None = None
+
+
+class ModelSettings(Arguments):
+    name: str = Field(min_length=1, max_length=120)
+    model: str = Field(min_length=1, max_length=200)
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str = Field(default='', max_length=16384, repr=False, exclude=True)
+    parameters: ModelParameters | None = None
+    context_tokens: int | None = Field(default=None, ge=512, le=2097152, strict=True)
+    response_reserve_tokens: int | None = Field(default=None, ge=0, le=2097151, strict=True)
 
 
 class Decision(Arguments):
@@ -156,7 +169,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                     return JSONResponse({'detail': '请求需要 Content-Length 且不能超过 1 MiB'}, status_code=413)
             if app.state.manager.maintenance and request.url.path not in {'/api/maintenance', '/api/events'}:
                 return JSONResponse({'detail': '正在清理数据，请稍后重试'}, status_code=409)
-        snapshot_paths = {'/api/events', '/api/meta', '/api/sessions', '/api/tasks'}
+        snapshot_paths = {'/api/events', '/api/meta', '/api/sessions', '/api/tasks', '/api/debug'}
         if request.url.path.startswith('/api/') and (request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}
                                                      or request.url.path not in snapshot_paths):
             # 文件读取、导出和修改共用屏障；清理须等已有读写及审计完成。
@@ -177,6 +190,14 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
         return JSONResponse({'detail': str(exc)}, status_code=409)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        if request.url.path == '/api/models' or request.url.path.startswith('/api/models/'):
+            # FastAPI's default validation includes raw input (including credential bodies).
+            return JSONResponse({'detail': '模型设置格式无效'}, status_code=422)
+        from fastapi.exception_handlers import request_validation_exception_handler
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(PermissionError)
     async def permission_error(request, exc):
@@ -208,13 +229,16 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                  else len(record['messages']))
         result = {'id': value.id, 'title': record['title'], 'status': record['status'],
                 'phase': value.phase, 'busy': value.busy, 'parent_id': record.get('delegated_from'),
-                'permission_policy': app.state.manager.permission_override or record.get('permission_policy') or config.TOOL_PERMISSION_POLICY,
+                'permission_policy': public_permission_policy(app.state.manager.permission_override or record.get('permission_policy') or config.TOOL_PERMISSION_POLICY),
                 'model_profile': record.get('model_profile'), 'tool_names': record.get('tool_names', config.MODEL_TOOL_NAMES),
                 'workspace_mode': record.get('workspace_mode', 'isolated'),
                 'workspace_owner_id': record.get('workspace_owner_id', value.id),
                 'unread': app.state.manager.communication.pending_count(value),
                 'confirmation': copy.deepcopy(value.confirmation),
-                'partial': value.partial, 'partial_reasoning': value.partial_reasoning, 'total_messages': count}
+                'partial': value.partial, 'partial_reasoning': value.partial_reasoning, 'total_messages': count,
+                'context_status': context_status(value, app.state.manager.history_context),
+                'error': (public_run_error(record['error']) if record.get('error') and record['status'] == 'error'
+                          else '任务已停止；已执行的文件操作不会自动回滚。' if record['status'] == 'cancelled' else '')}
         if app.state.manager.task_plans is not None:
             result['plan'] = app.state.manager.task_plans.peek(value)
         return result
@@ -245,15 +269,138 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     async def index():
         return FileResponse(assets / 'index.html')
 
+    @app.get('/debug')
+    async def debug_page():
+        if not app.state.manager.debug.enabled:
+            raise HTTPException(404, '需要 DEBUG=true 并重启服务')
+        return FileResponse(assets / 'debug.html')
+
+    @app.get('/api/debug')
+    async def debug_snapshot(cursor: int | None = Query(default=None, ge=0, le=9007199254740991),
+                             generation: str | None = Query(default=None, max_length=64)):
+        manager = app.state.manager
+        if not manager.debug.enabled:
+            raise HTTPException(404, '需要 DEBUG=true 并重启服务')
+        # 只读小型元数据，不调用 summary() 或 materialize()。
+        values = sorted(manager.sessions.values(), key=lambda value: not value.busy)
+        visible = values[:manager.debug.capacity]
+        return {'trace': manager.debug.snapshot(cursor=cursor, generation=generation), 'runtime': manager.concurrency_status(),
+                'agents_omitted': max(0, len(values) - len(visible)),
+                'agents': [{'id': value.id, 'parent_id': value.record.get('delegated_from'),
+                            'status': value.record.get('status'), 'busy': value.busy,
+                            'confirmation': value.confirmation is not None,
+                            'context_status': context_status(value, manager.history_context)}
+                           for value in visible]}
+
+    @app.get('/api/debug/events/{event_seq}/detail')
+    async def debug_event_detail(event_seq: int, generation: str | None = Query(default=None, max_length=64),
+                                 offset: int = Query(default=0, ge=0),
+                                 limit: int = Query(default=6000, ge=1, le=6000)):
+        manager = app.state.manager
+        if not manager.debug.enabled:
+            raise HTTPException(404, '需要 DEBUG=true 并重启服务')
+        if not generation:
+            raise HTTPException(422, '详情读取必须指定当前时间线 generation')
+        trace = manager.debug.snapshot()
+        if generation != trace['generation']:
+            raise HTTPException(410, '服务已重启，原时间线事件不可用')
+        event = next((row for row in trace['timeline'] if row['seq'] == event_seq), None)
+        if event is None:
+            raise HTTPException(410 if 0 < event_seq < trace['oldest_seq'] else 404,
+                                '事件已超出保留窗口或不存在')
+        value = session(event.get('session_id', ''))
+        if event['kind'] in {'model.final', 'tool.started', 'tool.completed'}:
+            await materialize(value)
+        from ai_agent_startup.web.debug_details import read_debug_detail
+        return await io(read_debug_detail, manager, value, event, offset, limit)
+
+    def archive_reader():
+        if not app.state.manager.debug.enabled:
+            raise HTTPException(404, '需要 DEBUG=true 并重启服务')
+        from ai_agent_startup.web.context_archive import ContextArchiveReader
+        return ContextArchiveReader(app.state.manager)
+
+    @app.get('/api/debug/sessions/{identifier}/context')
+    async def context_archive(identifier: str, offset: int = Query(default=0, ge=0),
+                              limit: int = Query(default=20, ge=1, le=20)):
+        reader = archive_reader()
+        return await io(reader.listing, session(identifier), offset, limit)
+
+    @app.get('/api/debug/sessions/{identifier}/context/{chunk_id}')
+    async def context_archive_chunk(identifier: str, chunk_id: str,
+                                    offset: int = Query(default=0, ge=0),
+                                    limit: int = Query(default=6000, ge=1, le=6000)):
+        reader = archive_reader()
+        if len(chunk_id) != 32:
+            raise HTTPException(404, '历史块不存在')
+        return await io(reader.chunk, session(identifier), chunk_id, offset, limit)
+
     app.mount('/static', StaticFiles(directory=assets, check_dir=False), name='static')
 
     @app.get('/api/meta')
     async def meta():
-        return {'policies': sorted(PERMISSION_POLICIES), 'models': list(config.MODEL_PROFILES),
+        return {'policies': ['full_access', 'smart', 'readonly'], 'models': app.state.manager.model_registry.ids(),
                 'tools': [row['function']['name'] for row in TOOL_SCHEMAS],
                 'limits': app.state.manager.concurrency_status()['limits'],
                 'load_errors': app.state.manager.store.errors,
-                'task_plans_enabled': app.state.manager.task_plans is not None}
+                'task_plans_enabled': app.state.manager.task_plans is not None,
+                'debug_enabled': app.state.manager.debug.enabled}
+
+    def model_arguments(arguments):
+        return {'name': arguments.name, 'model': arguments.model, 'base_url': arguments.base_url,
+                'api_key': arguments.api_key,
+                'parameters': (arguments.parameters.model_dump(exclude_none=True)
+                               if arguments.parameters is not None else None),
+                **{key: getattr(arguments, key) for key in ('context_tokens', 'response_reserve_tokens')
+                   if key in arguments.model_fields_set}}
+
+    async def model_io(function, *args, **kwargs):
+        # Keep the mutation barrier until credential writes/audits actually finish.
+        future = asyncio.get_running_loop().run_in_executor(app.state.io, partial(function, *args, **kwargs))
+        return await wait_for_io_completion(future)
+
+    def model_idle(identifier):
+        for value in app.state.manager.sessions.values():
+            if value.record.get('model_profile') == identifier and (value.busy or value.tool_workers):
+                raise ValueError('请等待使用该模型的会话及工具空闲后修改')
+
+    async def model_audit(event, identifier):
+        manager = app.state.manager
+        audit_context = ToolContext(manager.store.workspace_root, manager.store.root / 'audit.jsonl',
+                                    lambda *_: False, asyncio.Event())
+        def write():
+            with tool_context(audit_context):
+                audit(event, source='web_user', model_profile=identifier)
+        await model_io(write)
+
+    @app.get('/api/models')
+    async def models():
+        return {'models': app.state.manager.model_registry.list_public(), 'default_model': config.MODEL}
+
+    @app.post('/api/models', status_code=201)
+    async def add_model(arguments: ModelSettings):
+        public = await model_io(app.state.manager.model_registry.add, **model_arguments(arguments))
+        await model_audit('runtime_model_added', public['id'])
+        app.state.updates.notify()
+        return public
+
+    @app.put('/api/models/{identifier}')
+    async def edit_model(identifier: str, arguments: ModelSettings):
+        model_idle(identifier)
+        public = await model_io(app.state.manager.model_registry.update, identifier, **model_arguments(arguments))
+        await model_audit('runtime_model_updated', identifier)
+        app.state.updates.notify()
+        return public
+
+    @app.delete('/api/models/{identifier}')
+    async def remove_model(identifier: str):
+        model_idle(identifier)
+        if any(value.record.get('model_profile') == identifier for value in app.state.manager.sessions.values()):
+            raise ValueError('会话仍在使用该模型，请先切换这些会话的模型设置')
+        await model_io(app.state.manager.model_registry.delete, identifier)
+        await model_audit('runtime_model_deleted', identifier)
+        app.state.updates.notify()
+        return {'deleted_id': identifier}
 
     @app.get('/api/sessions')
     async def sessions():
@@ -311,8 +458,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             end = min(len(messages), before if before is not None else len(messages))
             start = max(0, end - limit)
             return {**summary(value), 'messages': copy.deepcopy(messages[start:end]),
-                    'total_messages': len(messages), 'next_before': start,
-                    'error': value.record.get('error', '')}
+                    'total_messages': len(messages), 'next_before': start}
 
     @app.post('/api/sessions/{identifier}/messages', status_code=202)
     async def send(identifier: str, arguments: Message):
@@ -345,7 +491,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             changes = arguments.model_fields_set
             if 'tool_names' in changes:
                 filter_schemas(TOOL_SCHEMAS, arguments.tool_names)
-            if arguments.model_profile and arguments.model_profile not in config.MODEL_PROFILES:
+            if arguments.model_profile and not app.state.manager.model_registry.contains(arguments.model_profile):
                 raise ValueError('未知模型预设')
             if 'title' in changes and arguments.title is None:
                 raise ValueError('名称不能为空')

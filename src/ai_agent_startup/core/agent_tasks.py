@@ -41,7 +41,7 @@ class AgentTasks:
         await asyncio.get_running_loop().run_in_executor(self.manager.store.writer,
             self.manager.store.atomic_write, self.directory / (identifier + '.json'), body)
 
-    async def start(self, parent, task, tool_names, max_rounds, delay_seconds=0, *, title=None, workspace_mode=None):
+    async def start(self, parent, task, tool_names, max_rounds=0, delay_seconds=0, *, title=None, workspace_mode=None):
         """内部入口；调用方须先完成委派确认。"""
         if self.closed or self.manager.closing or parent.cancelled.is_set() or parent.deleting:
             raise ValueError('父会话已取消或任务管理器正在关闭')
@@ -57,10 +57,13 @@ class AgentTasks:
             tool_names = list(TOOL_REGISTRY if parent_tools is None else parent_tools)
         if not isinstance(tool_names, list) or not all(isinstance(name, str) for name in tool_names) or not set(tool_names) <= allowed:
             raise ValueError('子代理工具必须为父会话工具子集')
-        limits = effective_limits(parent.record)
-        if type(max_rounds) is not int or not 1 <= max_rounds <= min(256, limits['MAX_TOOL_ROUNDS']):
+        endpoint = self.manager.model_registry.resolve(parent.record.get('model_profile'))
+        limits = effective_limits(parent.record, endpoint=endpoint)
+        parent_rounds = limits['MAX_TOOL_ROUNDS']
+        if (type(max_rounds) is not int or not 0 <= max_rounds <= 256
+                or parent_rounds > 0 and max_rounds > parent_rounds):
             raise ValueError('子代理轮次不得超过父会话有效上限')
-        limits['MAX_TOOL_ROUNDS'] = max_rounds
+        limits['MAX_TOOL_ROUNDS'] = parent_rounds if max_rounds == 0 else max_rounds
         limits = validate_limits(limits)
         if sum(record['status'] in {'queued', 'running'} for record in self.records.values()) >= config.AGENT_TASK_MAX_ACTIVE:
             raise ValueError('子代理活动队列已满')
@@ -80,6 +83,8 @@ class AgentTasks:
         identifier = uuid.uuid4().hex
         child = self.manager.create(title or '子任务 · ' + task[:24], parent.record['messages'][0]['content'] +
             '\n[子任务] ' + workspace_guide + '只执行所给任务；不可递归委派。'
+            '需要文件产物或测试时，使用实际工具调用并检查真实结果；文本代码或工具调用草稿不代表执行。'
+            '仅分析任务可以直接回答；执行任务未完成时须说明缺少的产物或验证，不得把准备执行当作完成。'
             f'调用者会话 ID：{parent.id}。实际可用工具：{", ".join(tool_names) or "无"}。' + communication,
             workspace_mode=workspace_mode, parent=parent)
         child.record.update(delegated_from=parent.id, budget_owner_id=parent.record.get('budget_owner_id', parent.id),
@@ -100,6 +105,10 @@ class AgentTasks:
             await self._save(identifier)
             raise
         self.tasks[identifier] = asyncio.create_task(self._run(identifier))
+        if self.manager.debug.enabled:
+            self.manager.debug.event('agent.created', session_id=child.id,
+                parent_session_id=parent.id, task_id=identifier,
+                turn_id=parent.record.get('last_run', {}).get('turn_id'), state='queued')
         self.manager.notify()
         return identifier
 
@@ -114,10 +123,15 @@ class AgentTasks:
                 record['status'] = 'running'
                 await self._save(identifier)
                 self.manager.submit(child, record['task'])
+                self.manager.debug.event('agent.started', session_id=child.id,
+                    parent_session_id=record['owner'], task_id=identifier,
+                    turn_id=child.record.get('last_run', {}).get('turn_id'), state='running')
                 await asyncio.shield(child.task)
                 record['status'] = 'completed' if child.record['status'] == 'idle' else child.record['status']
                 record['error'] = child.record.get('error', '')
-                record['result'] = next((m.get('content', '') for m in reversed(child.record['messages']) if m['role'] == 'assistant'), '')[:config.TOOL_MAX_OUTPUT]
+                result = next((m.get('content', '') for m in reversed(child.record['messages']) if m['role'] == 'assistant'), '')
+                record['result'] = result[:config.TOOL_MAX_OUTPUT]
+                record['result_truncated'] = len(result) > config.TOOL_MAX_OUTPUT
         except asyncio.CancelledError:
             self.manager.cancel(child)
             if child.task:
@@ -126,6 +140,11 @@ class AgentTasks:
         except Exception as exc:
             record.update(status='failed', error=f'{type(exc).__name__}: {exc}')
         finally:
+            if self.manager.debug.enabled:
+                self.manager.debug.event('agent.completed', session_id=child.id,
+                    parent_session_id=record['owner'], task_id=identifier,
+                    turn_id=child.record.get('last_run', {}).get('turn_id'),
+                    state='error' if record['status'] == 'failed' else record['status'])
             audit('agent_task_finished', task_id=identifier, child_id=child.id, status=record['status'])
             record['finished_at'] = time.time()
             await self._save(identifier)
@@ -136,6 +155,86 @@ class AgentTasks:
         if record is None or record['owner'] != owner:
             raise PermissionError('任务不存在或不属于当前会话')
         return copy.deepcopy(record)
+
+    async def wait(self, owner: str, identifier: str, timeout_seconds: float = 10,
+                   *, cancelled=None) -> dict:
+        """有界等待已有执行任务；等待结束或取消均不取消、重放子任务。"""
+        try:
+            self.status(owner, identifier)
+        except PermissionError:
+            audit('agent_task_wait_denied', task_id=identifier)
+            raise
+        if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 30:
+            raise ValueError('等待时限必须在 0..30 秒之间')
+        parent = self.manager.sessions.get(owner)
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        runner = self.tasks.get(identifier)
+        def is_drained():
+            record = self.status(owner, identifier)
+            child = self.manager.sessions.get(record['child_id'])
+            return (record['status'] not in {'queued', 'running'} and (runner is None or runner.done())
+                    and (child is None or not (child.busy or child.tool_workers)))
+
+        while True:
+            if (parent is None or parent.cancelled.is_set() or parent.deleting
+                    or self.closed or self.manager.closing or (cancelled and cancelled())):
+                audit('agent_task_wait_cancelled', task_id=identifier)
+                raise ValueError('子代理等待已取消')
+            remaining = deadline - asyncio.get_running_loop().time()
+            if is_drained() or remaining <= 0:
+                break
+            # runner 结束后仍须等待已超时的只读线程收尾，不能提前宣称 drained。
+            if runner is not None and not runner.done():
+                await asyncio.wait({runner}, timeout=min(.05, remaining))
+            else:
+                await asyncio.sleep(min(.05, remaining))
+        record = self.status(owner, identifier)
+        drained = is_drained()
+        result = self._wait_result(record, drained)
+        audit('agent_task_wait_completed' if drained else 'agent_task_wait_timeout',
+              task_id=identifier, child_id=record['child_id'], status=record['status'], drained=drained)
+        return result
+
+    @staticmethod
+    def _wait_result(record: dict, drained: bool) -> dict:
+        """按序列化后的长度分配文本预算，始终保留完整 JSON 身份与状态。"""
+        result = {'task_id': record['id'], 'child_id': record['child_id'],
+                  'status': record['status'], 'drained': drained, 'result': '', 'error': '',
+                  'result_truncated': bool(record.get('result_truncated')), 'error_truncated': False}
+        encoder = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        maximum = config.TOOL_MAX_OUTPUT
+        texts = {name: str(record.get(name, '') or '') for name in ('result', 'error')}
+        result.update(texts)
+        if len(encoder(result)) <= maximum:
+            return result
+        for name in texts:
+            result[name] = ''
+            result[name + '_truncated'] = bool(texts[name]) or result[name + '_truncated']
+        base_length = len(encoder(result))
+        if base_length > maximum:
+            raise ValueError('TOOL_MAX_OUTPUT 太小，无法返回完整子任务身份与状态')
+        available = maximum - base_length
+        nonempty = [name for name, value in texts.items() if value]
+        for index, name in enumerate(nonempty):
+            # 错误和结果都获得空间；引号、换行和反斜杠按实际 JSON 转义计费。
+            allowance = available // (len(nonempty) - index)
+            text = texts[name]
+            low, high = 0, len(text)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if len(encoder(text[:middle])) - 2 <= allowance:
+                    low = middle
+                else:
+                    high = middle - 1
+            result[name] = text[:low]
+            result[name + '_truncated'] = low < len(text) or bool(record.get(name + '_truncated'))
+            available -= len(encoder(result[name])) - 2
+        # true/false 长度差最多两个字符，最终回收该差值而不截断 JSON。
+        while len(encoder(result)) > maximum:
+            name = max(('result', 'error'), key=lambda key: len(result[key]))
+            result[name] = result[name][:-1]
+            result[name + '_truncated'] = True
+        return result
 
     def cancel(self, owner, identifier):
         record = self.status(owner, identifier)

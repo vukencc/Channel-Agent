@@ -17,13 +17,13 @@ import openai
 from openai import AsyncOpenAI
 
 from ai_agent_startup import config
-from ai_agent_startup.core.session_limits import limit as session_limit
+from ai_agent_startup.core.session_limits import limit as session_limit, context_budget_metadata
 from ai_agent_startup.core.log import get_logger
 from ai_agent_startup.core.context import estimate_tokens, request_tokens
 from ai_agent_startup.core.messages import PackMessage
-from ai_agent_startup.core.model_settings import active_profile
+from ai_agent_startup.core.model_settings import active_endpoint, active_profile
 from ai_agent_startup.core.tool_settings import selected_schemas
-from ai_agent_startup.core.budgets import active_budget, reserve_request, settle_request
+from ai_agent_startup.core.budgets import BudgetExceeded, active_budget, reserve_request, settle_request
 from ai_agent_startup.tools import all_schemas
 
 logger = get_logger(__name__)
@@ -56,15 +56,23 @@ _route = ContextVar('model_route', default=None)
 
 
 def endpoint_client(endpoint):
-    if not endpoint.get('base_url') and not endpoint.get('api_key_env'):
+    if not endpoint.get('base_url') and not endpoint.get('api_key_env') and 'api_key' not in endpoint:
         return get_client()
     base_url = config.validate_http_url(
         endpoint.get('base_url') or config.BASE_URL,
         'MODEL_FALLBACKS.base_url' if endpoint.get('base_url') else 'BASE_URL',
     )
-    key = os.getenv(endpoint['api_key_env']) if endpoint.get('api_key_env') else config.API_KEY
+    if 'api_key' in endpoint:
+        # A custom endpoint never inherits another provider's credentials.
+        key = endpoint['api_key'] or 'not-required'
+    else:
+        key = os.getenv(endpoint['api_key_env']) if endpoint.get('api_key_env') else config.API_KEY
     if not key:
         raise ValueError('备用模型 api_key_env 未配置')
+    if 'api_key' in endpoint:
+        config.validate_proxy_environment()
+        return AsyncOpenAI(api_key=key, base_url=base_url,
+                           max_retries=0, timeout=config.TIMEOUT)
     identity = (base_url, key)
     with _client_lock:
         if identity not in _fallback_clients:
@@ -90,8 +98,104 @@ TOOL_SCHEMAS = all_schemas()
 class ModelResponseError(RuntimeError):
     """A response was not executable; a bounded smaller-step recovery is safe."""
 
+
+class ModelConnectionError(ConnectionError):
+    """模型连接失败；保存检查点，由用户显式继续，不重放部分工具。"""
+
+
+class RuntimeModelRequestError(RuntimeError):
+    """Safe provider failure with no request/response credentials attached."""
+
+
+_TRANSPORT_ERRORS = (httpx.NetworkError, httpx.RemoteProtocolError, httpx.ProxyError)
+
+
+def _transport_error_type(exc: BaseException) -> str:
+    """仅保留底层异常类，不将端点、代理地址或凭据写入诊断。"""
+    visited = set()
+    for _ in range(8):
+        if exc is None or id(exc) in visited:
+            break
+        visited.add(id(exc))
+        if isinstance(exc, (httpx.TransportError, OSError)):
+            return type(exc).__name__
+        exc = exc.__cause__ or exc.__context__
+    return 'unknown'
+
+
+class _PrimedStream:
+    """首帧在重试边界内读取一次；其余帧不得重新请求。"""
+    def __init__(self, stream, iterator, first):
+        self.stream, self.iterator, self.first = stream, iterator, first
+
+    def __aiter__(self):
+        async def iterate():
+            if self.first is not None:
+                yield self.first
+                async for frame in self.iterator:
+                    yield frame
+        return iterate()
+
+    async def close(self):
+        await self.stream.close()
+
+
+async def _close_stream(stream):
+    try:
+        await stream.close()
+    except Exception as exc:
+        # 清理错误不能覆盖原始失败，也不记录供应商正文。
+        logger.warning('关闭模型连接失败：%s', type(exc).__name__)
+
+
+async def _close_runtime_client(client):
+    from ai_agent_startup.core.storage import wait_for_io_completion
+    try:
+        await wait_for_io_completion(asyncio.create_task(client.close()))
+    except Exception as exc:
+        logger.warning('关闭运行时模型客户端失败：%s', type(exc).__name__)
+
+
+async def _runtime_client(endpoint):
+    """A cancelled SDK initialization still hands its client to cleanup."""
+    creation = asyncio.create_task(asyncio.to_thread(endpoint_client, endpoint))
+    try:
+        return await asyncio.shield(creation)
+    except asyncio.CancelledError:
+        from ai_agent_startup.core.storage import wait_for_io_completion
+        try:
+            client = await wait_for_io_completion(creation)
+        except Exception:
+            pass
+        else:
+            await _close_runtime_client(client)
+        raise
+
+
+class _OwnedClientStream:
+    """Runtime clients live exactly as long as their one successful stream."""
+    def __init__(self, stream, client):
+        self.stream, self.client = stream, client
+        self.closed = False
+
+    def __aiter__(self):
+        return self.stream.__aiter__()
+
+    async def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            await self.stream.close()
+        finally:
+            await _close_runtime_client(self.client)
+
+
 def model_options() -> dict:
     """Explicit provider options; do not silently retry with different semantics."""
+    runtime = active_endpoint.get()
+    if runtime is not None:
+        return runtime.options()
     options = dict(config.MODEL_PARAMETERS)
     options.update(selected_profile().get('parameters', {}))
     if config.REASONING_EFFORT and config.THINKING_MODE != "disabled":
@@ -102,6 +206,9 @@ def model_options() -> dict:
 
 
 def selected_profile():
+    endpoint = active_endpoint.get()
+    if endpoint is not None:
+        return {'model': endpoint.model, 'parameters': endpoint.options()}
     name = active_profile.get()
     if name is None:
         return {}
@@ -132,6 +239,8 @@ _RETRYABLE = (
     openai.APITimeoutError,
     openai.RateLimitError,
     openai.InternalServerError,
+    *_TRANSPORT_ERRORS,
+    httpx.TimeoutException,
 )
 
 
@@ -164,17 +273,26 @@ async def _retry(operation, what: str, attempts: int | None = None):
                 delay = min(2 ** (attempt - 1), 8)
                 logger.warning(
                     "%s失败（第 %d/%d 次），%.0fs 后重试：%s",
-                    what, attempt, attempts, delay, exc,
+                    what, attempt, attempts, delay, type(exc).__name__,
                 )
+                route = _route.get()
+                if route is not None and route.get('emit'):
+                    route['emit']('status', f'模型连接暂时失败，等待重试（{attempt + 1}/{attempts}）')
                 await asyncio.sleep(delay)
 
     assert last_exc is not None
     raise last_exc
 
 
+class FallbackContextError(ValueError):
+    """备用窗口容纳不了实际请求；允许继续检查后续备用服务。"""
+
+
 async def _open_stream(history: list[dict], session_id: str | None = None):
     """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
-    endpoints = [{'model': selected_model()}, *config.MODEL_FALLBACKS]
+    runtime = active_endpoint.get()
+    # Global fallbacks belong to the environment provider; custom endpoints are isolated.
+    endpoints = [runtime.endpoint()] if runtime is not None else [{'model': selected_model()}, *config.MODEL_FALLBACKS]
     route = _route.get()
     if route is None:
         route = {'model': selected_model(), 'fallbacks': []}
@@ -183,40 +301,70 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
         route['model'] = endpoint['model']
         route['endpoint'] = endpoint
         async def operation():
-            client = await asyncio.to_thread(endpoint_client, endpoint)
-            options = model_options()
-            options.setdefault('tool_choice', 'auto')
-            schemas = selected_schemas(TOOL_SCHEMAS)
-            if not schemas:
-                if options.get('tool_choice') == 'required':
-                    raise ValueError('tool_choice=required 与空工具子集冲突')
-                options.pop('tool_choice', None)
-                options.pop('parallel_tool_calls', None)
-            if config.MODEL_STREAM_USAGE:
-                options['stream_options'] = {'include_usage': True}
-            from ai_agent_startup.core.images import expand_images
-            request_history = await asyncio.to_thread(expand_images, history, endpoint) if any(message.get('_attachments') for message in history) else history
-            # 本地轮次/来源标记不属于模型接口字段，且不能改动持久历史。
-            # 私有消息来源、证据标识与附件引用不能作为 API 消息字段发送。
-            request_history = [{key: value for key, value in message.items() if not key.startswith('_')}
-                               for message in request_history]
-            ticket = await reserve_request(reserved_cost(history, schemas, endpoint, options))
+            client = None
+            ticket = None
+            stream = None
             try:
+                client = await _runtime_client(endpoint) if runtime is not None else await asyncio.to_thread(endpoint_client, endpoint)
+                options = model_options()
+                options.setdefault('tool_choice', 'auto')
+                schemas = selected_schemas(TOOL_SCHEMAS)
+                if index:
+                    # 备用服务不能继承主模型的窗口；未知容量使用保守输入预算。
+                    capacity = endpoint.get('context_tokens') or 0
+                    reserve = max(endpoint.get('response_reserve_tokens', config.MODEL_RESPONSE_RESERVE_TOKENS),
+                                  options.get('max_tokens') or 0)
+                    fallback_tokens = capacity - reserve if capacity else 16000
+                    public_history = [{key: value for key, value in message.items()
+                                       if not key.startswith('_') or key == '_attachments'} for message in history]
+                    if request_tokens(public_history, schemas) > fallback_tokens:
+                        raise FallbackContextError('备用模型上下文预算不足；未向该模型发送请求，请配置其容量或恢复原服务')
+                    if capacity and reserve:
+                        options.setdefault('max_tokens', reserve)
+                else:
+                    budget = context_budget_metadata()
+                    if budget['context_capacity_tokens'] and budget['response_reserve_tokens']:
+                        options.setdefault('max_tokens', budget['response_reserve_tokens'])
+                if not schemas:
+                    if options.get('tool_choice') == 'required':
+                        raise ValueError('tool_choice=required 与空工具子集冲突')
+                    options.pop('tool_choice', None)
+                    options.pop('parallel_tool_calls', None)
+                if config.MODEL_STREAM_USAGE:
+                    options['stream_options'] = {'include_usage': True}
+                from ai_agent_startup.core.images import expand_images
+                request_history = await asyncio.to_thread(expand_images, history, endpoint) if any(message.get('_attachments') for message in history) else history
+                # Private provenance and attachment references are not provider API fields.
+                request_history = [{key: value for key, value in message.items() if not key.startswith('_')}
+                                   for message in request_history]
+                ticket = await reserve_request(reserved_cost(history, schemas, endpoint, options))
+                route['request_attempts'] = route.get('request_attempts', 0) + 1
                 stream = await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
                     model=endpoint['model'], **options, messages=request_history, stream=True,
                     **({'tools': schemas} if schemas else {}),
                     extra_headers={'x-opencode-session': session_id} if session_id else None)
+                if route.get('prime'):
+                    # HTTP 握手成功不等于 SSE 已开始；首帧前断连仍属于连接阶段。
+                    iterator = stream.__aiter__()
+                    first = await anext(iterator, None)
+                    stream = _PrimedStream(stream, iterator, first)
                 route['budget_ticket'] = ticket
-                return stream
+                return _OwnedClientStream(stream, client) if runtime is not None else stream
             except BaseException:
-                await settle_request(ticket, None)
+                try:
+                    if stream is not None:
+                        await _close_stream(stream)
+                finally:
+                    if runtime is not None and client is not None:
+                        await _close_runtime_client(client)
+                    await settle_request(ticket, None)
                 raise
         try:
             # 有备用时为每个连接阶段预留时间；流开始后不自动换模型。
             async with asyncio.timeout(config.MODEL_CALL_TIMEOUT / len(endpoints)):
                 return await _retry(operation, '模型调用')
         except Exception as exc:
-            if index + 1 == len(endpoints) or not (_is_transient(exc) or isinstance(exc, TimeoutError)):
+            if index + 1 == len(endpoints) or not (_is_transient(exc) or isinstance(exc, (TimeoutError, FallbackContextError))):
                 raise
             route['fallbacks'].append({'from': endpoint['model'], 'to': endpoints[index + 1]['model'],
                                        'reason': type(exc).__name__})
@@ -225,7 +373,8 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
 async def call_model(history: list[dict], *, session_id: str | None = None, emit=None) -> dict:
     """Bound retries + stream by a wall-clock deadline; never execute partial calls."""
     schemas = selected_schemas(TOOL_SCHEMAS)
-    route = {'model': selected_model(), 'fallbacks': [], 'endpoint': {}}
+    route = {'model': selected_model(), 'fallbacks': [], 'endpoint': {}, 'prime': True,
+             'emit': emit, 'request_attempts': 0}
     route_token = _route.set(route)
     started = time.monotonic()
     metrics = {'input_chars': len(json.dumps(history, ensure_ascii=False)),
@@ -259,7 +408,10 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                 previous_chunk_at = time.monotonic()
                 metrics.setdefault('first_chunk_s', round(elapsed, 3))
                 choice = chunk.choices[0]
-                finish = getattr(choice, 'finish_reason', None) or finish
+                received_finish = getattr(choice, 'finish_reason', None)
+                if received_finish is not None:
+                    finish = (received_finish if isinstance(received_finish, str) and received_finish in
+                              {'stop', 'length', 'tool_calls', 'content_filter', 'function_call'} else 'invalid')
                 delta = choice.delta
                 thought = getattr(delta, 'reasoning_content', None)
                 if thought:
@@ -326,9 +478,28 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
             f'模型请求在 {time.monotonic() - started:.1f}s 后超时（总时限 {config.MODEL_CALL_TIMEOUT:g}s，网络空闲时限 {config.SESSION_TIMEOUT:g}s）。'
             '已停止本次请求，未执行未完成的工具调用；可重试或缩小任务。'
         ) from exc
+    except (openai.APIConnectionError, *_TRANSPORT_ERRORS) as exc:
+        metrics.update(outcome='connection_error', error_type=type(exc).__name__,
+                       transport_error_type=_transport_error_type(exc),
+                       failure_phase='connect' if stream is None else 'stream')
+        raise ModelConnectionError(
+            '模型服务连接失败或中断。请检查服务可用性、网络及代理配置；'
+            '稍后可重试。未完成的工具调用不会执行。'
+        ) from exc
+    except BudgetExceeded:
+        metrics['outcome'] = 'budget_exceeded'
+        raise
+    except Exception as exc:
+        if active_endpoint.get() is not None:
+            metrics.update(outcome='provider_error', error_type=type(exc).__name__)
+            if isinstance(exc, ModelResponseError):
+                raise
+            # Provider bodies may reflect request credentials. Never persist or emit them.
+            raise RuntimeModelRequestError('模型服务请求失败，请检查服务地址、API 密钥和模型设置。') from None
+        raise
     finally:
         if stream is not None:
-            await stream.close()
+            await _close_stream(stream)
         metrics.setdefault('input_tokens', request_tokens(history, schemas))
         metrics.setdefault('output_tokens', estimate_tokens(''.join(content) + ''.join(reasoning)
                            + ''.join(''.join(call['arguments']) for call in tool_calls.values())))
@@ -343,7 +514,8 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
         await settle_request(route.get('budget_ticket'), metrics['estimated_cost_usd']
                              if metrics['tokens_source'] == 'provider' else None)
         _route.reset(route_token)
-        metrics.update(total_s=round(time.monotonic() - started, 3), finish_reason=finish)
+        metrics.update(total_s=round(time.monotonic() - started, 3), finish_reason=finish,
+                       request_attempts=route['request_attempts'])
         metrics.setdefault('outcome', 'interrupted')
         logger.info('model_metrics session=%s %s', session_id, json.dumps(metrics))
         if emit:

@@ -75,7 +75,8 @@ def test_headless_denies_writes_without_tty_even_if_environment_is_trusted(tmp_p
             result = await asyncio.wait_for(run_headless(store, '保存', model=model), 2)
             assert not (store.workspace_path(result['session_id']) / 'no.txt').exists()
             tool = next(row for row in result['messages'] if row['role'] == 'tool')
-            assert tool['tool_call_id'] == 'write' and '取消' in tool['content']
+            assert tool['tool_call_id'] == 'write' and '[已拦截]' in tool['content']
+            assert result['permission_policy'] == 'readonly'
         finally:
             store.close()
     asyncio.run(run())

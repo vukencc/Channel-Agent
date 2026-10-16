@@ -4,7 +4,10 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import stat
+from typing import Literal
+import uuid
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -20,6 +23,7 @@ class SupervisorSettings(BaseModel):
     api_key: str = ''
     base_url: str = ''
     model: str = ''
+    thinking_mode: Literal['auto', 'enabled', 'disabled'] = 'auto'
     timeout: float = Field(default=20, gt=0, le=300)
     max_input_chars: int = Field(default=12000, ge=1024, le=100000)
     max_output_tokens: int = Field(default=1200, ge=64, le=16000)
@@ -102,7 +106,8 @@ class SupervisorAgent:
             from openai import AsyncOpenAI
             config.validate_proxy_environment()
             self.client = AsyncOpenAI(api_key=self.settings.api_key, base_url=self.settings.base_url,
-                                     max_retries=0, timeout=self.settings.timeout)
+                                     max_retries=0, timeout=self.settings.timeout,
+                                     default_headers={'x-opencode-session': uuid.uuid4().hex})
         messages = [{'role': 'system', 'content': instruction}, {'role': 'user', 'content': payload}]
         prices = (self.settings.input_cost_per_million, self.settings.output_cost_per_million)
         cost = ((estimate_tokens(json.dumps(messages, ensure_ascii=False)) * prices[0]
@@ -111,13 +116,17 @@ class SupervisorAgent:
             ticket = await reserve_request(cost)
             try:
                 async with asyncio.timeout(self.settings.timeout):
+                    options = ({'extra_body': {'thinking': {'type': self.settings.thinking_mode}}}
+                               if self.settings.thinking_mode != 'auto' else {})
                     reply = await self.client.chat.completions.create(
                         model=self.settings.model, messages=messages, stream=False,
-                        tools=[], tool_choice='none', max_tokens=self.settings.max_output_tokens,
-                        timeout=self.settings.timeout)
+                        max_tokens=self.settings.max_output_tokens,
+                        timeout=self.settings.timeout, **options)
                 choice = reply.choices[0]
                 if getattr(choice.message, 'tool_calls', None):
                     raise ValueError('监督器不得调用任何工具')
+                if getattr(choice, 'finish_reason', None) not in {None, 'stop'}:
+                    raise ValueError('监督回复未完成或被截断，不能用于评分或摘要')
                 content = choice.message.content
                 if not isinstance(content, str) or len(content) > self.settings.max_output_tokens * 12:
                     raise ValueError('监督输出为空或超限')
@@ -125,7 +134,9 @@ class SupervisorAgent:
                 actual = ((usage.prompt_tokens * prices[0] + usage.completion_tokens * prices[1]) / 1e6
                           if usage is not None and all(prices) else None)
                 await settle_request(ticket, actual)
-                return json.loads(content)
+                # 仅接受完整单一 JSON 文档或唯一 JSON 围栏，不能从旁白中猜取结果。
+                fence = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', content, re.DOTALL)
+                return json.loads(fence.group(1) if fence else content)
             except BaseException:
                 await settle_request(ticket, None)
                 raise

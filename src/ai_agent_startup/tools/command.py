@@ -9,6 +9,7 @@ import signal
 import time
 import selectors
 from contextlib import nullcontext
+from typing import Literal
 
 from ai_agent_startup import config
 from pydantic import BaseModel, Field
@@ -21,6 +22,7 @@ from ai_agent_startup.tools.sandbox import (
     check_command,
     check_workspace_quota,
     cancellation_requested,
+    command_memory_limit_mb,
     isolated_command,
     sandbox_root,
     truncate,
@@ -39,11 +41,13 @@ class RunCommandArgs(BaseModel):
         description="要执行的命令，例如 ls -la、python3 -c 'print(1+1)' 或 sh -c 'ls | head'"
     )
     reason: str = Field(default="", description="说明执行目的，会显示在确认提示里")
-    network: bool = Field(default=False, description="显式请求白名单 HTTPS 网络，必须逐次确认；默认断网")
+    network: bool = Field(default=False, description="显式请求白名单 HTTPS 网络，遵循当前权限模式；默认断网")
+    runtime_profile: Literal['system', 'node'] = Field(default='system', description='普通命令用 system；已配置 Node 的 JS/npm/build/test 用 node，仍有资源上限')
 
 
 @register_tool(RunCommandArgs, name="run_command")
-def run_command(command: str, reason: str = "", network: bool = False) -> str:
+def run_command(command: str, reason: str = "", network: bool = False,
+                runtime_profile: str = 'system') -> str:
     """
     在沙箱目录内执行一条命令。
     """
@@ -58,12 +62,14 @@ def run_command(command: str, reason: str = "", network: bool = False) -> str:
                 raise SandboxError(str(exc)) from exc
         check_workspace_quota()
         argv = check_command(command)
-        isolated = isolated_command(argv)
+        isolated = isolated_command(argv, runtime_profile=runtime_profile)
     except SandboxError as exc:
         audit("blocked", action="run_command", command=command, reason=str(exc))
         return f"[已拦截] {exc}"
 
     detail = command + (f'\n联网白名单：{config.COMMAND_NETWORK_ALLOWLIST}' if network else '')
+    if runtime_profile != 'system':
+        detail += f'\n运行时档位：{runtime_profile}，虚拟地址空间上限：{command_memory_limit_mb(runtime_profile)} MiB'
     if not ask_permission("run_command", detail, reason, command=command, force_confirmation=network):
         return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
 
@@ -71,16 +77,31 @@ def run_command(command: str, reason: str = "", network: bool = False) -> str:
     try:
         with NetworkProxy() if network else nullcontext() as proxy:
             if proxy is not None:
-                isolated = isolated_command(argv, network_socket=proxy.path)
-            return _execute(command, reason, argv, isolated)
+                isolated = isolated_command(argv, network_socket=proxy.path, runtime_profile=runtime_profile)
+            result = _execute(command, reason, argv, isolated)
+            result += _network_diagnostics(proxy)
+            return result
     except (OSError, ValueError, SandboxError) as exc:
         audit('blocked', action='run_command', reason=str(exc))
         return f'[已拦截] 命令隔离初始化失败：{exc}'
 
 
-def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None) -> str:
+def _network_diagnostics(proxy) -> str:
+    """Append only local boundary evidence, including for persisted command jobs."""
+    summary_fn = getattr(proxy, 'denial_summary', None)
+    summary = summary_fn() if summary_fn is not None else ''
+    if not summary:
+        return ''
+    advice = (' 依赖安装可调用 prepare_project_environment 申请已配置的安装资源档位；'
+              '不要据此改写依赖版本或绕过依赖解析。') if config.ENABLE_ENVIRONMENT_PREPARE else ''
+    return '\n[网络边界诊断] ' + summary + '；这是本地网关拒绝，不代表包仓库或依赖不存在。' + advice
+
+
+def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None,
+             file_limit_mb=None) -> str:
     """共享执行器；调用方必须先完成确认。后台任务也使用相同配额及进程组清理。"""
     timeout = config.COMMAND_TIMEOUT if timeout is None else timeout
+    file_limit_mb = config.COMMAND_FILE_MB if file_limit_mb is None else file_limit_mb
 
     try:
         check_workspace_quota()
@@ -168,4 +189,15 @@ def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None) -
     parts.append(f"[stdout]\n{stdout}" if stdout else "[stdout] （空）")
     if stderr:
         parts.append(f"[stderr]\n{stderr}")
+    if (proc.returncode == -getattr(signal, 'SIGXFSZ', 25)
+            or any(term in (stdout + '\n' + stderr).lower()
+                   for term in ('efbig', 'file too large', 'file size limit exceeded'))):
+        parts.append(f'[资源边界诊断] 单个文件大小上限为 {file_limit_mb} MiB（RLIMIT_FSIZE），'
+                     '这是本地文件配额证据，不能据此判定依赖冲突或仓库故障。'
+                     + (' 依赖安装可调用 prepare_project_environment 使用已配置并确认的安装档位。'
+                        if config.ENABLE_ENVIRONMENT_PREPARE else ''))
+    if proc.returncode == 127:
+        parts.append('[环境诊断] 命令在沙箱内未找到，不代表宿主未安装。先调用 inspect_environment；依赖缺失可用 prepare_project_environment，不要将静态检查报告为完整测试。')
+    elif any(term in stderr.lower() for term in ('failed to reserve virtual memory', 'fatal process out of memory', 'segmentedtable::initializetable')):
+        parts.append('[环境诊断] 运行时已找到，但虚拟地址空间不足。Node 可使用显式配置的 runtime_profile="node"；不得取消资源限制。')
     return "\n".join(parts)

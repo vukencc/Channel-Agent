@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ai_agent_startup import config
 from ai_agent_startup.core.session_service import current_service
+from ai_agent_startup.core.session_limits import limit as session_limit
 from ai_agent_startup.tools.base import TOOL_REGISTRY, register_tool
 from ai_agent_startup.tools.sandbox import ToolContext, ask_permission, audit, cancellation_requested, tool_context
 
@@ -17,7 +18,8 @@ class CreateSessionArgs(BaseModel):
     title: str = Field(default='新会话', min_length=1, max_length=120)
     task: str = Field(default='', max_length=16000, description='子 Agent 的具体任务；模型调用时不能为空')
     tool_names: list[str] | None = Field(default=None, description='省略则完整继承父工具集，不剔除后台命令；显式列表只能收窄父工具集。递归委派仍由后端拒绝，通信工具不会自动添加')
-    max_rounds: int = Field(default=6, ge=1, le=256)
+    max_rounds: int = Field(default=0, ge=0, le=256,
+                            description='0 继承父会话轮次策略；仅当父会话有正数轮次上限时可指定正数，且不能超过父上限')
 
 
 class SendSessionMessageArgs(BaseModel):
@@ -34,6 +36,14 @@ class ReadSessionMessagesArgs(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+class WaitAgentTaskArgs(BaseModel):
+    """有界等待自己的子任务，返回状态及结果；超时不取消。替代反复轮询，勿重复创建任务。"""
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    task_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    timeout_seconds: float = Field(default=10, ge=0, le=30,
+                                   description='最多等待的秒数；0 立即查询，实际等待自动收窄至当前工具超时以内')
+
+
 def _bridge(operation):
     context = current_service()
     if context.caller_id is None or context.loop is None:
@@ -45,8 +55,30 @@ def _bridge(operation):
     return asyncio.run_coroutine_threadsafe(run(), context.loop).result()
 
 
+@register_tool(WaitAgentTaskArgs, concurrency='read', holds_read_slot=False)
+def wait_agent_task(task_id, timeout_seconds=10):
+    timeout = session_limit('TOOL_TIMEOUT')
+    # 为跨线程桥接和最终审计预留余量，避免正常等待触发通用工具超时。
+    bounded_timeout = min(timeout_seconds, max(0, timeout - min(.1, timeout * .25)))
+    async def wait(context):
+        from ai_agent_startup.core.session_limits import effective_limits
+        caller = context.manager.sessions.get(context.caller_id)
+        if caller is None:
+            raise PermissionError('调用会话不存在')
+        effective_timeout = min(timeout, effective_limits(caller.record)['TOOL_TIMEOUT'])
+        wait_timeout = min(bounded_timeout, max(0, effective_timeout - min(.1, effective_timeout * .25)))
+        queue = context.manager.agent_tasks
+        if queue is None:
+            audit('agent_task_wait_denied', task_id=task_id)
+            raise PermissionError('任务不存在或不属于当前会话')
+        result = await queue.wait(context.caller_id, task_id, wait_timeout,
+                                  cancelled=cancellation_requested)
+        return json.dumps(result, ensure_ascii=False, separators=(',', ':'))
+    return _bridge(wait)
+
+
 @register_tool(CreateSessionArgs, concurrency='control')
-def create_session(title='新会话', task='', tool_names=None, max_rounds=6):
+def create_session(title='新会话', task='', tool_names=None, max_rounds=0):
     context = current_service()
     manager = context.manager
     if context.caller_id is None:
@@ -62,6 +94,8 @@ def create_session(title='新会话', task='', tool_names=None, max_rounds=6):
             'workspace_mode': session.record['workspace_mode'], 'workspace_id': session.record['workspace_owner_id'],
             'communication_tools': []})
     parent = manager.sessions[context.caller_id]
+    if session_limit('MAX_TOOL_ROUNDS') == 0 and max_rounds != 0:
+        raise ValueError('父会话轮次无上限；子 Agent 必须使用 0 继承父会话轮次策略')
     if not task.strip():
         raise ValueError('Agent 创建子会话必须给出非空 task')
     if parent.record.get('delegated_from'):

@@ -15,6 +15,7 @@
 """
 from ai_agent_startup import config
 from ai_agent_startup.core.context import estimate_tokens
+from ai_agent_startup.core.session_limits import limit as session_limit
 
 from typing import Awaitable, Callable, Iterable, Sequence
 
@@ -93,7 +94,7 @@ MRR: <分数>
 
 async def assess_rag(query: str, contexts: Sequence[str], answer: str, judge: Judge) -> str:
     """由 LLM 统一对一轮 RAG 做评估，返回评估结果文本。"""
-    limit = min(config.ASSESS_INPUT_CHARS, config.MODEL_INPUT_CHARS)
+    limit = min(config.ASSESS_INPUT_CHARS, session_limit('MODEL_INPUT_CHARS'))
     overhead = len(_ASSESS_PROMPT.format(query='', contexts='', answer='')) + 120
     available = limit - overhead
     if available < 200:
@@ -115,6 +116,6 @@ async def assess_rag(query: str, contexts: Sequence[str], answer: str, judge: Ju
         remaining -= len(text) + 5
     detail = f'[输入范围] 原始片段 {len(contexts)} 条，纳入 {len(selected)} 条；超限内容截断或省略，不能据此判断全部资料。\n'
     prompt = _ASSESS_PROMPT.format(query=query, contexts=detail + '\n---\n'.join(selected), answer=answer)
-    if len(prompt) > limit or estimate_tokens(prompt) > config.MODEL_INPUT_TOKENS:
+    if len(prompt) > limit or estimate_tokens(prompt) > session_limit('MODEL_INPUT_TOKENS'):
         return '[评估降级] 输入仍超预算，未调用裁判；不影响回答。'
     return (await judge(prompt)).strip()

@@ -4,6 +4,7 @@ import json
 
 from pydantic import BaseModel, Field
 
+from ai_agent_startup.core.session_limits import limit as session_limit
 from ai_agent_startup.tools.base import register_tool
 from ai_agent_startup.tools.sandbox import _context, ask_permission, audit, truncate
 
@@ -12,7 +13,8 @@ class DelegateArgs(BaseModel):
     """按父权限确认后启动独立上下文的子 Agent，共享父工作区；省略工具列表继承父完整工具集。当前子 Agent 不能递归委派，用 task_status 查询结果。"""
     task: str = Field(min_length=1, max_length=16000)
     tool_names: list[str] | None = None
-    max_rounds: int = Field(default=6, ge=1, le=256)
+    max_rounds: int = Field(default=0, ge=0, le=256,
+                            description='0 继承父会话轮次策略；仅当父会话有正数轮次上限时可指定正数，且不能超过父上限')
     delay_seconds: float = Field(default=0, ge=0, le=86400, allow_inf_nan=False)
 
 
@@ -33,7 +35,9 @@ def bridge(operation):
     return asyncio.run_coroutine_threadsafe(run(), context.event_loop).result()
 
 
-def delegate(task, tool_names=None, max_rounds=6, delay_seconds=0):
+def delegate(task, tool_names=None, max_rounds=0, delay_seconds=0):
+    if session_limit('MAX_TOOL_ROUNDS') == 0 and max_rounds != 0:
+        raise ValueError('父会话轮次无上限；子 Agent 必须使用 0 继承父会话轮次策略')
     detail = f'{task}\n工具={tool_names}；轮次={max_rounds}；延时={delay_seconds:g}s'
     if not ask_permission('delegate', detail, force_confirmation=True):
         return '[已取消] 用户未确认委派。'

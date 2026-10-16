@@ -4,6 +4,7 @@ import json
 from pydantic import BaseModel, ConfigDict, Field
 
 from ai_agent_startup.tools.base import register_tool
+from ai_agent_startup.core.permissions import public_permission_policy
 from ai_agent_startup.tools.sandbox import ask_permission, current_policy
 
 
@@ -18,4 +19,4 @@ class PermissionRequestArgs(BaseModel):
 @register_tool(PermissionRequestArgs, concurrency='control')
 def request_permission(action: str, detail: str, reason: str) -> str:
     allowed = ask_permission('request_permission', f'{action}：{detail}', reason, force_confirmation=True)
-    return json.dumps({'allowed': allowed, 'action': action, 'policy': current_policy()}, ensure_ascii=False)
+    return json.dumps({'allowed': allowed, 'action': action, 'policy': public_permission_policy(current_policy())}, ensure_ascii=False)

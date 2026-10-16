@@ -210,7 +210,7 @@ def test_background_assessment_does_not_block_next_turn_or_overwrite_it(store, m
                 return {'role':'assistant','content':'','tool_calls':[{'id':'r','function':{'name':'rag_search','arguments':'{}'}}]}
             return {'role':'assistant','content':'answer'}
         manager = SessionManager(store, model=model)
-        async def tool(*args):
+        async def tool(*args, **kwargs):
             return 'retrieval context'
         monkeypatch.setattr(manager, '_tool', tool)
         s = manager.create()
@@ -260,7 +260,7 @@ def test_timeout_recovers_once_with_small_step_and_never_replays_successful_tool
             assert history[-1]['role'] == 'tool'
             return {'role':'assistant','content':'done'}
         manager = SessionManager(store, model=model)
-        async def tool(session, call):
+        async def tool(session, call, *, evidence=None):
             tools.append(call['id'])
             return '[完成]'
         monkeypatch.setattr(manager, '_tool', tool)
@@ -304,7 +304,7 @@ def test_budget_checkpoint_persists_and_continues_without_replaying_tools(store,
                 return {'role':'assistant','content':'finished reviewing saved results'}
             count += 1
             return {'role':'assistant','content':'','tool_calls':[{'id':str(count),'function':{'name':'probe','arguments':'{}'}}]}
-        async def tool(session, call):
+        async def tool(session, call, *, evidence=None):
             executions.append(call['id'])
             return '[完成]'
         manager = SessionManager(store, model=model)

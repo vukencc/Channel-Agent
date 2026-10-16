@@ -61,7 +61,9 @@ def test_recovery_limit_is_effective(store, recoveries, expected):
 def test_limits_reject_invalid_or_security_settings_and_disabled(store, monkeypatch):
     manager = SessionManager(store)
     session = manager.create()
-    for value in ({'MAX_TOOL_ROUNDS': 0}, {'TOOL_TIMEOUT': float('nan')}, {'COMMAND_NETWORK': 'allowlist'}, {'MODEL_RECOVERY_LIMIT': 100}):
+    manager.set_limits(session, {'MAX_TOOL_ROUNDS': 0})
+    assert session.record['budget_overrides']['MAX_TOOL_ROUNDS'] == 0
+    for value in ({'MAX_TOOL_ROUNDS': -1}, {'TOOL_TIMEOUT': float('nan')}, {'COMMAND_NETWORK': 'allowlist'}, {'MODEL_RECOVERY_LIMIT': 100}):
         with pytest.raises(ValueError):
             manager.set_limits(session, value)
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', False)

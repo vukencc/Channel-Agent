@@ -1,5 +1,6 @@
 """后台命令控制工具；任务 ID 始终绑定当前会话。"""
 import json
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,8 @@ class StartCommandJobArgs(BaseModel):
     reason: str = ''
     network: bool = False
     timeout: float | None = Field(default=None, gt=0)
+    runtime_profile: Literal['system', 'node'] = Field(
+        default='system', description='普通命令用 system；已配置 Node 的 JS/npm/build/test 用 node，仍有资源上限')
 
 
 class CommandJobArgs(BaseModel):
@@ -26,9 +29,9 @@ def current_jobs():
     return context.job_manager, context.session_id or context.root.name
 
 
-def start_command_job(command, reason='', network=False, timeout=None):
+def start_command_job(command, reason='', network=False, timeout=None, runtime_profile='system'):
     jobs, _ = current_jobs()
-    return jobs.start(command, reason, network, timeout)
+    return jobs.start(command, reason, network, timeout, runtime_profile=runtime_profile)
 
 
 def job_status(job_id):

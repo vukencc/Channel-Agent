@@ -44,6 +44,6 @@
 
 ## 模板与分支
 
-- 新方向从当前基线 tag 开分支：`git switch -c feat/<topic> v0.2.1`。
+- 当前工作区已有开发时，沿用当前分支并保留未提交改动；不要为开始工作切回旧 tag。只有明确要从已发布基线开始独立的新模板方向时，才从所选 tag 创建新分支，并先确认工作区状态与目标 tag。
 - 较大分歧方向使用 GitHub「Use this template」新建仓库；模板复制默认分支内容，不复制 tag 与其他分支。
 - 详见 [贡献指南](../CONTRIBUTING.md) 与 [README](../README.md)。

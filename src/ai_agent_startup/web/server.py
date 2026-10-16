@@ -26,6 +26,8 @@ def main():
     config.validate_runtime_config()
     hostname = '[' + args.host + ']' if ':' in args.host else args.host
     print(f'WebUI：http://{hostname}:{args.port}', flush=True)
+    if config.DEBUG:
+        print(f'运行调试：http://{hostname}:{args.port}/debug', flush=True)
     uvicorn.run(create_app(state_dir=args.state_dir), host=args.host, port=args.port,
                 workers=1, access_log=False, proxy_headers=False, timeout_graceful_shutdown=30)
 

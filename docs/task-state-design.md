@@ -37,6 +37,7 @@ stateDiagram-v2
     waiting --> interrupted: 会话中断或结果未知
     blocked --> pending: 阻塞解除
     interrupted --> pending: 检查证据后显式继续
+    interrupted --> in_progress: 显式继续
     failed --> pending: 修正后显式重试
     completed --> [*]
     cancelled --> [*]
@@ -93,7 +94,7 @@ CLI 提供 `/plan` 查看当前步骤、依赖、阻塞原因和进度；WebUI �
 | `ENABLE_TASK_PLANS` | `false` | 显式启用计划工具、摘要和视图；缺省继承已启用工具 schema 的会话获得新工具，显式子集不自动添加 |
 | `TASK_PLAN_MAX_STEPS` | `32` | 单个当前计划的步骤默认上限；可配置范围为 1–256 |
 | `TASK_PLAN_CONTEXT_CHARS` | `2000` | 每轮任务摘要字符上限，仍受模型总 token 预算限制 |
-| `TASK_PLAN_MAX_BYTES` | `65536` | 单个计划 UTF-8 文件上限，包含证据摘要与索引；超限拒绝更新 |
+| `TASK_PLAN_MAX_BYTES` | `65536` | 单个计划 UTF-8 文件上限，包含证据摘要与索引；超限时先回收未引用证据并缩短新预览，仍超限才拒绝更新 |
 
 明确启用后，`tool_names=None` 且配置继承完整工具集的会话可以使用新注册的 `plan_*`。显式工具列表必须包含相应计划工具；已有子 Agent 保存的工具快照不自动扩充，新子 Agent 仍只能继承父 Agent 当前实际工具集。该开关不修改权限模式或工作区范围。
 
@@ -132,4 +133,4 @@ docs_finalize: 写入实测结果与使用说明，depends_on=[verify, docs_draf
 | 模型链路 | 使用模型替身跑“模型更新计划→调用真实注册工具→真实工具结果→计划证据引用”的完整链路；验证禁递归委派回归仍拒绝 |
 | 兼容与上下文 | 关闭时无新 schema/摘要；启用但无计划不注入摘要；上限按真实预算生效；懒加载与缓存有效；收窄工具集不扩权；任务文本注入攻击不改变安全语义 |
 
-实现阶段的验证命令包括 `uv sync --locked`、`uv run pytest tests/test_task_plans.py -q`、`uv run pytest -m 'not integration' -q`；涉及工具边界还须运行 `uv run python dev/ci_sandbox_probe.py`，受环境限制时如实记录。本文给出覆盖矩阵，不记录测试执行数字或性能结论。
+实现阶段的验证命令包括 `uv sync --locked`、`uv run pytest tests/test_task_plans.py -q`、`uv run pytest -m 'not integration' -q`；涉及工具边界还须运行 `uv run python scripts/ci_sandbox_probe.py`，受环境限制时如实记录。本文给出覆盖矩阵，不记录测试执行数字或性能结论。

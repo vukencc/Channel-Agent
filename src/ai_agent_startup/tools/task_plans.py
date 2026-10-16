@@ -31,16 +31,17 @@ class PlanGetArgs(PlanArgs):
 
 class PlanIdentity(PlanArgs):
     plan_id: str = Field(pattern=r'^[a-f0-9]{32}$')
-    expected_revision: int = Field(ge=0)
+    expected_revision: int = Field(ge=0, description='使用当前运行窗口或刚读取 plan_get 的最新 revision；步骤/DAG/归档修改会更新版本，证据追加不更新结构版本')
 
 
 class PlanUpdateArgs(PlanIdentity):
-    """开始/阻塞/恢复/完成自己的步骤；一次仅一个前台步骤。完成附真实证据 ID 与结果，不能凭队列结束宣称验收通过。"""
+    """开始/阻塞/恢复/完成自己的步骤；一次仅一个前台步骤。每步结束先 plan_get 取最新 revision 和 executed 证据，完成附证据 ID 与结果，成功后再开始下一步。不能凭队列结束宣称验收通过。"""
     task_key: str = Field(min_length=1, max_length=64)
-    status: Status
-    result: str = Field(default='', max_length=8192)
+    status: Status = Field(description='串行按 pending→in_progress→completed 分步更新；每次使用最新 revision，依赖须已完成。waiting 通过 plan_bind；执行排空后先 waiting→in_progress，再核验并 completed 或 failed；blocked 必须填写 block_reason')
+    result: str = Field(default='', max_length=8192, description='completed 必填：说明依据真实执行结果进行的验收；不能仅填进度或假定成功')
     block_reason: str = Field(default='', max_length=2048)
-    evidence_refs: list[str] = Field(default_factory=list, max_length=64)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=64,
+        description='completed 必填：引用 plan_get.available_evidence.id 且 source=executed；不是 tool_call_id，不得编造')
 
 
 class PlanReviseArgs(PlanIdentity):

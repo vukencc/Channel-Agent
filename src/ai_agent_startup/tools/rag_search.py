@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 from ai_agent_startup import config
+from ai_agent_startup.core.debug_runtime import debug_span
 
 from ai_agent_startup.rag.tool import rag_search as _rag_search
 from ai_agent_startup.tools.base import register_tool
@@ -101,7 +102,9 @@ def rag_search(query: str, strictness: str = "normal", breadth: str = "normal", 
             return f'[已拦截] {exc}'
         audit('read', action='rag_search', source=source)
         index_options = {'track_updates': True} if updated_after is not None else {}
-        result = _rag_search(query, strictness=strictness, breadth=breadth, index=get_index(root=root, **index_options), **options)
+        with debug_span('rag.index'):
+            index = get_index(root=root, **index_options)
+        result = _rag_search(query, strictness=strictness, breadth=breadth, index=index, **options)
     else:
         result = _rag_search(query, strictness=strictness, breadth=breadth, **options)
     logger.debug("RAG 返回 %d 字符", len(result))
