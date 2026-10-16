@@ -37,7 +37,10 @@ def test_default_prompt_text_matches_pre_template_snapshot():
     result = subprocess.run(['.venv/bin/python', '-c', '''
 import hashlib
 from ai_agent_startup.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE
-for text in (DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE):
+# 保留原文件协议的逐字快照；本轮新增的环境指南另外断言，不放宽旧内容。
+legacy, separator, environment = FILE_WORKFLOW_GUIDE.partition('- 工程任务先用已注册的 inspect_environment')
+assert separator and 'prepare_project_environment' in environment and '真实 build/test' in environment
+for text in (DEFAULT_PROMPT, legacy):
     print(hashlib.sha256(text.encode()).hexdigest())
 '''], env={**os.environ, 'SYSTEM_PROMPT_FILE': '', 'FILE_APPEND_CHARS': '4000',
            'RAG_RETRY_LIMIT': '2'}, capture_output=True, text=True, check=True)

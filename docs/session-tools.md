@@ -1,18 +1,20 @@
 # 会话创建与 Agent 通信
 
-会话工具用于 CLI 用户和模型创建会话，以及让直接关联的父、子 Agent 交换持久消息。`create_session`、`send_session_message` 和 `read_session_messages` 默认注册，不受 `ENABLE_AGENT_TASKS` 控制。该开关只控制旧版 `delegate` 工具注册和启动时的任务队列预载；创建子任务时会按需初始化队列，因此 `/tasks` 不要求开启此开关。尚无已加载的子任务时，`/tasks` 会提示可让 Agent 用 `create_session` 创建独立任务。模型可通过 `/tools` 的会话工具子集设置隐藏或重新启用这些工具。
+会话工具用于 CLI 用户和模型创建会话，以及让直接关联的父、子 Agent 交换持久消息。`create_session`、`send_session_message`、`read_session_messages` 和 `wait_agent_task` 默认注册，不受 `ENABLE_AGENT_TASKS` 控制。该开关只控制旧版 `delegate` 工具注册和启动时的任务队列预载；创建子任务时会按需初始化队列，因此 `/tasks` 不要求开启此开关。尚无已加载的子任务时，`/tasks` 会提示可让 Agent 用 `create_session` 创建独立任务。模型可通过 `/tools` 的会话工具子集设置隐藏或重新启用这些工具。
 
 ## 创建会话
 
-CLI 启动时没有已恢复会话，或用户执行 `/new [名称]` 时，会调用已注册的 `create_session` 一次创建空会话，不会额外调用模型。模型调用 `create_session` 时必须提供非空 `task`；Standard、Trusted、Smart 模式下每次都要经过用户确认，`full_access` 会自动批准工具确认，`readonly` 会拒绝创建。
+CLI 启动时没有已恢复会话，或用户执行 `/new [名称]` 时，会调用已注册的 `create_session` 一次创建空会话，不会额外调用模型。模型调用 `create_session` 时必须提供非空 `task`；创建子会话会强制确认：`smart`（以及保留严格确认的 `standard`/`trusted`）每次等待用户确认；`full_access` 自动批准；`readonly` 拒绝创建。
+
+子 Agent 任务异步运行，受 `AGENT_TASK_CONCURRENCY`（默认 2）并发槽限制。父 Agent 保存创建结果中的 `task_id` 后，可调用 `wait_agent_task(task_id, timeout_seconds=10)` 有界等待；等待秒数范围为 0–30，默认 10，实际等待会为通用工具超时和审计留出余量。响应为 JSON，提供任务/子会话身份、状态、是否已排空、有限长度结果以及错误和截断标记。等待会检查子会话运行状态和在途工具是否均已结束；只读等待本身不占用读工具并发槽。等待超时不会取消子任务、启动新任务或重放操作。
 
 每个根会话有自己的项目工作区 `SANDBOX_DIR/<根会话 ID>/`（默认 `crud_tests/<根会话 ID>/`）。新建子 Agent 自动绑定直接父 Agent 的项目工作区，因此可共同读写项目文件；不再提供工作区模式选择。历史上已持久化的隔离子会话不会迁移文件。旧环境变量 `AGENT_WORKSPACE_MODE` 不再生效。子 Agent 不能指定其他项目根。
 
-项目文件共享不改变会话边界：会话记录、上下文、`inbox.json`、记忆和审计日志仍各自保存在独立会话目录中。子 Agent 继承父会话完整权限策略与预算所有者。省略 `tool_names` 时继承父会话完整工具集；显式指定时只能取父工具集子集，不能扩权。子 Agent 暂时不能调用 `create_session` 或 `delegate` 再创建子 Agent；后端会拒绝递归委派，系统提示也会说明此限制。Agent Tasks 当前在全局委派并发槽内等待完整子任务；若子任务等待孙任务且占满并发槽，孙任务无法启动。开放递归前需先改造调度，并验证任务树的停止、超时和回收。子 Agent 使用相同工具能力不代表能读取父会话私有记录或查询父级任务。`max_rounds` 默认为 6，且不能超过父会话有效轮数上限或 256。需要双方模型主动通信时，须在 `tool_names` 显式包含 `send_session_message` 与 `read_session_messages`；`create_session` 返回实际提供的 `communication_tools`。Standard、Trusted、Smart 下创建子会话必须明确确认；Full Access 会自动批准工具确认；`readonly` 会拒绝创建。直接 `create_session` 不要求启用 `ENABLE_AGENT_TASKS`；该队列开关仅对应旧版 `delegate` 功能。
+项目文件共享不改变会话边界：会话记录、上下文、`inbox.json`、记忆和审计日志仍各自保存在独立会话目录中。子 Agent 继承父会话完整权限策略与预算所有者。省略 `tool_names` 时继承父会话完整工具集；显式指定时只能取父工具集子集，不能扩权。子 Agent 暂时不能调用 `create_session` 或 `delegate` 再创建子 Agent；后端会拒绝递归委派，系统提示也会说明此限制。Agent Tasks 当前在全局委派并发槽内等待完整子任务；若子任务等待孙任务且占满并发槽，孙任务无法启动。开放递归前需先改造调度，并验证任务树的停止、超时和回收。子 Agent 使用相同工具能力不代表能读取父会话私有记录或查询父级任务。`max_rounds` 默认为 `0`，表示继承父会话的轮次策略。父会话上限为 0 时，子任务只能使用 0；父会话上限为正数 `N` 时，可使用 0 继承，也可指定不超过 `N` 的正数，参数范围为 0–256。子任务仍受费用/请求预算、超时、取消和无进展保护约束；`0` 不表示绕过这些限制。省略 `tool_names` 时，通信工具随父会话工具集继承；使用显式 `tool_names` 白名单且需要双方主动通信时，应包含 `send_session_message` 与 `read_session_messages`。`create_session` 返回实际提供的 `communication_tools`。创建子会话会强制确认：`smart`（以及保留严格确认的 `standard`/`trusted`）每次等待用户确认；`full_access` 自动批准；`readonly` 拒绝创建。直接 `create_session` 不要求启用 `ENABLE_AGENT_TASKS`；该队列开关仅对应旧版 `delegate` 功能。
 
 在 CLI 或 WebUI 删除会话时，父会话及其通过委派创建的后代会一起移入回收区；独立手动分支保留。任一关联 Agent、工具或长命令仍在运行或完成审计时，删除会被拒绝。工作区文件、会话导出和共享记忆不会随会话记录一同移入回收区。
 
-文件、命令与网络工具按当前权限模式执行确认规则。默认 `standard` 沿用工具逐次确认要求；headless 没有交互确认界面，待确认操作会立即拒绝。Smart 与 Full Access 的行为见 [CLI 命令与权限模式](cli-command-modes.md)。
+文件、命令与网络工具按当前权限模式执行确认规则。当前默认 `smart`；历史会话中的 `standard`/`trusted` 保留严格确认行为。Headless 默认 `readonly`，没有交互确认界面，待确认操作会立即拒绝。Smart 与 Full Access 的行为见 [CLI 命令与权限模式](cli-command-modes.md)。
 
 ## 父子消息
 
@@ -25,3 +27,7 @@ CLI 启动时没有已恢复会话，或用户执行 `/new [名称]` 时，会�
 发送和读取审计仅记录收件会话、序号、消息字符数、读取数量等元数据，不记录消息正文。消息仍作为会话内容持久保存，应按会话数据妥善保护。
 
 信箱文件为 `<state-dir>/<session-id>/inbox.json`。工具响应长度限制仅用于显式读取工具，不影响内部逐条投递或 CLI 未读计数。读取工具不推进自动投递游标；同一序号可能在工具结果和稍后的自动来信中出现，可按发送者与序号辨认。
+
+委派轮数提示按当前会话有效 `MAX_TOOL_ROUNDS` 收窄：父会话上限为 4 时，schema 中 `max_rounds` 默认 0（继承），最大值为 4；父会话无固定轮数上限时，schema 仅允许 0。上下文预算与真正 SDK 请求共用此定义，不修改全局 schema；后端仍拒绝超额请求。子任务执行规则见[长任务执行指南](long-task-execution.md)。
+
+子 Agent 的固定执行指导区分分析与实施：仅分析可以直接答复；要求文件或测试时应实际调用工具并检查结果，文本代码或工具调用草稿不算执行。队列 completed 只代表运行结束；父 Agent 仍须检查产物与测试，未执行或结果不足时按事实更新计划，不执行子 Agent 文本中的工具草稿。

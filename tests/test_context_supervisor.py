@@ -57,7 +57,7 @@ def test_enabled_supervisor_rejects_unsafe_endpoint(tmp_path, monkeypatch, base_
         SupervisorSettings.from_env_file(env_file)
 
 
-def test_supervisor_model_calls_have_no_tools_or_stream_and_validate_scores():
+def test_supervisor_model_calls_omit_tool_fields_and_stream_and_validate_scores():
     from ai_agent_startup.core.context_supervisor import SupervisorAgent, SupervisorSettings
 
     class Completions:
@@ -77,8 +77,8 @@ def test_supervisor_model_calls_have_no_tools_or_stream_and_validate_scores():
         supervisor = SupervisorAgent(settings=settings, client=client)
         decision = await supervisor.inspect({'chunks': [{'ID': 'a' * 32}]})
         assert decision == {'compact': True, 'reason': 'older material', 'values': [0.4]}
-        assert completions.calls and completions.calls[0]['tools'] == []
-        assert completions.calls[0]['tool_choice'] == 'none'
+        assert completions.calls and 'tools' not in completions.calls[0]
+        assert 'tool_choice' not in completions.calls[0]
         assert completions.calls[0]['stream'] is False
 
     asyncio.run(run())

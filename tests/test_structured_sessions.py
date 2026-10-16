@@ -18,7 +18,7 @@ from ai_agent_startup.tools import TOOL_REGISTRY
 
 
 class SupervisorStub:
-    def __init__(self, *, values=None, fail_summary=False):
+    def __init__(self, *, values='alternating', fail_summary=False):
         self.values = values
         self.fail_summary = fail_summary
         self.inspected = []
@@ -90,7 +90,7 @@ def test_real_loop_sends_four_sections_and_preserves_tool_pair_and_recovery(stor
         supervisor = SupervisorStub()
         manager.history_context.supervisor = supervisor
 
-        async def tool(owner, call):
+        async def tool(owner, call, *, evidence=None):
             assert owner is session
             return 'paired result'
 
@@ -131,10 +131,8 @@ def test_real_loop_sends_four_sections_and_preserves_tool_pair_and_recovery(stor
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('values,expected_reason', [('alternating', 'value_variance'),
-                                                    ('invalid', '')])
-def test_supervisor_variance_drives_compaction_but_invalid_scores_do_not(store, monkeypatch,
-                                                                           values, expected_reason):
+@pytest.mark.parametrize('values', ['alternating', 'invalid'])
+def test_low_utilization_skips_supervisor_even_for_variance_or_invalid_scores(store, monkeypatch, values):
     monkeypatch.setattr(config, 'CONTEXT_COMPACT_RATIO', 2.0)
 
     async def run():
@@ -150,10 +148,12 @@ def test_supervisor_variance_drives_compaction_but_invalid_scores_do_not(store, 
             manager.submit(session, 'test variance')
             await asyncio.wait_for(session.task, 3)
             assert session.record['status'] == 'idle', session.record['error']
-            assert supervisor.inspected
+            assert supervisor.inspected == []
             metrics = session.record['last_run']['context']
-            assert metrics['compact_reason'] == expected_reason
-            assert bool(metrics['archived_chunks']) is bool(expected_reason)
+            assert metrics['supervisor'] == 'below_threshold'
+            assert metrics['compact_reason'] == ''
+            assert metrics['archived_chunks'] == 0
+            assert supervisor.summarized == []
         finally:
             await manager.shutdown()
 

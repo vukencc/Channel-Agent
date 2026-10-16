@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from contextvars import copy_context
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -17,10 +18,11 @@ from typing import TYPE_CHECKING
 from ai_agent_startup import config
 from ai_agent_startup.core.audit_writer import append_audit
 from ai_agent_startup.core.context import ContextBudgetError, estimate_tokens, request_tokens
-from ai_agent_startup.core.context_supervisor import SupervisorAgent, value_variance
+from ai_agent_startup.core.context_supervisor import SupervisorAgent, SupervisorDecision, value_variance
 from ai_agent_startup.core.messages import is_user_request
 from ai_agent_startup.core.session_limits import limit as session_limit
 from ai_agent_startup.core.storage import now, wait_for_io_completion
+from ai_agent_startup.core.debug_runtime import debug_span, traced
 
 if TYPE_CHECKING:
     from ai_agent_startup.core.sessions import Session, SessionManager
@@ -32,6 +34,46 @@ def _json(value):
 
 def _digest(value):
     return hashlib.sha256(_json(value).encode('utf-8')).hexdigest()
+
+
+def _sample(text, limit):
+    """保留语义内容的头、中、尾；采样不改变归档原文。"""
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    size = max(0, (limit - 6) // 3)
+    middle = max(0, len(text) // 2 - size // 2)
+    return text[:size] + ' … ' + text[middle:middle + size] + ' … ' + (text[-size:] if size else '')
+
+
+def _inspection_snapshot(messages, eligible, current, summary, utilization, settings):
+    # 评分单元是完整逻辑组，不能因归档合并成一个大块而跳过监督。
+    units = []
+    for start, end in eligible[-getattr(settings, 'max_chunks', 24):]:
+        fragments = []
+        for message in messages[start:end]:
+            fragments.append(message.get('role', '') + ': ' + _sample(message.get('content', ''), 240))
+            for call in message.get('tool_calls', []):
+                function = call.get('function', {})
+                fragments.append('tool ' + str(function.get('name', ''))[:80] + ': '
+                                 + _sample(function.get('arguments', ''), 240))
+        units.append({'ID': f'group-{start}-{end}', 'start': start,
+                      'text': _sample('\n'.join(fragments), 420)})
+    snapshot = {'current_input': _sample(messages[current].get('content', ''), 800),
+                'session_summary': _sample(summary, 1000), 'budget_utilization': utilization,
+                'chunks': units}
+    # 留出监督系统指令空间；小输入配额优先保留两个可比较单元。
+    maximum = max(0, getattr(settings, 'max_input_chars', 12000) - 600)
+    while len(_json(snapshot)) > maximum and len(units) > 2:
+        units.pop(0)
+    while len(_json(snapshot)) > maximum:
+        fields = [(snapshot, 'current_input'), (snapshot, 'session_summary')]
+        fields.extend((unit, 'text') for unit in units)
+        owner, key = max(fields, key=lambda pair: len(pair[0][pair[1]]))
+        if not owner[key]:
+            raise ValueError('监督输入配额无法容纳历史元数据')
+        owner[key] = _sample(owner[key], max(0, len(owner[key]) // 2)) if len(owner[key]) > 12 else ''
+    return snapshot
 
 
 def _public(message):
@@ -142,6 +184,24 @@ class HistoryContext:
                 or not isinstance(manifest.get('session_summary'), str)
                 or not isinstance(manifest.get('chunks'), list)):
             raise ValueError('上下文索引格式无效')
+        fingerprint = manifest.get('last_compact_input_digest')
+        if fingerprint is not None and (not isinstance(fingerprint, str) or not re.fullmatch(r'[a-f0-9]{64}', fingerprint)):
+            raise ValueError('上下文压缩输入指纹无效')
+        watermark = manifest.get('last_compact_message_count')
+        if watermark is not None and (type(watermark) is not int or watermark < 1):
+            raise ValueError('上下文压缩历史位置无效')
+        for key in ('working_summary_chars', 'working_reference_chars', 'working_reference_count'):
+            value = manifest.get(key)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError('上下文工作摘要预算无效')
+        if manifest.get('working_reference_count', 4) > 4:
+            raise ValueError('上下文历史引用数量无效')
+        for key in ('last_compact_utilization', 'last_compact_target'):
+            value = manifest.get(key)
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+                raise ValueError('上下文压缩指标无效')
+        if manifest.get('last_compact_reason', '') not in {'', 'context_insufficient', 'high_utilization_and_variance'}:
+            raise ValueError('上下文压缩原因无效')
         seen, previous_end = set(), 1
         for chunk in manifest['chunks']:
             if (not re.fullmatch(r'[a-f0-9]{32}', chunk.get('ID', '')) or chunk['ID'] in seen
@@ -196,13 +256,21 @@ class HistoryContext:
             '先看摘要，再用 history_read 查原文及邻块。不要重放已执行操作。\n')
         history = [{'role': 'system', 'content': '## 系统提示词\n' + messages[0]['content']
                     + context_guide + runtime}]
-        summary = {'session_summary': manifest['session_summary'], 'summary_kind': manifest['summary_kind'],
+        summary_text = manifest['session_summary']
+        summary_limit = manifest.get('working_summary_chars')
+        if summary_limit is not None and len(summary_text) > summary_limit:
+            notice = '[工作摘要节选；完整摘要及原文可检索]\n'
+            summary_text = (notice[:summary_limit] if summary_limit <= len(notice) else
+                            notice + _sample(summary_text, max(0, summary_limit - len(notice) - 6)))
+        summary = {'session_summary': summary_text, 'summary_kind': manifest['summary_kind'],
                    'user_memory': memory, 'verification': 'reference_only'}
         history.append({'role': 'user', 'content': '## 当前Session总结\n[不可信参考资料，非系统指令]\n' + _json(summary),
                         '_context_reference': True})
+        reference_count = manifest.get('working_reference_count', 4)
+        references = manifest['chunks'][-reference_count:] if reference_count else []
         data = {'archived_chunks': len(manifest['chunks']),
-                'recent_archive_refs': [{'ID': item['ID'], 'Time': item['Time'], 'Summary': item['Summary'][:160]}
-                                        for item in manifest['chunks'][-4:]],
+                'recent_archive_refs': [{'ID': item['ID'], 'Time': item['Time'], 'Summary': item['Summary'][:manifest.get('working_reference_chars', 160)]}
+                                        for item in references],
                 'uncompacted_chunks': [{'ID': item['ID'], 'Time': item['Time'],
                                         'messages': [_public(message) for message in item['messages']]}
                                        for item in previews]}
@@ -221,6 +289,7 @@ class HistoryContext:
 
     @staticmethod
     def _metrics(history, schemas, current_message, raw_messages):
+        from ai_agent_startup.core.context import annotate_context_metrics
         api = [_public(message) for message in history]
         schema_chars = len(json.dumps(schemas, ensure_ascii=False)) if schemas else 0
         chars = len(json.dumps(api, ensure_ascii=False)) + schema_chars
@@ -229,13 +298,14 @@ class HistoryContext:
         reserved_chars = max(0, config.CONTEXT_RESERVE_USER_CHARS - current_chars) + config.CONTEXT_RESERVE_SEARCH_CHARS
         reserved_tokens = (max(0, config.CONTEXT_RESERVE_USER_TOKENS - estimate_tokens(current_message.get('content', '')))
                            + config.CONTEXT_RESERVE_SEARCH_TOKENS)
-        return {'structured': True, 'original_chars': len(_json(raw_messages)),
+        return annotate_context_metrics({'structured': True, 'original_chars': len(_json(raw_messages)),
                 'original_tokens': request_tokens([_public(message) for message in raw_messages], schemas),
                 'sent_chars': chars - schema_chars, 'sent_tokens': tokens, 'schema': schema_chars,
                 'total_chars': chars, 'reserved_chars': reserved_chars, 'reserved_tokens': reserved_tokens,
                 'utilization': max((chars + reserved_chars) / session_limit('MODEL_INPUT_CHARS'),
-                                   (tokens + reserved_tokens) / session_limit('MODEL_INPUT_TOKENS'))}
+                                   (tokens + reserved_tokens) / session_limit('MODEL_INPUT_TOKENS'))}, schemas)
 
+    @traced('supervisor.summary')
     async def _summary(self, session, previous, messages, *, kind, deadline):
         maximum = config.CONTEXT_SUMMARY_CHARS
         settings = getattr(self.supervisor, 'settings', None)
@@ -256,27 +326,57 @@ class HistoryContext:
                     summary = await self.supervisor.summarize(summary, payload, kind=kind)
                 if not isinstance(summary, str) or not summary.strip():
                     raise ValueError('监督器返回空摘要')
+                if any(ord(character) < 32 and character not in '\n\r\t' for character in summary):
+                    raise ValueError('监督器摘要包含不可显示控制字符')
                 summary = summary.strip()[:maximum]
             return summary, summary_kind
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # 本地摘录明确标注失败来源，不能把它包装成模型成功总结。
-            pieces = []
-            for message in messages:
-                content = str(message.get('content', message.get('Summary', '')))
-                pieces.append(f'{message.get("role", "history")}: {content[:240]}')
-            prefix = '[本地摘录；监督摘要失败：' + type(exc).__name__ + '；原文可检索]\n'
-            # 旧摘要不能占满新摘要额度；失败时同时保留旧线索与新增事实。
-            old = previous[:max(0, (maximum - len(prefix)) // 3)]
-            remaining = max(0, maximum - len(prefix) - len(old) - 2)
-            added = '\n'.join(pieces)
-            if len(added) > remaining:
-                head = max(0, remaining // 3 - 12)
-                tail = max(0, remaining - head - 12)
-                added = added[:head] + '\n[中间略；查原文]\n' + (added[-tail:] if tail else '')
-            summary = prefix + old + '\n' + added
-            return summary[:maximum], 'extractive_fallback'
+            return self._extractive_summary(previous, messages,
+                reason='监督摘要失败：' + type(exc).__name__, summary_kind='extractive_fallback')
+
+    @staticmethod
+    def _extractive_summary(previous, messages, *, reason, summary_kind):
+        maximum = config.CONTEXT_SUMMARY_CHARS
+        # 本地摘录明确标注失败来源，不能把它包装成模型成功总结。
+        pieces = []
+        for message in messages:
+            content = str(message.get('content', message.get('Summary', '')))
+            if 'Summary' in message:
+                # 优先保留块摘要中的真实工具定位/错误，不能因二次摘录丢失关键事实。
+                lines = content.splitlines()
+                important = [line for line in lines if line.startswith(('tool request ', 'tool:'))]
+                content = '\n'.join(important + [line for line in lines if line not in important])
+                pieces.append(content)
+            else:
+                pieces.append(f'{message.get("role", "history")}: {_sample(content, 240)}')
+            for call in message.get('tool_calls', []):
+                function = call.get('function', {})
+                arguments = function.get('arguments', '')
+                try:
+                    data = json.loads(arguments)
+                    # 文件定位与执行目的优先于大段写入正文；不能把调用视为执行成功。
+                    if isinstance(data, dict):
+                        arguments = _json({key: _sample(value, 80) if isinstance(value, str) else value
+                                           for key, value in data.items()})
+                except (TypeError, ValueError):
+                    pass
+                pieces.append('tool request ' + str(function.get('name', ''))[:80]
+                              + ': ' + _sample(arguments, 240))
+        prefix = '[本地摘录；' + reason + '；原文可检索]\n'
+        # 旧摘要不能占满新摘要额度；失败时同时保留旧线索与新增事实。
+        old = previous[:max(0, (maximum - len(prefix)) // 3)]
+        remaining = max(0, maximum - len(prefix) - len(old) - 2)
+        added = '\n'.join(pieces)
+        if len(added) > remaining:
+            head = max(0, remaining // 3 - 12)
+            tail = max(0, remaining - head - 12)
+            added = added[:head] + '\n[中间略；查原文]\n' + (added[-tail:] if tail else '')
+        summary = prefix + old + '\n' + added
+        summary = ''.join(' ' if ord(character) < 32 and character not in '\n\r\t' else character
+                          for character in summary)
+        return summary[:maximum], summary_kind
 
     def _existing_chunk(self, session, chunk):
         path = self._folder(session) / 'chunks' / (chunk['ID'] + '.json')
@@ -301,6 +401,11 @@ class HistoryContext:
             raise PermissionError('上下文审计文件无效')
         metadata = {'event': 'context_compact_requested', 'revision': manifest['revision'],
                     'chunk_ids': [item['ID'] for item in records], 'created_at': now()}
+        for source, key in (('last_compact_utilization', 'before_utilization'),
+                            ('last_compact_target', 'target_utilization'),
+                            ('last_compact_reason', 'reason')):
+            if source in manifest:
+                metadata[key] = manifest[source]
         append_audit(audit, _json(metadata), sync=config.AUDIT_SYNC)
         for record in records:
             path = directory / 'chunks' / (record['ID'] + '.json')
@@ -325,7 +430,8 @@ class HistoryContext:
             # requested 已持久保存，文件已提交不能对外伪报未提交。
             pass
 
-    async def _compact(self, session, manifest, chunks):
+    @traced('context.compact')
+    async def _compact(self, session, manifest, chunks, *, local=False):
         settings = getattr(self.supervisor, 'settings', None)
         deadline = asyncio.get_running_loop().time() + getattr(settings, 'timeout', 20)
         records = []
@@ -334,14 +440,26 @@ class HistoryContext:
             record = await self._io(self._existing_chunk, session, chunk)
             self._gate(session)
             if record is None:
-                summary, kind = await self._summary(session, '', chunk['messages'], kind='chunk', deadline=deadline)
+                if local:
+                    summary, kind = self._extractive_summary('', chunk['messages'],
+                        reason='预算整理，未调用模型摘要', summary_kind='extractive_budget')
+                else:
+                    summary, kind = await self._summary(session, '', chunk['messages'], kind='chunk', deadline=deadline)
                 record = {'ID': chunk['ID'], 'Time': {**chunk['Time'], 'created_at': now()},
                           'Summary': summary, 'RawHistory': _json(chunk['messages']), 'digest': chunk['digest'],
                           'session_id': session.id, 'summary_kind': kind}
             records.append(record)
-        # Session 总结直接复核新增原文，不依赖可能遗漏事实的块级摘要。
-        summary, kind = await self._summary(session, manifest['session_summary'], [
-            message for chunk in chunks for message in chunk['messages']], kind='session', deadline=deadline)
+        # 原文已逐块总结并不可变归档；会话摘要合并块摘要，避免再逐页重复读取同一原文。
+        summary_input = [{key: record[key] for key in ('ID', 'Time', 'Summary', 'summary_kind')}
+                         for record in records]
+        if local:
+            summary, kind = self._extractive_summary(manifest['session_summary'], summary_input,
+                reason='预算整理，未调用模型摘要', summary_kind='extractive_budget')
+        else:
+            summary, kind = await self._summary(session, manifest['session_summary'], summary_input,
+                                              kind='session', deadline=deadline)
+        if not local and any(record['summary_kind'] != 'model' for record in records):
+            kind = 'extractive_fallback'
         candidate = copy.deepcopy(manifest)
         candidate.update(revision=manifest['revision'] + 1, session_summary=summary,
                          summary_kind=kind, updated_at=now())
@@ -354,6 +472,7 @@ class HistoryContext:
         self.manager.notify()
         return candidate
 
+    @traced('context.prepare')
     async def prepare(self, session: Session, messages: list[dict], *, schemas: list[dict] | None = None,
                       runtime: str = '', memory: str = '') -> tuple[list[dict], dict]:
         async with self._operation(session):
@@ -375,51 +494,172 @@ class HistoryContext:
             previews = self._chunks(session, messages, eligible)
             history = self._compose(messages, manifest, previews, protected, current, runtime, memory)
             metrics = self._metrics(history, schemas, messages[current], messages)
-            reason = 'budget_risk' if metrics['utilization'] >= config.CONTEXT_COMPACT_RATIO else ''
+            high_utilization = metrics['utilization'] >= config.CONTEXT_COMPACT_RATIO
+            insufficient = metrics['utilization'] >= 1
+            target = min(config.CONTEXT_COMPACT_TARGET_RATIO, config.CONTEXT_COMPACT_RATIO)
+            watermark = manifest.get('last_compact_message_count')
+            # 旧索引兼容；分支缩短未归档尾部时不沿用超出当前历史的位置。
+            new_groups = sum(start >= watermark for start, _ in available) if watermark is not None and watermark <= len(messages) else len(available)
+            cooldown = (watermark is not None and watermark <= len(messages)
+                        and new_groups < config.CONTEXT_COMPACT_MIN_NEW_GROUPS and not insufficient)
+            fingerprint = _digest([_public(message) for message in messages]) if high_utilization else None
+            already_compacted = bool(fingerprint and manifest.get('last_compact_input_digest') == fingerprint and not insufficient)
+            reason = 'context_insufficient' if insufficient else ''
+            # 先检查真正不可压缩的成本，不能付费归档后才发现 schema/当前输入本身超限。
+            fixed_manifest = {**manifest, 'session_summary': '', 'working_summary_chars': 0,
+                              'working_reference_chars': 0, 'working_reference_count': 0}
+            fixed_history = self._compose(messages, fixed_manifest, [], [], current, runtime, memory)
+            # 多次规划只重算工作窗口，schema 与原始完整历史成本在本轮只序列化一次。
+            schema_tokens = estimate_tokens(json.dumps(schemas, ensure_ascii=False)) if schemas else 0
+            char_limit = session_limit('MODEL_INPUT_CHARS')
+            token_limit = session_limit('MODEL_INPUT_TOKENS')
+            def window_cost(window):
+                api = [_public(message) for message in window]
+                chars = len(json.dumps(api, ensure_ascii=False)) + metrics['schema']
+                tokens = request_tokens(api) + schema_tokens
+                return {'total_chars': chars, 'sent_chars': chars - metrics['schema'], 'sent_tokens': tokens,
+                        'utilization': max((chars + metrics['reserved_chars']) / char_limit,
+                                           (tokens + metrics['reserved_tokens']) / token_limit)}
+            fixed = {**metrics, **window_cost(fixed_history)}
+            if insufficient and fixed['utilization'] > 1:
+                fixed.update(context_revision=manifest['revision'], archived_chunks=len(manifest['chunks']),
+                             compact_reason=reason, compacted=False, supervisor='fixed_overhead',
+                             before_utilization=metrics['utilization'], target_utilization=target,
+                             fixed_utilization=fixed['utilization'], compact_target_reached=False,
+                             new_history_groups=new_groups, summary_kind=manifest['summary_kind'],
+                             session_summary_chars=len(manifest['session_summary']))
+                raise ContextBudgetError(fixed)
             self.checks[session.id] = self.checks.get(session.id, 0) + 1
             settings = getattr(self.supervisor, 'settings', None)
-            decision_status = 'not_due'
-            if len(previews) >= 2 and self.checks[session.id] % getattr(settings, 'check_interval', 3) == 0:
+            enabled = getattr(settings, 'enabled', True)
+            decision_status = ('hard_budget' if insufficient else 'already_compacted' if already_compacted else 'cooldown' if cooldown and high_utilization else 'disabled' if not enabled else 'below_threshold' if not high_utilization
+                               else 'insufficient_history' if len(available) < 2 else 'not_due')
+            # 监督仅在高占用时启动；价值方差不能绕过预算门槛。
+            if high_utilization and not insufficient and not cooldown and not already_compacted and enabled and len(available) >= 2 and self.checks[session.id] % getattr(settings, 'check_interval', 3) == 0:
                 try:
-                    snapshot = {'current_input': messages[current].get('content', '')[:800],
-                                'session_summary': manifest['session_summary'][:1000],
-                                'budget_utilization': metrics['utilization'],
-                                'chunks': [{'ID': item['ID'], 'start': item['Time']['start'],
-                                            'text': _json(item['messages'])[:240]}
-                                           for item in previews[-getattr(settings, 'max_chunks', 24):]]}
+                    session.phase = '监督上下文：判定是否需要 Compact'
+                    self.manager.notify()
+                    snapshot = _inspection_snapshot(messages, available, current, manifest['session_summary'],
+                                                    metrics['utilization'], settings)
                     self._gate(session)
                     async with asyncio.timeout(getattr(settings, 'timeout', 20)):
-                        decision = await self.supervisor.inspect(snapshot)
+                        with debug_span('supervisor.inspect'):
+                            decision = SupervisorDecision.model_validate(await self.supervisor.inspect(snapshot)).model_dump()
                     values = decision.get('values', [])
                     if len(values) != len(snapshot['chunks']):
                         raise ValueError('监督评分数量不匹配')
                     variance = value_variance(values)
                     metrics['value_variance'] = variance
-                    if variance >= getattr(settings, 'variance_threshold', .75):
-                        reason = reason or 'value_variance'
+                    if variance > 0 and variance >= getattr(settings, 'variance_threshold', .75):
+                        reason = reason or 'high_utilization_and_variance'
                     decision_status = 'evaluated'
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     decision_status = 'unavailable:' + type(exc).__name__
-            if reason and previews:
-                manifest = await self._compact(session, manifest, previews)
+            # 软保护不能使高方差判定失效；无候选时只晋升较旧完整组，保留最近组。
+            if (reason and not previews and len(protected) >= 2 and 'value_variance' in metrics
+                    and metrics['value_variance'] > 0 and metrics['value_variance'] >= getattr(settings, 'variance_threshold', .75)):
+                promote, protected = protected[:1], protected[1:]
+                previews = self._chunks(session, messages, promote)
+            # 预算包含摘要、即将发布的引用和完整保护组；规划成功后才归档。
+            chunks = previews if reason else []
+            compact_manifest = manifest
+            effective_target = target
+            if chunks or insufficient:
+                # 容量规划包含可能晋升的每个完整组的新引用，不能只看当前候选。
+                possible_chunks = [*chunks, *[chunk for group in protected
+                    for chunk in self._chunks(session, messages, [group])]]
+                def worst_utilization(candidate, protected_groups):
+                    estimates = []
+                    for character in ('\\', '摘'):
+                        estimate_manifest = {**candidate,
+                            'session_summary': character * config.CONTEXT_SUMMARY_CHARS,
+                            'summary_kind': 'extractive_fallback'}
+                        estimate_manifest['chunks'] = sorted([*manifest['chunks'], *[
+                            {'ID': item['ID'], 'Time': {**item['Time'], 'created_at': now()},
+                             'Summary': character * min(160, config.CONTEXT_SUMMARY_CHARS)} for item in possible_chunks]],
+                            key=lambda item: item['Time']['start'])
+                        estimate = self._compose(messages, estimate_manifest, [], protected_groups,
+                                                 current, runtime, memory)
+                        estimates.append(window_cost(estimate)['utilization'])
+                    return max(estimates)
+
+                if insufficient:
+                    # 固定成本高时 .75 不可达；仅占用剩余预算的四分之一，留下执行余量。
+                    effective_target = max(target, fixed['utilization'] + (1 - fixed['utilization']) / 4)
+                    archive_target = fixed['utilization'] + (effective_target - fixed['utilization']) * .6
+                    compact_manifest = {**manifest, 'working_summary_chars': config.CONTEXT_SUMMARY_CHARS,
+                                        'working_reference_chars': 160, 'working_reference_count': 4}
+                    if worst_utilization(compact_manifest, []) > archive_target:
+                        compact_manifest['working_reference_chars'] = 0
+                    if worst_utilization(compact_manifest, []) > archive_target:
+                        compact_manifest['working_reference_count'] = 0
+                    if worst_utilization(compact_manifest, []) > archive_target:
+                        low, high = 0, config.CONTEXT_SUMMARY_CHARS
+                        while low < high:
+                            middle = (low + high + 1) // 2
+                            candidate = {**compact_manifest, 'working_summary_chars': middle}
+                            if worst_utilization(candidate, []) <= archive_target:
+                                low = middle
+                            else:
+                                high = middle - 1
+                        compact_manifest['working_summary_chars'] = low
+                while protected:
+                    estimate = worst_utilization(compact_manifest, protected)
+                    if estimate <= effective_target:
+                        break
+                    # 软触发保留最近完整组；硬预算可以归档最近组，但不得拆开工具批次。
+                    if not insufficient and len(protected) == 1 and estimate <= 1:
+                        break
+                    promote, protected = protected[:1], protected[1:]
+                    chunks.extend(self._chunks(session, messages, promote))
+                if insufficient and worst_utilization(compact_manifest, protected) > 1:
+                    # 摘要/引用的最小元数据仍不能容纳时，保持原索引并干净地检查点。
+                    failed = {**metrics, 'compacted': False, 'compact_reason': reason,
+                              'supervisor': 'archive_overhead', 'fixed_utilization': fixed['utilization']}
+                    raise ContextBudgetError(failed)
+            if chunks:
+                if getattr(self.manager, 'debug', None) is not None and self.manager.debug.enabled:
+                    self.manager._debug_context_sample(session, metrics, reason='before_compact')
+                    self.manager._debug_phase(session, 'compaction')
+                session.phase = '整理上下文：压缩与归档'
+                self.manager.notify()
+                batch_chars = sum(len(_json(chunk['messages'])) for chunk in chunks)
+                batch_groups = sum(len(_groups([messages[0], *chunk['messages']])) for chunk in chunks)
+                # 大批次也可能没有模型摘要的有效空间；不能反复付费失败后再本地摘录。
+                local = bool(insufficient and (
+                    (batch_chars <= config.CONTEXT_HISTORY_CHUNK_CHARS
+                     and batch_groups < config.CONTEXT_COMPACT_MIN_NEW_GROUPS) or
+                    manifest['summary_kind'] in {'extractive_fallback', 'extractive_budget'} or
+                    compact_manifest.get('working_summary_chars', config.CONTEXT_SUMMARY_CHARS) <
+                    config.CONTEXT_SUMMARY_CHARS / 2))
+                manifest = await self._compact(session, {**compact_manifest, 'last_compact_input_digest': fingerprint,
+                    'last_compact_message_count': len(messages), 'last_compact_utilization': metrics['utilization'],
+                    'last_compact_target': target, 'last_compact_reason': reason}, chunks, local=local)
                 previews = []
+            if insufficient and not chunks:
+                # 仅收窄摘要/引用工作视图已能解决压力时，无需重复付费或写入原文归档。
+                manifest = compact_manifest
             history = self._compose(messages, manifest, previews, protected, current, runtime, memory)
             after = self._metrics(history, schemas, messages[current], messages)
-            # 保护组数是软保留；仍无空间时仅留下最新完整组，不切断工具配对。
-            minimum = 1 if any(start > current for start, _ in protected) else 0
-            while after['utilization'] > 1 and len(protected) > minimum:
-                promote, protected = protected[:1], protected[1:]
-                manifest = await self._compact(session, manifest, self._chunks(session, messages, promote))
-                history = self._compose(messages, manifest, [], protected, current, runtime, memory)
-                after = self._metrics(history, schemas, messages[current], messages)
             after.update(context_revision=manifest['revision'], archived_chunks=len(manifest['chunks']),
-                         compact_reason=reason, supervisor=decision_status,
+                         compact_reason=reason if chunks or insufficient else '', compacted=bool(chunks), supervisor=decision_status,
                          session_summary_chars=len(manifest['session_summary']),
                          summary_kind=manifest['summary_kind'])
+            after.update(before_utilization=metrics['utilization'], target_utilization=target,
+                         new_history_groups=new_groups, fixed_utilization=fixed['utilization'],
+                         effective_target_utilization=effective_target,
+                         working_summary_chars=manifest.get('working_summary_chars', config.CONTEXT_SUMMARY_CHARS),
+                         working_reference_count=manifest.get('working_reference_count', 4),
+                         compact_target_reached=bool(chunks) and after['utilization'] <= target)
             if 'value_variance' in metrics:
                 after['value_variance'] = metrics['value_variance']
+            if chunks and getattr(self.manager, 'debug', None) is not None and self.manager.debug.enabled:
+                self.manager._debug_context_sample(session, after, reason='after_compact')
+                self.manager.debug.event('context.compacted', session_id=session.id,
+                    turn_id=session.record.get('last_run', {}).get('turn_id'), state='compacted',
+                    reason='compaction', metrics={'context_utilization': after['utilization']})
             self._gate(session)
             if after['utilization'] > 1:
                 raise ContextBudgetError(after)

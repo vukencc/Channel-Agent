@@ -18,6 +18,7 @@ from ai_agent_startup.tools import web_search
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', False)
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', False)
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 24)
     monkeypatch.setattr(config, 'MEMORY_AUTO_EXTRACT', False)
     monkeypatch.setattr(config, 'RAG_ASSESS', False)
     value = SessionStore(tmp_path / 'state', tmp_path / 'workspace')

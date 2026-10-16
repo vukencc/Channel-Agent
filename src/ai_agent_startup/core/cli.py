@@ -27,6 +27,7 @@ from ai_agent_startup.core.sessions import SessionManager
 from ai_agent_startup.core.storage import LazyRecord, SessionStore
 from ai_agent_startup.core.transcript import Transcript
 from ai_agent_startup.core.cli_commands import CommandCompleter, CommandPalette, POLICY_LABELS, help_text
+from ai_agent_startup.core.permissions import public_permission_policy
 
 HELP = help_text()
 
@@ -45,6 +46,7 @@ class AgentCLI:
         self.pending_delete = None
         self.pending_cleanup = None
         self.show_details = False
+        self.show_debug = self.manager.debug.enabled
         self._deleting = set()
         self._command_draft = None
         self.app = None
@@ -208,6 +210,9 @@ class AgentCLI:
                                            or self.pending_delete == self.current
                                            or self.pending_cleanup is not None and self.pending_cleanup[0] == self.current)),
             Window(FormattedTextControl(self.status_text), height=1),
+            ConditionalContainer(Frame(Window(FormattedTextControl(self.debug_text), height=6, wrap_lines=True),
+                                       title='DEBUG · 模块实时活动 · /debug off 隐藏'),
+                                 Condition(lambda: self.show_debug and self.manager.debug.enabled)),
             Frame(self.input, title='输入消息或 /命令 · Enter 发送 · Alt+Enter 换行'),
         ])
         root = FloatContainer(root, floats=[
@@ -253,12 +258,12 @@ class AgentCLI:
             selection = self.pending_cleanup[1]
             return ('确认清理：' + '、'.join(name for name, selected in selection.items() if selected) + '？\n'
                     '缓存和旧日志将清除；会话记录移入回收区。工作区、知识库、导出和共享记忆保留。\n'
-                    '输入 /yes 或 /no；Full Access 仍须明确确认。')
+                    '输入 /yes 或 /no；完全访问仍须明确确认。')
         if self.pending_delete == self.current:
             count = len(self.manager.session_deletion_targets(self.active, cascade=True))
             return (f'确认删除会话 {self.active.record["title"]}（{self.current}）？\n'
                     f'该 Agent 及其委派后代共 {count} 个会话移入 .trash 回收区；工作区、导出和共享记忆保留。\n'
-                    '输入 /yes 或 Ctrl+Y 明确同意；/no 或 Ctrl+R 取消。Full Access 不跳过此确认。')
+                    '输入 /yes 或 Ctrl+Y 明确同意；/no 或 Ctrl+R 取消。完全访问不跳过此确认。')
         if self.pending_forget == self.current:
             return '确认清空当前会话的 memory.md？对话历史和文件工作区将保留。'
         return self.active.confirmation['prompt'] if self.active.confirmation else ''
@@ -282,12 +287,37 @@ class AgentCLI:
         unread = self.manager.communication.pending_count(s)
         badge = f' · Agent 未读 {unread}' if unread else ''
         policy = self.manager.permission_override or s.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY
-        mode = POLICY_LABELS.get(policy, policy)
+        mode = POLICY_LABELS[public_permission_policy(policy)]
         return [(f'class:status class:{style}', f'{s.id[:8]} | {mode} | {status} {s.phase}{elapsed}{loading}{badge} | 上下文 {self._message_count(s.record)} 条 | Ctrl+Q 退出')]
 
     @staticmethod
     def _is_loading(record):
         return isinstance(record, LazyRecord) and record.loader is not None
+
+    def debug_text(self):
+        """每次终端重绘读取有界快照；不会载入历史或显示工具正文。"""
+        snapshot = self.manager.debug.snapshot()
+        runtime = self.manager.concurrency_status()
+        lines = [f'Agent {runtime["active_agents"]} · 模型 {runtime["active_model_calls"]} · '
+                 f'工具 {len(runtime["active_tools"])} · 活动模块 {len(snapshot["active"])} · 丢弃 {snapshot["dropped"]}']
+        active = snapshot['active']
+        activity_labels = {'reasoning': '推理中', 'content': '输出中', 'tool_arguments': '生成工具参数', 'status': '接收状态'}
+        for row in active[-3:]:
+            session = self.manager.sessions.get(row['session_id'])
+            parent = session.record.get('delegated_from') if session is not None else None
+            relation = f' ← {parent[:8]}' if parent else ''
+            activity = activity_labels.get(row.get('activity'), '')
+            lines.append(f'{row["session_id"][:8]}{relation} · {row["module"]}'
+                         f'{" / " + row["name"] if row["name"] else ""}'
+                         f'{" · " + activity if activity else ""} · {row["duration_ms"] / 1000:.2f}s')
+        if not active:
+            lines.append('当前无活动模块')
+        elif len(active) > 3:
+            lines[0] += f' · 另 {len(active) - 3} 个模块未展开'
+        for row in snapshot['events'][-2:]:
+            lines.append(f'最近 {row["session_id"][:8]} · {row["module"]} · {row["state"]}'
+                         f'{" / " + row["error_type"] if row["error_type"] else ""} · {row["duration_ms"] / 1000:.2f}s')
+        return [('class:status', '\n'.join(lines))]
 
     @staticmethod
     def _message_count(record):
@@ -797,6 +827,13 @@ class AgentCLI:
                     self.transcript = Transcript(show_details=self.show_details)
                     self._view_key = None
                     self.notice = '执行详情已显示。' if self.show_details else '执行详情已隐藏。'
+                elif command == '/debug':
+                    if not self.manager.debug.enabled:
+                        raise ValueError('请设置 DEBUG=true 并重启后使用运行调试')
+                    if argument not in {'', 'on', 'off'}:
+                        raise ValueError('用法：/debug [on|off]')
+                    self.show_debug = not self.show_debug if not argument else argument == 'on'
+                    self.notice = '运行调试面板已显示。' if self.show_debug else '运行调试面板已隐藏；记录仍保留。'
                 elif command == '/new':
                     from ai_agent_startup.core.session_service import open_session
                     self.select(open_session(self.manager, title=argument or '新会话').id)
@@ -843,8 +880,8 @@ class AgentCLI:
                     if argument:
                         argument = {'full': 'full_access', 'full access': 'full_access'}.get(argument, argument)
                         self.manager.set_permission_policy(session, None if argument == 'default' else argument)
-                    policy = session.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY
-                    self.notice = f'当前权限模式：{POLICY_LABELS.get(policy, policy)} ({policy})；预先确认规则 {len(config.TOOL_PERMISSION_RULES)} 条。'
+                    policy = public_permission_policy(session.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY)
+                    self.notice = f'当前权限模式：{POLICY_LABELS[policy]} ({policy})。'
                 elif command == '/switch':
                     matches = [key for key in self.manager.sessions if key.startswith(argument)]
                     if not argument or len(matches) != 1:
@@ -981,7 +1018,7 @@ def main():
     parser.add_argument('--prompt', help='无 TTY 单次执行；默认拒绝待确认操作')
     parser.add_argument('--json', action='store_true', help='headless 输出单个 JSON 对象')
     parser.add_argument('--session', help='headless 继续已有会话 ID 或唯一前缀')
-    parser.add_argument('--policy', choices=['readonly', 'standard', 'trusted', 'smart', 'full_access'], help='headless 显式权限档位，默认 standard 并拒绝人工确认')
+    parser.add_argument('--policy', choices=['full_access', 'smart', 'readonly'], help='headless 显式权限档位，默认 readonly；需要人工确认时拒绝')
     args = parser.parse_args()
     if args.platform:
         from ai_agent_startup.core.platform_info import platform_info
@@ -1014,7 +1051,7 @@ def main():
                 handler.setFormatter(RedactingFormatter('%(levelname)s %(name)s: %(message)s'))
             async def execute_once():
                 try:
-                    return await run_headless(store, args.prompt, session_id=args.session, policy=args.policy or 'standard')
+                    return await run_headless(store, args.prompt, session_id=args.session, policy=args.policy or 'readonly')
                 finally:
                     await llm.close_clients()
             try:

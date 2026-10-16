@@ -177,19 +177,25 @@ def test_policy_aliases_and_selector_dont_expose_model_secrets(cli, monkeypatch)
     monkeypatch.setattr(config, 'MODEL_PROFILES', {'private': {'api_key': 'very-secret-key'}})
     assert cli.handle('/policy full access')
     assert cli.active.record['permission_policy'] == 'full_access'
-    assert 'Full Access' in cli.status_text()[0][1]
+    assert '完全访问' in cli.status_text()[0][1]
     assert cli.handle('/policy full')
     assert cli.handle('/policy smart')
-    assert 'Smart' in cli.status_text()[0][1]
+    assert '智能申请' in cli.status_text()[0][1]
     assert cli.handle('/models')
     assert 'very-secret-key' not in str(cli.palette.rows())
     cli.palette.query.text = 'private'
     cli.palette.choose()
     assert cli.active.record['model_profile'] == 'private'
     assert cli.handle('/permissions')
-    cli.palette.query.text = 'Read Only'
+    cli.palette.query.text = '只读'
     cli.palette.choose()
     assert cli.active.record['permission_policy'] == 'readonly'
+
+
+def test_permission_selector_contains_only_three_canonical_modes(cli):
+    assert cli.handle('/permissions')
+    assert [(row.value, row.title) for row in cli.palette.matches()] == [
+        ('full_access', '完全访问'), ('smart', '智能申请'), ('readonly', '只读')]
 
 
 def test_async_delete_waits_ui_write_and_does_not_wait_for_itself(tmp_path):
@@ -276,7 +282,7 @@ def test_busy_policy_changes_and_delete_are_rejected(cli):
     assert not cli.handle('/delete')
     assert cli.pending_delete is None
     assert cli.handle('/permissions')
-    cli.palette.query.text = 'Full Access'
+    cli.palette.query.text = '完全访问'
     cli.palette.choose()
     assert cli.active.record.get('permission_policy') is None
     cli.active.forking = False

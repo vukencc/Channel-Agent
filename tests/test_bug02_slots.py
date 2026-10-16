@@ -17,7 +17,7 @@ def test_waiting_tools_do_not_block_fifth_model(tmp_path, monkeypatch):
                     {'id': 'call', 'function': {'name': 'probe', 'arguments': '{}'}}]}
             return {'role': 'assistant', 'content': 'done'}
         manager = SessionManager(store, model=model)
-        async def tool(*args):
+        async def tool(*args, **kwargs):
             nonlocal waiting
             waiting += 1
             if waiting == 4:

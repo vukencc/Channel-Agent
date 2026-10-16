@@ -164,11 +164,12 @@ COMMAND_NETWORK_TIMEOUT = env_float('COMMAND_NETWORK_TIMEOUT', 5.0)
 AUDIT_SYNC = env_bool("AUDIT_SYNC", False)  # 默认保持内核追加；开启后每事件 fsync
 TOOL_MAX_OUTPUT = env_int("TOOL_MAX_OUTPUT", 20000)   # 工具输出（命令/文件内容）最大字符数，超出截断
 FILE_READ_CHARS = env_int("FILE_READ_CHARS", 6000)
-MODEL_INPUT_CHARS = env_int("MODEL_INPUT_CHARS", 64000)
+MODEL_INPUT_CHARS = env_int("MODEL_INPUT_CHARS", 0)
 MODEL_OUTPUT_CHARS = env_int("MODEL_OUTPUT_CHARS", 48000)
 AUDIT_LOG = env_path("AUDIT_LOG", "logs/audit.log")   # 确认与执行审计日志
 
 DEBUG = env_bool("DEBUG")
+DEBUG_TRACE_MAX_EVENTS = max(1, min(env_int('DEBUG_TRACE_MAX_EVENTS', 512), 10000))
 
 # RAG models and indexes are cached locally; secrets are never cache identifiers.
 RAG_CACHE_DIR = env_path("RAG_CACHE_DIR", ".cache/rag")
@@ -207,7 +208,10 @@ SESSION_MESSAGE_MAX_CHARS = env_int('SESSION_MESSAGE_MAX_CHARS', 4000)
 SESSION_INBOX_MAX_BYTES = env_int('SESSION_INBOX_MAX_BYTES', 1048576)
 ENABLE_SESSION_BUDGETS = env_bool('ENABLE_SESSION_BUDGETS', False)
 MODEL_RECOVERY_LIMIT = env_int('MODEL_RECOVERY_LIMIT', 1)
-MAX_TOOL_ROUNDS = env_int("MAX_TOOL_ROUNDS", 24)
+MAX_TOOL_ROUNDS = env_int("MAX_TOOL_ROUNDS", 0)
+# 显式启用有界续阶段；费用、速率与子会话硬预算不重置。
+AUTO_CONTINUE_TASKS = env_bool("AUTO_CONTINUE_TASKS", False)
+TASK_MAX_CONTINUATIONS = env_int("TASK_MAX_CONTINUATIONS", 3)
 
 # 持久记忆写入上限；旧文件只限制注入，不改写。
 MEMORY_MAX_CHARS = env_int("MEMORY_MAX_CHARS", 4000)
@@ -219,6 +223,32 @@ WEB_SEARCH_CONFIRM = os.getenv("WEB_SEARCH_CONFIRM", "always").lower()
 
 WORKSPACE_LIMIT_MB = env_int("WORKSPACE_LIMIT_MB", 512)
 COMMAND_MEMORY_MB = env_int("COMMAND_MEMORY_MB", 512)
+COMMAND_RUNTIME_PATHS = json.loads(os.getenv('COMMAND_RUNTIME_PATHS', '{}'))
+COMMAND_NODE_MEMORY_MB = env_int('COMMAND_NODE_MEMORY_MB', 0)
+ENABLE_ENVIRONMENT_PREPARE = env_bool('ENABLE_ENVIRONMENT_PREPARE', False)
+ENVIRONMENT_PREPARE_TIMEOUT = env_int('ENVIRONMENT_PREPARE_TIMEOUT', 120)
+# 0 沿用普通命令额度；只有环境准备工具使用显式配置的安装额度。
+ENVIRONMENT_PREPARE_NETWORK_BYTES = env_int('ENVIRONMENT_PREPARE_NETWORK_BYTES', 0)
+ENVIRONMENT_PREPARE_NETWORK_CONNECTIONS = env_int('ENVIRONMENT_PREPARE_NETWORK_CONNECTIONS', 0)
+ENVIRONMENT_PREPARE_NETWORK_TIMEOUT = env_float('ENVIRONMENT_PREPARE_NETWORK_TIMEOUT', 0)
+ENVIRONMENT_PREPARE_FILE_MB = env_int('ENVIRONMENT_PREPARE_FILE_MB', 0)
+ENVIRONMENT_PREPARE_CPU_SECONDS = env_int('ENVIRONMENT_PREPARE_CPU_SECONDS', 0)
+if (not isinstance(COMMAND_RUNTIME_PATHS, dict)
+        or any(key not in {'node', 'uv'} or not isinstance(value, str) or not value
+               for key, value in COMMAND_RUNTIME_PATHS.items())):
+    raise ValueError('COMMAND_RUNTIME_PATHS 必须为 node 发行目录/uv 文件的 JSON 对象')
+if not 0 <= COMMAND_NODE_MEMORY_MB <= 8192:
+    raise ValueError('COMMAND_NODE_MEMORY_MB 必须为 0..8192；0 禁用 Node 档位')
+if not 1 <= ENVIRONMENT_PREPARE_TIMEOUT <= 600:
+    raise ValueError('ENVIRONMENT_PREPARE_TIMEOUT 必须为 1..600 秒')
+for _prepare_name, _prepare_maximum in (
+        ('ENVIRONMENT_PREPARE_NETWORK_BYTES', 1073741824),
+        ('ENVIRONMENT_PREPARE_NETWORK_CONNECTIONS', 256),
+        ('ENVIRONMENT_PREPARE_NETWORK_TIMEOUT', 600),
+        ('ENVIRONMENT_PREPARE_FILE_MB', 1024),
+        ('ENVIRONMENT_PREPARE_CPU_SECONDS', 3600)):
+    if not math.isfinite(globals()[_prepare_name]) or not 0 <= globals()[_prepare_name] <= _prepare_maximum:
+        raise ValueError(f'{_prepare_name} 必须为 0..{_prepare_maximum}，0 表示沿用命令额度')
 COMMAND_CPU_SECONDS = env_int("COMMAND_CPU_SECONDS", 5)
 COMMAND_FILE_MB = env_int("COMMAND_FILE_MB", 32)
 COMMAND_PROCESSES = env_int("COMMAND_PROCESSES", 128)
@@ -243,6 +273,12 @@ def validate_runtime_config() -> None:
     except ValueError as exc:
         errors.append(str(exc))
     for name, value in globals().items():
+        if name in {'COMMAND_NODE_MEMORY_MB', 'MODEL_CONTEXT_TOKENS', 'MODEL_RESPONSE_RESERVE_TOKENS',
+                    'MODEL_INPUT_TOKENS', 'MODEL_INPUT_CHARS', 'MAX_TOOL_ROUNDS',
+                    'ENVIRONMENT_PREPARE_NETWORK_BYTES', 'ENVIRONMENT_PREPARE_NETWORK_CONNECTIONS',
+                    'ENVIRONMENT_PREPARE_NETWORK_TIMEOUT', 'ENVIRONMENT_PREPARE_FILE_MB',
+                    'ENVIRONMENT_PREPARE_CPU_SECONDS'}:
+            continue
         if name.isupper() and type(value) in (int, float) and not name.startswith(('RAG_THRESHOLD_', 'CONTEXT_RESERVE_')) and name not in {'INPUT_COST_PER_MILLION', 'OUTPUT_COST_PER_MILLION', 'SESSION_COST_LIMIT', 'DAILY_COST_LIMIT', 'MODEL_REQUESTS_PER_MINUTE', 'RAG_RERANK_CACHE_SIZE', 'RAG_QUERY_CACHE_SIZE', 'RAG_MEMORY_LIMIT_MB', 'RAG_INFERENCE_CONCURRENCY', 'AUX_TIMEOUT', 'AUX_CONCURRENCY', 'MEMORY_CONCURRENCY', 'AUX_INPUT_COST_PER_MILLION', 'AUX_OUTPUT_COST_PER_MILLION', 'MODEL_RECOVERY_LIMIT'}:
             if not math.isfinite(value) or value <= 0:
                 errors.append(f'{name} 必须大于 0 且有限')
@@ -265,8 +301,21 @@ def validate_runtime_config() -> None:
         errors.append('VISION_MODELS 必须为模型名称列表')
     if ENABLE_AGENT_TASKS and not ENABLE_SESSION_BUDGETS:
         errors.append('ENABLE_AGENT_TASKS 需要 ENABLE_SESSION_BUDGETS')
+    if not 1 <= TASK_MAX_CONTINUATIONS <= 8:
+        errors.append('TASK_MAX_CONTINUATIONS 必须在 1..8 之间')
     if not 0 <= MODEL_RECOVERY_LIMIT <= 3:
         errors.append('MODEL_RECOVERY_LIMIT 必须在 0..3 之间')
+    for name in ('MODEL_CONTEXT_TOKENS', 'MODEL_RESPONSE_RESERVE_TOKENS',
+                 'MODEL_INPUT_TOKENS', 'MODEL_INPUT_CHARS', 'MAX_TOOL_ROUNDS'):
+        if globals()[name] < 0:
+            errors.append(f'{name} 不能为负数')
+    try:
+        from ai_agent_startup.core.session_limits import effective_limits
+        effective_limits({})
+        for profile in MODEL_PROFILES:
+            effective_limits({'model_profile': profile})
+    except ValueError as exc:
+        errors.append(str(exc))
     if WEB_SEARCH_CONFIRM not in {'always', 'off'}:
         errors.append('WEB_SEARCH_CONFIRM 必须为 always 或 off')
     for name, value in [('INPUT_COST_PER_MILLION', INPUT_COST_PER_MILLION), ('OUTPUT_COST_PER_MILLION', OUTPUT_COST_PER_MILLION)]:
@@ -289,13 +338,22 @@ def validate_runtime_config() -> None:
             value = endpoint.get(name, 0)
             if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                 errors.append(f'备用模型 {name} 必须为非负有限数字')
+        capacity = endpoint.get('context_tokens')
+        reserve = endpoint.get('response_reserve_tokens', MODEL_RESPONSE_RESERVE_TOKENS)
+        if capacity is not None and (type(capacity) is not int or not 512 <= capacity <= 2097152):
+            errors.append('备用模型 context_tokens 必须为 512..2097152 的整数')
+        if type(reserve) is not int or reserve < 0 or (type(capacity) is int and reserve >= capacity):
+            errors.append('备用模型输出预留必须非负且小于 context_tokens')
     if errors:
         raise ValueError('配置错误：\n- ' + '\n- '.join(errors))
 
 ENABLE_DEBUG_TOOL = env_bool("ENABLE_DEBUG_TOOL", False)
 ENABLE_FILE_EXTRAS = env_bool("ENABLE_FILE_EXTRAS", False)
 
-MODEL_INPUT_TOKENS = env_int("MODEL_INPUT_TOKENS", 16000)
+MODEL_INPUT_TOKENS = env_int("MODEL_INPUT_TOKENS", 0)
+# 未声明容量时维持保守的 16k 输入窗口；绝不按模型名称猜测代理服务容量。
+MODEL_CONTEXT_TOKENS = env_int("MODEL_CONTEXT_TOKENS", 0)
+MODEL_RESPONSE_RESERVE_TOKENS = env_int("MODEL_RESPONSE_RESERVE_TOKENS", 4096)
 CONTEXT_SUMMARY = env_bool("CONTEXT_SUMMARY", True)
 SUMMARY_INPUT_CHARS = env_int("SUMMARY_INPUT_CHARS", 12000)
 SUMMARY_CHARS = env_int("SUMMARY_CHARS", 1000)
@@ -320,10 +378,17 @@ CONTEXT_RESERVE_USER_CHARS = env_int('CONTEXT_RESERVE_USER_CHARS', 4000)
 CONTEXT_RESERVE_SEARCH_CHARS = env_int('CONTEXT_RESERVE_SEARCH_CHARS', 8000)
 CONTEXT_RESERVE_USER_TOKENS = env_int('CONTEXT_RESERVE_USER_TOKENS', 1000)
 CONTEXT_RESERVE_SEARCH_TOKENS = env_int('CONTEXT_RESERVE_SEARCH_TOKENS', 2000)
-CONTEXT_COMPACT_RATIO = env_float('CONTEXT_COMPACT_RATIO', .8)
+CONTEXT_COMPACT_RATIO = env_float('CONTEXT_COMPACT_RATIO', .9)
+# 触发后降到较低水位，为后续工具结果留空间；软压缩按新增完整组节流。
+CONTEXT_COMPACT_TARGET_RATIO = env_float('CONTEXT_COMPACT_TARGET_RATIO', .75)
+CONTEXT_COMPACT_MIN_NEW_GROUPS = env_int('CONTEXT_COMPACT_MIN_NEW_GROUPS', 4)
 CONTEXT_SUPERVISOR_ENV_FILE = env_path('CONTEXT_SUPERVISOR_ENV_FILE', '.env.supervisor')
 if not .1 <= CONTEXT_COMPACT_RATIO <= .95:
     raise ValueError('CONTEXT_COMPACT_RATIO 必须在 0.1..0.95 之间')
+if not .1 <= CONTEXT_COMPACT_TARGET_RATIO <= .95:
+    raise ValueError('CONTEXT_COMPACT_TARGET_RATIO 必须在 0.1..0.95 之间')
+if not 0 <= CONTEXT_COMPACT_MIN_NEW_GROUPS <= 100:
+    raise ValueError('CONTEXT_COMPACT_MIN_NEW_GROUPS 必须在 0..100 之间')
 if any(value < 0 for value in (CONTEXT_RESERVE_USER_CHARS, CONTEXT_RESERVE_SEARCH_CHARS,
                               CONTEXT_RESERVE_USER_TOKENS, CONTEXT_RESERVE_SEARCH_TOKENS)):
     raise ValueError('上下文预留额度不能为负数')
@@ -362,10 +427,10 @@ MODEL_REQUESTS_PER_MINUTE = env_int('MODEL_REQUESTS_PER_MINUTE', 0)
 
 # 只允许已声明的请求参数；不接受任意网络地址或安全策略覆盖。
 from ai_agent_startup.core.model_settings import ModelParameters, ModelProfile
-from ai_agent_startup.core.permissions import PERMISSION_POLICIES, PermissionRule
-TOOL_PERMISSION_POLICY = os.getenv('TOOL_PERMISSION_POLICY', 'standard')
-if TOOL_PERMISSION_POLICY not in PERMISSION_POLICIES:
-    raise ValueError('TOOL_PERMISSION_POLICY 必须为 readonly/standard/trusted/smart/full_access')
+from ai_agent_startup.core.permissions import ACCEPTED_PERMISSION_POLICIES, PermissionRule
+TOOL_PERMISSION_POLICY = os.getenv('TOOL_PERMISSION_POLICY', 'smart')
+if TOOL_PERMISSION_POLICY not in ACCEPTED_PERMISSION_POLICIES:
+    raise ValueError('TOOL_PERMISSION_POLICY 必须为 readonly/smart/full_access')
 try:
     _permission_rules = json.loads(os.getenv('TOOL_PERMISSION_RULES', '[]'))
     if not isinstance(_permission_rules, list):

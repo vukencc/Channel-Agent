@@ -213,10 +213,10 @@ def confirm(prompt: str, timeout: float) -> bool:
 
 
 def current_policy() -> str:
-    from ai_agent_startup.core.permissions import PERMISSION_POLICIES
+    from ai_agent_startup.core.permissions import ACCEPTED_PERMISSION_POLICIES
     context = _context.get()
     policy = context.permission_policy if context and context.permission_policy is not None else config.TOOL_PERMISSION_POLICY
-    if policy not in PERMISSION_POLICIES:
+    if policy not in ACCEPTED_PERMISSION_POLICIES:
         raise SandboxError('无效权限策略，拒绝执行')
     return policy
 
@@ -292,13 +292,43 @@ def check_command(command: str) -> list[str]:
     return ["/bin/sh", "-c", command]
 
 
-def isolated_command(argv: list[str], *, network_socket: Path | None = None) -> list[str]:
+def command_memory_limit_mb(runtime_profile: str = 'system') -> int:
+    """A Node profile requires explicit binding and a bounded address-space quota."""
+    if runtime_profile == 'system':
+        return config.COMMAND_MEMORY_MB
+    if runtime_profile != 'node':
+        raise SandboxError('未知命令运行时档位，仅支持 system/node')
+    memory = getattr(config, 'COMMAND_NODE_MEMORY_MB', 0)
+    runtimes = getattr(config, 'COMMAND_RUNTIME_PATHS', {})
+    if (not isinstance(runtimes, dict) or 'node' not in runtimes
+            or type(memory) is not int or not 1 <= memory <= 8192):
+        raise SandboxError('node 运行时档位需要显式 Node 绑定及 1–8192 MiB 的 COMMAND_NODE_MEMORY_MB；拒绝无配额执行')
+    return memory
+
+
+def isolated_command(argv: list[str], *, network_socket: Path | None = None,
+                     runtime_profile: str = 'system', file_limit_mb: int | None = None,
+                     cpu_seconds: int | None = None) -> list[str]:
     """Minimal Linux filesystem, private processes/network, writable workspace only.
 
     Never fall back to executing on the host if isolation is unavailable.
     """
     if sys.platform != 'linux':
         raise SandboxError('隔离命令需要 Linux/WSL2 的 bubblewrap 与 prlimit；当前平台仅使用文件工具或 headless 文本，不回退宿主执行')
+    for name, value, maximum in (('file_limit_mb', file_limit_mb, 1024),
+                                  ('cpu_seconds', cpu_seconds, 3600)):
+        if value is not None and (type(value) is not int or not 1 <= value <= maximum):
+            raise SandboxError(f'{name} 内部资源档位必须为 1..{maximum} 的整数')
+    file_limit_mb = config.COMMAND_FILE_MB if file_limit_mb is None else file_limit_mb
+    cpu_seconds = config.COMMAND_CPU_SECONDS if cpu_seconds is None else cpu_seconds
+    from ai_agent_startup.tools.runtime_paths import RuntimeBindingError, build_runtime_bindings
+    root = sandbox_root()
+    try:
+        bindings = build_runtime_bindings(getattr(config, 'COMMAND_RUNTIME_PATHS', {}), workspace=root,
+            protected_paths=(config.AGENT_STATE_DIR, config.AUDIT_LOG, config.PROJECT_ROOT / '.env'))
+    except RuntimeBindingError as exc:
+        raise SandboxError(str(exc)) from exc
+    memory_mb = command_memory_limit_mb(runtime_profile)
     import shutil
     executable = shutil.which("bwrap", path="/usr/bin:/bin")
     if not executable:
@@ -311,6 +341,7 @@ def isolated_command(argv: list[str], *, network_socket: Path | None = None) -> 
             command += ["--symlink", os.readlink(path), str(path)]
         elif path.is_dir():
             command += ["--ro-bind", str(path), str(path)]
+    command += bindings.mount_args
     if network_socket is not None:
         relay = Path(__file__).with_name('network_relay.py')
         command += ['--dir', '/run/agent-network', '--ro-bind', str(network_socket),
@@ -320,8 +351,8 @@ def isolated_command(argv: list[str], *, network_socket: Path | None = None) -> 
             command += ['--ro-bind', str(certificates), str(certificates)]
         argv = ['/usr/bin/python3', '/run/agent-network/relay.py', *argv]
     command += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-                "--bind", str(sandbox_root()), "/workspace", "--chdir", "/workspace",
-                "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
+                "--bind", str(root), "/workspace", "--chdir", "/workspace",
+                "--clearenv", "--setenv", "PATH", bindings.environment.get('PATH', '/usr/bin:/bin'),
                 "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
                 "--setenv", "LANG", "C.UTF-8"]
     if network_socket is not None:
@@ -331,9 +362,9 @@ def isolated_command(argv: list[str], *, network_socket: Path | None = None) -> 
     launcher = shutil.which('prlimit', path='/usr/bin:/bin')
     if not launcher:
         raise SandboxError('需要 prlimit 资源限制；拒绝无配额执行')
-    limits = [f'--as={config.COMMAND_MEMORY_MB * 1024 * 1024}',
-              f'--cpu={config.COMMAND_CPU_SECONDS}',
-              f'--fsize={config.COMMAND_FILE_MB * 1024 * 1024}',
+    limits = [f'--as={memory_mb * 1024 * 1024}',
+              f'--cpu={cpu_seconds}',
+              f'--fsize={file_limit_mb * 1024 * 1024}',
               f'--nproc={config.COMMAND_PROCESSES}']
     # 独立进程设置 rlimit，避免多线程程序中使用不安全的 preexec_fn。
     import resource
@@ -342,7 +373,9 @@ def isolated_command(argv: list[str], *, network_socket: Path | None = None) -> 
             resource.getrlimit(getattr(resource, name))
     except (OSError, ValueError, AttributeError) as exc:
         raise SandboxError('prlimit 资源能力探测失败，拒绝执行') from exc
-    audit('resource_limits', limits=limits, launcher=launcher)
+    audit('resource_limits', limits=limits, launcher=launcher,
+          runtime_profile=runtime_profile, memory_mb=memory_mb,
+          file_limit_mb=file_limit_mb, cpu_seconds=cpu_seconds)
     # 命名空间创建后再设置限制，避免宿主已有线程计入创建阶段。
     return command[:-len(argv)] + [launcher, *limits, '--', *argv]
 

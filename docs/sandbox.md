@@ -2,8 +2,8 @@
 
 Agent 的默认提示词将文件操作视为执行任务：查看目录用 `list_files`，新建用 `create_file`，
 读取用 `read_file`，修改前读取再 `edit_file`，删除用 `delete_file`。
-路径相对于 `SANDBOX_DIR`，不添加 `crud_tests/` 前缀。
-写入、删除和命令执行直接发起工具调用，由工具提示确认；拒绝或超时后停止，不换工具绕过。
+路径相对于当前根会话工作区 `SANDBOX_DIR/<根会话 ID>/`（默认 `crud_tests/<根会话 ID>/`），不添加 `crud_tests/` 前缀。
+写入、删除和命令执行按当前权限模式处理确认：`smart` 可按规则自动批准低风险操作，`full_access` 自动批准，`readonly` 拒绝写入；需要确认但被拒绝或超时后停止，不换工具绕过。详见 [CLI 命令与权限模式](cli-command-modes.md)。
 工具结果决定是否报告成功。提示词改善默认行为，但不保证每个模型每次都选择正确工具。
 
 ## 命令隔离
@@ -14,14 +14,13 @@ Python 依赖仍由 `uv sync --locked` 安装。没有 bwrap、命名空间受�
 
 `run_command` 不再按程序名禁止 Python、Shell、rm、mkdir、cp、mv 等命令：
 
-- 只有 `SANDBOX_DIR` 映射到可写的 `/workspace`；系统 `/usr` 和运行库只读。
+- 只有当前根会话工作区 `SANDBOX_DIR/<根会话 ID>/` 映射到可写的 `/workspace`；系统 `/usr` 和运行库只读。
 - 独立网络、PID 等命名空间，移除 capabilities，清空继承环境变量。
 - 不挂载主机家目录、项目目录、密钥、项目 `.venv` 或宿主 `/etc`。
 - `/tmp`、`/dev`、`/proc` 使用隔离实例；Shell 子进程超时后一起终止。
-- 仍保留每次命令的用户确认、超时、输出展示截断和审计。
+- 仍保留当前权限模式的确认规则、超时、输出展示截断和审计。
 
-命令使用系统安装的工具；不自动带入项目第三方 Python 包。网络关闭，因此 `curl` 等即使系统已安装，
-也不能访问外部网络。沙箱内文件删除仍真实生效，执行前应核对确认提示。
+命令使用系统安装的工具；不自动带入项目第三方 Python 包。网络默认关闭；只有显式启用 `network=true`，并将 `COMMAND_NETWORK=allowlist` 配置为允许列表模式、目标符合白名单且通过当前权限/确认与沙箱条件时，网络访问才可能放行。详见 [环境准备](environment-preparation.md)。沙箱内文件删除仍真实生效，执行前应核对当前模式下的确认提示。
 这不是面向不可信多租户的资源隔离服务：命令继承 prlimit 的单进程内存、CPU、单文件尺寸和按 UID 进程数限制；stdout/stderr 持续排空，但仅保留受限前缀，避免大输出撑满 Agent 内存。
 
 命令由隔离环境内的 `/bin/sh -c` 执行，宿主仍以 `shell=False` 启动 Bubblewrap。支持 POSIX Shell 语法：
@@ -45,7 +44,7 @@ uv run pytest tests/test_command.py tests/test_file_crud.py tests/test_agent_too
 命令测试需要允许创建 Linux 用户、进程和网络命名空间；在禁止嵌套隔离的 CI/容器中需要调整运行器。
 测试验证真实隔离边界、Python/Shell、确认取消、超时子进程回收及 CRUD 结果反馈。
 
-最新验证与失败样本见 [系统诊断报告](system-diagnostics-2026-09-27.md)。
+2026-09-27 的[系统诊断报告](system-diagnostics-2026-09-27.md)是历史验证记录；最新验证见[新会话交接说明](session-handoff.md)。
 
 ## 长文件读取与修改
 
@@ -54,7 +53,7 @@ uv run pytest tests/test_command.py tests/test_file_crud.py tests/test_agent_too
 小文件首次完整读取仍返回原文；分页输出有 `[内容开始]` / `[内容结束]` 边界，它们不是文件内容。
 
 `edit_file(path, old_text, new_text, reason)` 只替换一个唯一匹配的片段。必须先读取真实原文；空锚点、不匹配或多处匹配均拒绝。
-插入时把唯一相邻文本保留在新片段中；删除时传空 `new_text`。写入仍需确认，确认期间文件改变会拒绝操作。
+插入时把唯一相邻文本保留在新片段中；删除时传空 `new_text`。写入按当前权限模式处理确认；确认期间文件改变会拒绝操作。
 替换通过同目录临时文件、fsync 和原子替换完成；失败不留下半写文件，其他内容与 CRLF 换行保留。
 
 `update_file` 只用于不超过 `FILE_READ_CHARS` 的小文件。大文件全文覆盖会被拦截，改用 `edit_file` 分步修改，避免拿单页内容覆盖全文。
@@ -67,4 +66,4 @@ uv run pytest tests/test_command.py tests/test_file_crud.py tests/test_agent_too
 这不是文件系统硬配额：轮询存在超量窗口，RLIMIT_AS/CPU 按进程计，RLIMIT_NPROC 按宿主 UID 计且不限制 root。
 可信单用户环境可用这些兜底；不可信多租户部署仍需 cgroup 和独立配额卷，不应以本配置宣称硬隔离。
 
-长输出可先 `create_file`，再 `append_file(path, content, expected_chars)` 分段追加，每段最多 4000 字符。偏移是文件字符数；每段确认、原子替换，返回 next_offset。重复旧偏移会拒绝，确认期间变化也拒绝。不完整模型工具参数仍不执行。此协议支持长输出，但完成速度和实际拆分行为仍取决于模型。
+长输出可先 `create_file`，再 `append_file(path, content, expected_chars)` 分段追加，每段最多 4000 字符。偏移是文件字符数；每段按当前权限模式处理确认并原子替换，返回 next_offset。重复旧偏移会拒绝，确认期间变化也拒绝。不完整模型工具参数仍不执行。此协议支持长输出，但完成速度和实际拆分行为仍取决于模型。

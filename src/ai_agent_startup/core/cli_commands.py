@@ -25,11 +25,12 @@ COMMANDS = (
     Command('/models', '搜索并选择模型预设'),
     Command('/model', '设置模型预设；default 恢复默认', '[名称|default]'),
     Command('/permissions', '搜索并选择权限模式'),
-    Command('/policy', '设置权限模式；default 恢复环境默认', '[smart|full_access|standard|readonly|trusted|default]'),
+    Command('/policy', '设置权限模式；default 恢复环境默认', '[full_access|smart|readonly|default]'),
     Command('/tools', '选择工具子集；all 全部，none 无工具', '[名称,...|all|none]'),
     Command('/platform', '查看平台能力与隔离验证方式'),
     Command('/usage', '查看保留窗口统计（启用可观测命令后）'),
     Command('/trace', '查看有界脱敏指标（启用可观测命令后）', '[轮次]'),
+    Command('/debug', '显示或隐藏实时模块活动（DEBUG=true 时可用）', '[on|off]'),
     Command('/image', '发送工作区图片；仍需确认上传', '路径 | 问题'),
     Command('/tasks', '查看或取消当前会话创建的子任务', '[cancel ID]'),
     Command('/plan', '只读查看当前任务计划、依赖、阻塞与执行证据（启用计划后）', '[分页游标]'),
@@ -61,15 +62,12 @@ COMMANDS = (
 )
 
 POLICY_LABELS = {
-    'smart': 'Smart', 'full_access': 'Full Access', 'standard': 'Standard',
-    'readonly': 'Read Only', 'trusted': 'Trusted',
+    'full_access': '完全访问', 'smart': '智能申请', 'readonly': '只读',
 }
 POLICY_DESCRIPTIONS = {
     'smart': '按本地确定性风险判断工作区操作；高风险或未知风险仍需确认',
     'full_access': '自动批准工具确认；会话删除仍须明确确认',
-    'standard': '沿用工具的逐次确认要求',
     'readonly': '只允许读取；拒绝写入与命令执行',
-    'trusted': '仅预先确认规则匹配可自动批准',
 }
 
 
@@ -100,7 +98,7 @@ class CommandCompleter(Completer):
         rows = []
         if command in {'/policy', '/permissions'}:
             rows = [(name, POLICY_LABELS.get(name, '恢复环境默认'))
-                    for name in (*POLICY_LABELS, 'default', 'full', 'full access')]
+                    for name in (*POLICY_LABELS, 'default')]
         elif command in {'/model', '/models'}:
             rows = [(name, '模型预设') for name in ('default', *config.MODEL_PROFILES)]
         elif command in {'/switch', '/sessions', '/resume', '/delete', '/del'}:
@@ -116,7 +114,7 @@ class CommandCompleter(Completer):
         elif command == '/cleanup':
             rows = [('cache', '清理 RAG 缓存'), ('logs', '清空日志并保留维护审计'),
                     ('sessions', '归档所有活动会话记录'), ('all', '清理上述全部内容')]
-        elif command == '/details':
+        elif command in {'/details', '/debug'}:
             rows = [('on', '显示执行详情'), ('off', '隐藏执行详情')]
         elif command == '/memory':
             rows = [(name, '记忆管理') for name in ('scope', 'add', 'search', 'edit', 'rm', 'candidates')]
@@ -179,7 +177,6 @@ class CommandPalette:
                     for name in ('default', *config.MODEL_PROFILES)]
         else:
             rows = [PaletteItem(name, POLICY_LABELS[name], POLICY_DESCRIPTIONS[name]) for name in POLICY_LABELS]
-            rows.append(PaletteItem('default', 'Default', '恢复环境默认权限模式'))
         words = self.query.text.casefold().split()
         return [row for row in rows if all(word in f'{row.value} {row.title} {row.description} {row.arguments}'.casefold() for word in words)]
 

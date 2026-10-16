@@ -14,7 +14,7 @@ import uuid
 from ai_agent_startup import config
 from ai_agent_startup.tools.sandbox import (
     _context, tool_context, check_command, isolated_command, check_workspace_quota,
-    ask_permission, audit, SandboxError,
+    ask_permission, audit, SandboxError, command_memory_limit_mb,
 )
 
 
@@ -59,7 +59,7 @@ class CommandJobs:
     def _save(self, identifier):
         self.store.atomic_write(self.directory / (identifier + '.json'), json.dumps(self.records[identifier], ensure_ascii=False))
 
-    def start(self, command, reason='', network=False, timeout=None):
+    def start(self, command, reason='', network=False, timeout=None, runtime_profile='system'):
         context = _context.get()
         if not config.ENABLE_COMMAND_JOBS or context is None or context.job_manager is not self:
             raise PermissionError('后台命令未启用或无会话上下文')
@@ -68,7 +68,8 @@ class CommandJobs:
             raise ValueError('任务超时必须为正数且不超过 COMMAND_JOB_MAX_SECONDS')
         check_workspace_quota()
         argv = check_command(command)
-        isolated_command(argv)  # 在确认前探测能力，不创建宿主进程。
+        isolated_command(argv, runtime_profile=runtime_profile)  # 在确认前探测能力，不创建宿主进程。
+        memory_mb = command_memory_limit_mb(runtime_profile)
         if network:
             from ai_agent_startup.tools.network_proxy import validate_network_config
             validate_network_config()
@@ -76,6 +77,7 @@ class CommandJobs:
                 raise PermissionError('联网命令未启用')
         # 长任务始终明确确认持续时间；不从原 run_command 短任务授权推导。
         detail = f'{command}\n后台时限 {timeout:g}s；联网={network}'
+        detail += f'\n运行时档位：{runtime_profile}，虚拟地址空间上限：{memory_mb} MiB'
         if network:
             detail += f'；白名单={config.COMMAND_NETWORK_ALLOWLIST}'
         if not ask_permission('start_command_job', detail, reason, command=command, force_confirmation=True):
@@ -88,14 +90,16 @@ class CommandJobs:
             identifier = uuid.uuid4().hex
             cancelled = threading.Event()
             self.records[identifier] = {'id': identifier, 'owner': context.session_id or context.root.name, 'command': command,
-                'network': network, 'timeout': timeout, 'status': 'queued', 'created_at': time.time(), 'result': ''}
+                'network': network, 'timeout': timeout, 'runtime_profile': runtime_profile,
+                'status': 'queued', 'created_at': time.time(), 'result': ''}
             self.events[identifier] = cancelled
             self._save(identifier)
             job_context = replace(context, cancelled=cancelled)
             future = self.executor.submit(copy_context().run, self._run, identifier, job_context, reason)
             self.futures[identifier] = future
             future.add_done_callback(lambda finished: self._finished(identifier, finished))
-            audit('command_job_queued', job_id=identifier, timeout=timeout, network=network)
+            audit('command_job_queued', job_id=identifier, timeout=timeout, network=network,
+                  runtime_profile=runtime_profile, memory_mb=memory_mb)
             return identifier
 
     def _finished(self, identifier, future):
@@ -104,10 +108,11 @@ class CommandJobs:
                 self.futures.pop(identifier)
 
     def _run(self, identifier, context, reason):
-        from ai_agent_startup.tools.command import _execute
+        from ai_agent_startup.tools.command import _execute, _network_diagnostics
         from ai_agent_startup.tools.network_proxy import NetworkProxy
         with tool_context(context):
             record = self.records[identifier]
+            runtime_profile = record.get('runtime_profile', 'system')
             try:
                 with self.guard(context.root, context.cancelled):
                     with self.lock:
@@ -124,9 +129,11 @@ class CommandJobs:
                                 size += stream.write(retained)
                         with NetworkProxy() if record['network'] else nullcontext() as proxy:
                             argv = check_command(record['command'])
-                            isolated = isolated_command(argv, network_socket=proxy.path) if proxy else isolated_command(argv)
+                            isolated = (isolated_command(argv, network_socket=proxy.path, runtime_profile=runtime_profile)
+                                        if proxy else isolated_command(argv, runtime_profile=runtime_profile))
                             result = _execute(record['command'], reason, argv, isolated,
                                               timeout=record['timeout'], on_output=on_output)
+                            result += _network_diagnostics(proxy)
                     status = ('cancelled' if context.cancelled.is_set() else 'timeout' if result.startswith('[超时]')
                               else 'completed' if result.startswith('[退出码] 0\n') else 'failed')
             except Exception as exc:
@@ -137,7 +144,7 @@ class CommandJobs:
                     record.update(status=status, result=result, finished_at=time.time())
                     self._save(identifier)
                     self.events.pop(identifier, None)
-                audit('command_job_finished', job_id=identifier, status=status)
+                audit('command_job_finished', job_id=identifier, status=status, runtime_profile=runtime_profile)
 
     def status(self, owner, identifier):
         with self.lock:
@@ -158,10 +165,11 @@ class CommandJobs:
 
     def cancel(self, owner, identifier):
         with self.lock:
-            self.status(owner, identifier)
+            record = self.status(owner, identifier)
             if identifier in self.events:
                 self.events[identifier].set()
-        audit('command_job_cancel_requested', job_id=identifier, owner=owner)
+        audit('command_job_cancel_requested', job_id=identifier, owner=owner,
+              runtime_profile=record.get('runtime_profile', 'system'))
 
     def stop(self):
         with self.lock:

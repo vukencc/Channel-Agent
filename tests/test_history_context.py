@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,10 +19,15 @@ class SupervisorStub:
         self.compact = compact
         self.inspections = []
         self.summaries = []
+        self.settings = SimpleNamespace(enabled=True, check_interval=1,
+                                        variance_threshold=.75, timeout=20,
+                                        max_input_chars=12000, max_chunks=24)
 
     async def inspect(self, snapshot):
         self.inspections.append(copy.deepcopy(snapshot))
-        return {'compact': self.compact, 'reason': 'test decision', 'values': [1.0] * len(snapshot.get('chunks', []))}
+        values = ([float(index % 2) for index in range(len(snapshot.get('chunks', [])))]
+                  if self.compact else [0.5] * len(snapshot.get('chunks', [])))
+        return {'compact': self.compact, 'reason': 'test decision', 'values': values}
 
     async def summarize(self, previous_summary, messages, *, kind='session'):
         self.summaries.append((kind, previous_summary, copy.deepcopy(messages)))
@@ -129,7 +135,9 @@ def test_compaction_writes_private_manifest_and_complete_immutable_chunks(contex
     asyncio.run(run())
 
 
-def test_recovery_is_idempotent_and_append_advances_summary(context_env):
+def test_recovery_is_idempotent_and_append_advances_summary(context_env, monkeypatch):
+    # 专门核验恢复后连续摘要合并；频率策略由独立测试覆盖。
+    monkeypatch.setattr(config, 'CONTEXT_COMPACT_MIN_NEW_GROUPS', 0)
     async def run():
         manager, session = await _manager(context_env)
         messages = _messages()
@@ -304,24 +312,39 @@ def test_chunk_summaries_are_independent_and_session_summary_merges_once(context
     asyncio.run(run())
 
 
-def test_session_summary_receives_all_new_raw_history_not_only_chunk_summaries(context_env):
+def test_session_summary_uses_chunk_summaries_while_archive_keeps_all_raw_history(context_env):
     async def run():
         manager, session = await _manager(context_env)
         try:
             supervisor = SupervisorStub()
-            await _service(manager, supervisor).prepare(session, _messages(8))
+            messages = _messages(8)
+            await _service(manager, supervisor).prepare(session, messages)
             session_inputs = [items for kind, _, items in supervisor.summaries if kind == 'session']
             assert len(session_inputs) == 1
             serialized = json.dumps(session_inputs[0], ensure_ascii=False)
-            assert 'question-0' in serialized
-            assert 'answer-0' in serialized
-            assert 'independent chunk summary' not in serialized
+            assert 'question-0' not in serialized
+            assert 'answer-0' not in serialized
+            assert 'independent chunk summary' in serialized
+            assert all({'ID', 'Time', 'Summary', 'summary_kind'} <= set(item)
+                       for item in session_inputs[0])
+            assert all('RawHistory' not in item for item in session_inputs[0])
+            chunk_inputs = [items for kind, _, items in supervisor.summaries if kind == 'chunk']
+            assert 'question-0' in json.dumps(chunk_inputs, ensure_ascii=False)
+            assert 'answer-0' in json.dumps(chunk_inputs, ensure_ascii=False)
+            folder = context_env.directory(session.id) / 'context'
+            manifest = json.loads((folder / 'manifest.json').read_text())
+            archived = [message for item in manifest['chunks']
+                        for message in json.loads(json.loads((folder / 'chunks' / (item['ID'] + '.json')).read_text())['RawHistory'])]
+            assert any(message.get('content', '').startswith('question-0') for message in archived)
+            assert any(message.get('content', '').startswith('answer-0') for message in archived)
         finally:
             await manager.shutdown()
     asyncio.run(run())
 
 
 def test_failed_manifest_publish_keeps_previous_revision(context_env, monkeypatch):
+    # 确保进入发布路径以注入写失败，不让新增历史节流屏蔽原子性验证。
+    monkeypatch.setattr(config, 'CONTEXT_COMPACT_MIN_NEW_GROUPS', 0)
     async def run():
         manager, session = await _manager(context_env)
         try:

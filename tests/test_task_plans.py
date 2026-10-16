@@ -65,6 +65,7 @@ def store(tmp_path, monkeypatch, sandbox_env):
     monkeypatch.setattr(config, 'TASK_PLAN_CONTEXT_CHARS', 2000, raising=False)
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', True)
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 24)
     monkeypatch.setattr(config, 'ENABLE_COMMAND_JOBS', True)
     monkeypatch.setattr(config, 'MEMORY_AUTO_EXTRACT', False)
     value = SessionStore(tmp_path / 'state', sandbox_env)

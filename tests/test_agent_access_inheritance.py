@@ -27,6 +27,7 @@ def store(tmp_path, monkeypatch, sandbox_env):
     register_command_jobs()
     TOOL_SCHEMAS[:] = all_schemas()
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 24)
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', False)
     monkeypatch.setattr(config, 'ENABLE_COMMAND_JOBS', True)
     monkeypatch.setattr(config, 'MEMORY_AUTO_EXTRACT', False)

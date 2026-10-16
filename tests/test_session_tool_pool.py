@@ -15,6 +15,7 @@ from ai_agent_startup.core.storage import SessionStore
 def test_control_tool_completes_with_one_available_worker(tmp_path, monkeypatch, name):
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', False)
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', False)
+    monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 24)
 
     async def run():
         async def model(*args, **kwargs):
