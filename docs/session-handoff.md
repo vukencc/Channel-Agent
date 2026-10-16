@@ -1,6 +1,6 @@
 # 新会话交接说明
 
-> 更新日期：2026-10-16。当前交付分支为 `codex/live-project-validation`，已基于 `origin/main` 的 `5d1d8c8` 快进同步。本轮功能变更已提交为 `c0cd0dd`；远端推送因 GitHub HTTPS 连接超时尚未完成，PR 尚未创建。恢复连接后先推送此分支，再创建目标为 `main` 的 PR 并更新本交接记录。
+> 更新日期：2026-10-16。当前交付分支 `codex/live-project-validation` 已基于 `origin/main` 的 `5d1d8c8` 快进同步并推送。功能提交为 `c0cd0dd`，交接状态更新随 PR #29 一并提交；PR 目标为 `main`，等待 GitHub CI 和审阅。
 
 新会话开始时先运行 `git status --short`，保留所有已有状态。不要执行 reset、clean、rebase，也不要切换到旧 tag，以免丢失当前长期实现。`.agent/`、`crud_tests/`、`data/raw/`、`logs/` 和 `.cache/` 含用户状态或生成数据，应保留；需要新报告时只在 `.cache/reports/` 下新建。不要打印 `.env` 内容或密钥，也不要自动重跑真实模型任务或清理缓存。
 
