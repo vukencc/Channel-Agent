@@ -1,6 +1,6 @@
 # 新会话交接说明
 
-> 更新日期：2026-10-16。当前 HEAD 为 `c91d747`，分支为 `codex/live-project-validation`（通过 `git rev-parse --short HEAD` 与 `git branch --show-current` 实查）。工作树包含大量未提交修改和新文件，不能将其当作已提交或已推送内容。
+> 更新日期：2026-10-16。当前交付分支为 `codex/live-project-validation`，已基于 `origin/main` 的 `5d1d8c8` 快进同步。本轮功能变更已提交为 `c0cd0dd`；远端推送因 GitHub HTTPS 连接超时尚未完成，PR 尚未创建。恢复连接后先推送此分支，再创建目标为 `main` 的 PR 并更新本交接记录。
 
 新会话开始时先运行 `git status --short`，保留所有已有状态。不要执行 reset、clean、rebase，也不要切换到旧 tag，以免丢失当前长期实现。`.agent/`、`crud_tests/`、`data/raw/`、`logs/` 和 `.cache/` 含用户状态或生成数据，应保留；需要新报告时只在 `.cache/reports/` 下新建。不要打印 `.env` 内容或密钥，也不要自动重跑真实模型任务或清理缓存。
 
@@ -31,4 +31,4 @@ Windows 桌面当前工作目录可能显示为 `\\wsl$\Ubuntu\home\elaine_vuken
 
 ## 版本控制边界
 
-本地 `AGENTS.md`、`.codex/` 和 `dev/` 被 Git 忽略，当前 checkout 内仍可供新会话读取，但 fresh clone 不会包含它们。不要声称这些本地文件或当前未提交工作已提交、推送。新会话可先用一句话提示：“先阅读根 AGENTS.md 与 docs/session-handoff.md，检查 git status 并保留全部现有改动，再按 docs/README.md 找对应指南。”
+本地 `AGENTS.md`、`.codex/` 和 `dev/` 被 Git 忽略，当前 checkout 内仍可供新会话读取，但 fresh clone 不会包含它们。推送与 PR 状态以远端分支和 GitHub 页面为准；不要把本地提交描述为已同步，除非远端已确认。新会话可先用一句话提示：“先阅读根 AGENTS.md 与 docs/session-handoff.md，检查 git status 并保留全部现有改动，再按 docs/README.md 找对应指南。”
