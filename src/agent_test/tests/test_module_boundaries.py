@@ -213,4 +213,4 @@ assert config.SANDBOX_DIR == root / 'crud_tests'
 assert config.RAG_CACHE_DIR == root / '.cache/rag'
 assert config.DOC_DIR == root / 'data/raw'
 assert config.AUDIT_LOG == root / 'logs/audit.log'
-''', project)
+''', project, PYTHON_DOTENV_DISABLED='0')

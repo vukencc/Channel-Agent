@@ -36,10 +36,11 @@ def isolated_default_audit(tmp_path, monkeypatch):
 
 @pytest.fixture
 def sandbox_env(tmp_path, monkeypatch):
-    """把工具沙箱指向临时目录，审计日志放在沙箱外，默认「用户同意」。"""
+    """隔离工具文件与审计；默认 standard 验证确认路径，其他权限用例显式选择策略。"""
     sandbox_dir = tmp_path / "sandbox"
     sandbox_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(config, "SANDBOX_DIR", sandbox_dir)
     monkeypatch.setattr(config, "AUDIT_LOG", tmp_path / "audit.log")
+    monkeypatch.setattr(config, "TOOL_PERMISSION_POLICY", "standard")
     monkeypatch.setattr(sandbox, "confirmer", lambda prompt, timeout: True)
     return sandbox_dir

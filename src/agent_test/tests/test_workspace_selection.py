@@ -188,8 +188,9 @@ def test_workspace_record_cannot_forge_external_authorization(store, tmp_path):
         manager.workspace(root)
 
 
-def test_queued_child_prevents_root_workspace_switch(store, tmp_path):
+def test_queued_child_prevents_root_workspace_switch(store, tmp_path, monkeypatch):
     from agent_core.core.agent_tasks import AgentTasks
+    monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
     project = tmp_path / 'project'
     project.mkdir()
 

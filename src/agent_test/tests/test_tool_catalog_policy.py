@@ -144,6 +144,7 @@ def test_registered_cancellation_accepts_legacy_tool_context_and_preserves_owner
     from agent_core.core.session_service import session_service_context
     from agent_core.tools.sandbox import ToolContext, tool_context
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', legacy_enabled)
+    monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
     previous = dict(TOOL_REGISTRY)
     if legacy_enabled:
         register_agent_tasks()

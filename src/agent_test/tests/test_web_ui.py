@@ -85,7 +85,8 @@ def test_web_session_chat_rename_settings_and_page_history(client):
     assert client.get('/api/sessions').json()['runtime']['active_model_calls'] == 0
 
 
-def test_web_confirmation_is_bound_to_current_request_and_denial_keeps_files(client):
+def test_web_confirmation_is_bound_to_current_request_and_denial_keeps_files(client, monkeypatch):
+    monkeypatch.setattr(config, 'TOOL_PERMISSION_POLICY', 'standard')
     identifier = new_session(client)
     client.post(f'/api/sessions/{identifier}/messages', json={'text': 'write a file'})
     state = wait_session(client, identifier, lambda row: bool(row['confirmation']))
@@ -197,6 +198,8 @@ def test_web_launcher_reads_host_and_port_from_dotenv(tmp_path):
                    'MODEL': 'test-model', 'DOC_DIR': str(tmp_path), 'WEB_UI_TOKEN': 'test-token'}
     environment.pop('WEB_UI_HOST', None)
     environment.pop('WEB_UI_PORT', None)
+    # 仅该子进程读取 tmp_path 的受控 dotenv，不继承整套测试的禁用开关。
+    environment.pop('PYTHON_DOTENV_DISABLED', None)
     script = ('import json,uvicorn; from agent_frontend.web.server import main; '
               'uvicorn.run=lambda app,**options:print(json.dumps({key:options[key] for key in ("host","port")})); main()')
     result = subprocess.run([sys.executable, '-c', script], env=environment,

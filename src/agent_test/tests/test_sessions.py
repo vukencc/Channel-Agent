@@ -82,6 +82,7 @@ def test_concurrent_agents_independent_context_and_memory(store, monkeypatch):
 
 def test_threaded_crud_confirmations_and_workspaces_are_isolated(store, monkeypatch):
     monkeypatch.setattr(config, 'RAG_ASSESS', False)
+    monkeypatch.setattr(config, 'TOOL_PERMISSION_POLICY', 'standard')
     async def run():
         async def model(history, *, session_id, emit):
             if history[-1]['role'] == 'tool':
@@ -108,6 +109,7 @@ def test_threaded_crud_confirmations_and_workspaces_are_isolated(store, monkeypa
 
 
 def test_cancel_pending_confirmation_and_restart_context(store, monkeypatch):
+    monkeypatch.setattr(config, 'TOOL_PERMISSION_POLICY', 'standard')
     async def run():
         async def model(history, **kwargs):
             return {'role': 'assistant', 'content': '', 'tool_calls': [{

@@ -6,10 +6,25 @@ import json
 import pytest
 
 from agent_core import config
-from agent_core.core.llm import TOOL_SCHEMAS
 from agent_core.core.sessions import SessionManager
 from agent_core.core.storage import SessionStore
 from agent_core.core.tool_settings import bounded_schemas
+from agent_core.tools import TOOL_REGISTRY, all_schemas
+from agent_core.tools.agent_tasks import register_agent_tasks
+
+
+@pytest.fixture(autouse=True)
+def delegation_tools(monkeypatch):
+    """委派兼容名测试显式启用依赖特性，并恢复注册表以免影响默认目录测试。"""
+    monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', True)
+    monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
+    previous = dict(TOOL_REGISTRY)
+    register_agent_tasks()
+    try:
+        yield
+    finally:
+        TOOL_REGISTRY.clear()
+        TOOL_REGISTRY.update(previous)
 
 
 @pytest.fixture
@@ -24,7 +39,7 @@ def unlimited_store(tmp_path, monkeypatch, sandbox_env):
 @pytest.mark.parametrize('name', ['create_session', 'delegate'])
 def test_unlimited_parent_schema_only_offers_inheritance(monkeypatch, name):
     monkeypatch.setattr(config, 'MAX_TOOL_ROUNDS', 0)
-    schema = bounded_schemas(TOOL_SCHEMAS, [name])[0]
+    schema = bounded_schemas(all_schemas(), [name])[0]
     rounds = schema['function']['parameters']['properties']['max_rounds']
     assert rounds['default'] == rounds['minimum'] == rounds['maximum'] == 0
     assert rounds['enum'] == [0]
@@ -54,7 +69,7 @@ def test_finite_parent_schema_still_offers_child_cap(monkeypatch):
 
     monkeypatch.setattr(config, 'ENABLE_SESSION_BUDGETS', True)
     with limits_scope({'budget_overrides': {'MAX_TOOL_ROUNDS': 12}}):
-        schema = bounded_schemas(TOOL_SCHEMAS, ['create_session'])[0]
+        schema = bounded_schemas(all_schemas(), ['create_session'])[0]
     rounds = schema['function']['parameters']['properties']['max_rounds']
     assert rounds['minimum'] == rounds['default'] == 0
     assert rounds['maximum'] == 12
