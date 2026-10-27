@@ -32,14 +32,14 @@
 
 | 问题 | 实现位置 | 验证重点 |
 | --- | --- | --- |
-| 无固定轮数执行 | `src/ai_agent_startup/core/task_execution.py`、`src/ai_agent_startup/core/sessions.py`、`src/ai_agent_startup/config.py` | 默认无限、正数轮数限制、16 轮无进展检查、取消/预算/超时停止 |
-| 计划与执行等待 | `src/ai_agent_startup/core/task_plans.py`、`src/ai_agent_startup/core/task_execution.py` | 子 Agent 与后台命令排队、运行、已完成待验收状态；不会自动伪造验收 |
-| 子任务等待阻挡读取 | `src/ai_agent_startup/core/agent_tasks.py`、`src/ai_agent_startup/tools/session_tools.py`、`src/ai_agent_startup/tools/base.py` | 等待不占读槽，超时/取消不重放子任务，线程排空后才报告 drained |
-| 委派提示与轮数隔离 | `src/ai_agent_startup/core/delegation_guidance.py`、`src/ai_agent_startup/core/tool_settings.py` | 根据实际工具集提示独立分工；每个会话使用各自有效轮数 |
-| Compact 条件过宽 | `src/ai_agent_startup/core/history_context.py` | 高占用且有效高方差或硬预算不足；相同原文不重复软压缩，完整原文与配对不变 |
-| 上下文状态显示 | `src/ai_agent_startup/web/context_status.py`、`src/ai_agent_startup/web/static/app.js` | 准备、监督检查、实际压缩阶段与安全白名单指标 |
+| 无固定轮数执行 | `src/agent_core/core/task_execution.py`、`src/agent_core/core/sessions.py`、`src/agent_core/config.py` | 默认无限、正数轮数限制、16 轮无进展检查、取消/预算/超时停止 |
+| 计划与执行等待 | `src/agent_core/core/task_plans.py`、`src/agent_core/core/task_execution.py` | 子 Agent 与后台命令排队、运行、已完成待验收状态；不会自动伪造验收 |
+| 子任务等待阻挡读取 | `src/agent_core/core/agent_tasks.py`、`src/agent_core/tools/session_tools.py`、`src/agent_core/tools/base.py` | 等待不占读槽，超时/取消不重放子任务，线程排空后才报告 drained |
+| 委派提示与轮数隔离 | `src/agent_core/core/delegation_guidance.py`、`src/agent_core/core/tool_settings.py` | 根据实际工具集提示独立分工；每个会话使用各自有效轮数 |
+| Compact 条件过宽 | `src/agent_core/core/history_context.py` | 高占用且有效高方差或硬预算不足；相同原文不重复软压缩，完整原文与配对不变 |
+| 上下文状态显示 | `src/agent_frontend/web/context_status.py`、`src/agent_frontend/web/static/app.js` | 准备、监督检查、实际压缩阶段与安全白名单指标 |
 
-回归覆盖位于 `tests/test_task_execution_policy.py`、`tests/test_agent_task_wait.py`、`tests/test_compact_trigger_policy.py`、`tests/test_session_tool_schema.py` 和 `tests/test_plan_recovery_guidance.py`；没有新增模型或 Python 依赖。
+回归覆盖位于 `src/agent_test/tests/test_task_execution_policy.py`、`src/agent_test/tests/test_agent_task_wait.py`、`src/agent_test/tests/test_compact_trigger_policy.py`、`src/agent_test/tests/test_session_tool_schema.py` 和 `src/agent_test/tests/test_plan_recovery_guidance.py`；没有新增模型或 Python 依赖。
 
 运行配置可显式设置正数 `MAX_TOOL_ROUNDS` 保留旧式分段上限；默认 0 不设置轮数终点。自动继续与等待均写入会话审计；等待不需要额外确认，创建子任务沿用原有确认。子 Agent 仍不能继续创建子 Agent。
 
@@ -59,7 +59,7 @@
 复现完整回归（测试启动时使用默认关闭功能作为统一基线，各功能测试通过夹具显式开启）：
 
     uv run --locked --extra web pytest -m 'not integration' -q -rs
-    uv run --locked --extra web python scripts/ci_sandbox_probe.py
+    uv run --locked --extra web python -m agent_test.scripts.ci_sandbox_probe
 
 本机测试审计写临时目录；前端检查需要 PATH 中可用的 Node。
 
@@ -77,7 +77,7 @@
 
 命令（MODE 为 disabled/uniform/mixed；前后 JSON 均保留在本机临时目录）：
 
-    .venv/bin/python scripts/benchmark_context_progress.py --runs 3 --rounds 36 --compact-ratio 0.9 --supervisor-mode MODE --observations --output /tmp/context-policy-final-observed-MODE-20261008.json
+    .venv/bin/python -m agent_test.scripts.benchmark_context_progress --runs 3 --rounds 36 --compact-ratio 0.9 --supervisor-mode MODE --observations --output /tmp/context-policy-final-observed-MODE-20261008.json
 
 ## 在线模型试验
 

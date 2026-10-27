@@ -16,9 +16,9 @@ max_concurrent_threads_per_session = 3
 
 `max_concurrent_threads_per_session` 限制同一会话中的已派生代理，不计主代理。Codex 配置解析可能接受兼容别名，但本项目以 `max_concurrent_threads_per_session` 为准。`project_doc_max_bytes` 控制项目指令文档的读取预算。
 
-代理定义位于 `.codex/agents/*.toml`。每个定义必须提供 `name`、`description` 和 `developer_instructions`；名称用于选择角色。模型和推理强度只在这些 TOML 文件中维护。角色指令要求只读角色不写文件；这一职责由指令约束，不能当作沙箱级只读保证。代理继承父会话的沙箱和审批边界，角色配置不能自行提升权限。
+代理定义位于 `.codex/agents/*.toml`。每个定义必须提供 `name`、`description` 和 `developer_instructions`；名称用于选择角色。模型和推理强度只在这些 TOML 文件中维护。角色指令要求只读角色不写文件；这一职责由指令约束，不能当作沙箱级只读保证。代理继承父会话的 provider、沙箱和审批边界，角色配置不能自行提升权限。具名角色的模型和推理强度优先于派生参数及 agents 默认值；要改变设置，应选择其他角色或修改对应文件，不能依靠派生参数临时覆盖。
 
-`.codex/`、根 `AGENTS.md` 和 `dev/` 是本地资产，不随 clone 分发；当前 checkout 可读取它们，fresh clone 不一定包含。此页描述本机约定，官方配置格式以[子代理配置说明](https://learn.chatgpt.com/docs/agent-configuration/subagents)和[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)为准。
+`.codex/` 和根 `AGENTS.md` 是随仓库提供的项目级默认配置；`docs/dev/` 是不随 clone 分发的本地资料。认证、根模型与权限由调用端管理。此页描述项目约定，官方配置格式以[子代理配置说明](https://learn.chatgpt.com/docs/agent-configuration/subagents)和[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)为准。
 
 ## 角色分工
 
@@ -33,6 +33,15 @@ max_concurrent_threads_per_session = 3
 | `reviewer` | 实现完成后的只读缺陷优先评审。 |
 | `docs_writer` | 文档、README、示例配置和更新日志同步。 |
 | `perf_analyst` | RAG、沙箱或 CLI 的可复现实测。 |
+| `implementation_worker` | 范围明确、文件归属清楚的实现与修复。 |
+| `ui_specialist` | 界面复现、视觉和交互修复及实际界面检查。 |
+| `architecture_advisor` | 已有针对性证据后，针对未解决的跨模块决策提供只读建议。 |
+
+当前选择将 Terra 用于有界实现、界面和文档，Sol 用于复杂代码、RAG、测试、性能及安全审查，Luna 用于范围明确的只读探查；遇到尚未解决的困难架构决策时按需使用 Astra。这是参考[官方模型定位](https://learn.chatgpt.com/docs/models)和[模型选择指南](https://developers.openai.com/api/docs/guides/model-selection)的工程选择，并非性能或费用基准。角色的实际配置以 TOML 为准，可在仓库根目录只打印角色名、模型和推理强度：
+
+```bash
+python3 -c 'import pathlib,tomllib; [(lambda d: print(d["name"], d.get("model"), d.get("model_reasoning_effort")))(tomllib.loads(p.read_text())) for p in sorted(pathlib.Path(".codex/agents").glob("*.toml"))]'
+```
 
 ## 委派与共享工作区
 
@@ -58,6 +67,12 @@ codex --strict-config doctor --json
 
 这会验证 CLI 配置并输出诊断 JSON；它不单独证明每个自定义角色已成功启动。继续验证角色时，应在 Codex 会话中按角色明确请求一项小型、只读的探查，并检查交回的结果和共享工作区状态。
 
-在 WSL 环境中，`codex --strict-config doctor --json` 已返回 `overallStatus=ok`、`config.load=ok` 和 `mcp.config=ok`。`codex debug prompt-input 'Verify repository instructions only.'` 可检查项目指令是否被提示词加载；该命令不接受 `--strict-config`。已验证的渲染包含 `AGENTS.md` 的关键约定、handoff 引用和七个角色名称，但不包含工具 schema，也不验证角色是否能成功派生或各自模型是否可用。本轮没有发起模型推理请求。
+本轮 WSL Codex CLI 为 `0.160.0`，满足官方文档中 Terra 的 CLI 最低版本 `0.159`；严格诊断返回 `overallStatus=ok`。十个角色 TOML 已解析并检查模型、推理强度及权限覆盖。`codex debug models --bundled` 的离线目录列出 Astra、Sol 6.1 和 Luna，但该旧快照未收录 Terra，不能据此判断服务不可用，也不能将 doctor 结果当作模型授权证明。本轮 `docs_writer` 作为 Terra/medium 子代理实际完成文档工作；三个新增角色尚未逐一真实派生。这些是 Codex 协作验证，不是应用内 Agent 的真实模型测试、保存轨迹回放或受控 fixture 验收。
+
+Windows npm CLI 本轮实测仍为 `0.154.0`，低于 Terra 所需版本；本仓库的 CLI 检查使用 WSL，未升级全局 CLI 或修改桌面应用。
+
+历史验证：先前 WSL 严格诊断返回 `overallStatus=ok`、`config.load=ok` 和 `mcp.config=ok`。当时的 `codex debug prompt-input` 渲染包含项目指令、交接引用和七个角色名称，不包含工具 schema，也未验证角色派生或模型可用性；当时没有发起模型推理请求。
+
+修改配置后先检查当前会话可用角色；宿主若未重新发现，需在同一工作区新开会话再检查。诊断输出可能包含本机配置，不要公开完整配置、认证或 prompt 记录。
 
 相关工作流程：[仓库指南](../AGENTS.md)、[贡献指南](../CONTRIBUTING.md)、[沙箱说明](sandbox.md)、[文档索引](README.md)。

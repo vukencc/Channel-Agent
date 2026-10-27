@@ -17,6 +17,10 @@
 
 ## 权限模式
 
+Linux 项目目录通过 `/project /home/user/my-project` 选择；`/project` 显示当前目录，`/project default` 恢复默认会话工作区。只能选择已有目录，切换前须结束共享该工作区的 Agent、工具及后台命令。路径授权独立于权限模式，子 Agent 自动继承父项目；切换和删除会话均保留项目文件。WebUI 提供对应的会话设置目录选择器。
+
+命令环境由 `/environment` 查看，可用 `/environment sandbox` 或 `/environment local` 切换，`/environment default` 恢复 `COMMAND_EXECUTION_ENVIRONMENT` 应用默认值。切换仅允许根 Agent 空闲时进行；子 Agent 与手动分支继承有效环境。`local` 仅适用于 Linux，直接使用宿主文件、工具、网络和 localhost，且不具备 Bubblewrap、网络白名单、RLIMIT 或工作区配额隔离；用户当前权限策略、确认和审计仍适用。详情见[沙箱说明](sandbox.md)。
+
 - `readonly` 拒绝写操作和命令执行。
 - `smart` 使用本地确定性规则判断操作风险，不调用额外模型。已验证的工作区新建、向已有文件追加，以及简单只读 `pwd`、`ls`、`cat`、`head`、`tail`、`wc` 可自动通过；覆盖、删除、网络访问及无法判定的操作仍需确认。
 - `full_access` 自动批准工具确认，包括工具自身请求的强制确认；会话删除仍要求用户明确确认。

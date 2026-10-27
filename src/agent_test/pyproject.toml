@@ -1,0 +1,23 @@
+[project]
+name = "ai-agent-test"
+version = "0.2.1"
+description = "Agent Debug 记录、诊断接口与测试工具"
+requires-python = ">=3.12"
+dependencies = [
+    "ai-agent-core==0.2.1",
+    "fastapi>=0.115,<1",
+]
+
+
+[tool.uv.sources]
+ai-agent-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 模块根即 Python 包；wheel 仅收纳源码和资源，开发安装直接引用 src。
+[tool.hatch.build.targets.wheel]
+only-include = ["__init__.py", "cli.py", "runtime.py", "scripts", "static", "tool.py", "web"]
+sources = { "" = "agent_test" }
+dev-mode-dirs = [".."]

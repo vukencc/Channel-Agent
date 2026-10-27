@@ -93,10 +93,14 @@ Thumbs.db
 #   pyproject.toml       依赖与项目配置的唯一来源，必须上传
 #   .env.example         配置模板（不含真实密钥），方便他人起步
 # ==================================================================
-# Local development notes and agent configuration (kept locally, not distributed)
-/dev/
-/.codex/
-/AGENTS.md
+# 本地开发归档不分发；仅分发项目级 Codex 默认配置和角色定义。
+/docs/dev/
+/.codex/*
+!/.codex/config.toml
+!/.codex/README.md
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/*.toml
 
 # Local RAG indexes, downloaded models and benchmark corpora
 .cache/

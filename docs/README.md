@@ -4,6 +4,9 @@
 
 ## 现行使用指南
 
+- [原生桌面 GUI](desktop.md)：不依赖浏览器的窗口、模型设置与会话操作。
+- [原生 Agent Flow](agent-flow.md)：画布编辑、项目继承、交接和运行状态。
+
 - [CLI 指南](cli.md)：多会话操作、命令、持久化与确认。
 - [CLI 命令与权限模式](cli-command-modes.md)：命令选择器、权限模式和会话回收。
 - [会话工具](session-tools.md)：会话创建、子 Agent 和父子通信。
@@ -22,6 +25,9 @@
 - [贡献指南](../CONTRIBUTING.md)：开发、验证和 PR 流程。
 
 ## 实现与设计边界
+
+- [工具设计与简化](tool-design.md)：模型目录、兼容入口与框架职责。
+- [三模块架构](architecture.md)：AgentCore、AgentTest、Frontend 的职责、依赖方向和构建入口。
 
 - [任务状态与计划设计](task-state-design.md)：数据模型、状态约束与实现边界。
 - [DEBUG 因果时间线设计](debug-timeline-design.md)：总览、通信、异常、游标和指标语义。
@@ -53,5 +59,5 @@
 
 ## 仓库与本地资料
 
-应用代码在 `src/ai_agent_startup/`，测试在 `tests/`，跟踪的 CI 和工程脚本在 `scripts/`。本地开发资料 `dev/`、`.codex/` 和根 `AGENTS.md` 不随 clone 分发。项目启动入口和当前功能简介见[根 README](../README.md)。
+源码分布于 `src/agent_core/`、`src/agent_test/` 和 `src/agent_frontend/`，测试在 `src/agent_test/tests/`，跟踪的 CI 和工程脚本在 `src/agent_test/scripts/`。项目级 Codex 默认配置 `.codex/` 和根 `AGENTS.md` 随仓库提供；本地开发资料 `docs/dev/` 不随 clone 分发。项目启动入口和当前功能简介见[根 README](../README.md)。
 `docs/opensource-docker-journey.md` 被 Git 忽略，是仅存在于部分 checkout 的本地记录，不属于可分发文档。

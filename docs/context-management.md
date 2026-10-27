@@ -189,7 +189,7 @@ UI 上的估算输入预算、声明容量、含回复预留的工作预算和�
 
 | 检查 | 结果 |
 | --- | --- |
-| 功能启用回归：`env ENABLE_TASK_PLANS=false ENABLE_STRUCTURED_CONTEXT=true uv run --extra web pytest tests/test_history_context.py tests/test_context_supervisor.py tests/test_history_tools.py tests/test_history_search.py tests/test_structured_sessions.py -q --tb=short` | 42 passed。 |
+| 功能启用回归：`env ENABLE_TASK_PLANS=false ENABLE_STRUCTURED_CONTEXT=true uv run --extra web pytest src/agent_test/tests/test_history_context.py src/agent_test/tests/test_context_supervisor.py src/agent_test/tests/test_history_tools.py src/agent_test/tests/test_history_search.py src/agent_test/tests/test_structured_sessions.py -q --tb=short` | 42 passed。 |
 | 默认关闭全量离线回归：`env ENABLE_TASK_PLANS=false ENABLE_STRUCTURED_CONTEXT=false uv run --extra web pytest -m 'not integration' -q -rs -o faulthandler_timeout=20` | 733 passed，2 skipped，5 deselected；跳过项因未安装可选 ANN 依赖，排除项为 integration。 |
 | `uv sync --locked`、`dev/ci_sandbox_probe.py`、`git diff --check` | 全部通过；沙箱探测实际验证 Bubblewrap 与 prlimit。 |
 

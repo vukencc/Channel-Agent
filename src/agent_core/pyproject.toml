@@ -1,0 +1,48 @@
+[project]
+name = "ai-agent-core"
+version = "0.2.1"
+description = "Agent Loop、工具、会话与上下文运行内核"
+requires-python = ">=3.12"
+dependencies = [
+    "fastembed>=0.8.1",
+    "httpx>=0.28.1,<1",
+    "jieba>=0.42.1",
+    "numpy>=2.5.3",
+    "openai>=2.15.0,<4",
+    "pydantic>=2.13.0,<3",
+    "python-dotenv>=1.2.0,<2",
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=6.1.0",
+    "tavily-python>=0.8.0,<0.9",
+    "torch>=2.14,<3",
+]
+
+[project.optional-dependencies]
+documents = [
+    "pypdf",
+    "python-docx",
+]
+vision = [
+    "Pillow>=12,<13",
+]
+ann = [
+    "hnswlib>=0.8.0,<0.9",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 模块根即 Python 包；wheel 仅收纳源码和资源，开发安装直接引用 src。
+[tool.hatch.build.targets.wheel]
+only-include = ["__init__.py", "api.py", "config.py", "core", "project_paths.py", "rag", "tools"]
+sources = { "" = "agent_core" }
+dev-mode-dirs = [".."]

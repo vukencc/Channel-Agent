@@ -45,7 +45,7 @@ FREE-09 当前入口：`--prompt/--json/--session/--policy` 已提供。Headless
 ## BUG-20：持续集成
 
 `.github/workflows/tests.yml` 在 PR/main push 上运行 uv sync --locked 和离线 pytest；使用 Ubuntu 22.04，安装 Bubblewrap/util-linux。
-先执行 `scripts/ci_sandbox_probe.py` 的真实命名空间与资源限制探测，不支持时非零失败并说明环境限制，不静默跳过命令测试。
+先执行 `src/agent_test/scripts/ci_sandbox_probe.py` 的真实命名空间与资源限制探测，不支持时非零失败并说明环境限制，不静默跳过命令测试。
 workflow_dispatch 可显式开启真实模型集成任务；缓存公开模型和语料，以准备脚本及固定清单哈希更新缓存键。
 默认 PR 不下载模型、不调用付费 API；手动集成包含原有完整链路、strictness 配对过滤和固定公开 qrels 回归。
 本轮只在本机验证脚本及工作流静态契约，未触发远端 GitHub Actions，不把配置完成当成远端运行成功。

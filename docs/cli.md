@@ -19,7 +19,6 @@ Enter 发送，Alt+Enter 换行；Ctrl+N 新建，Ctrl+C 停止当前任务，Ct
 | 命令 | 用途 |
 |---|---|
 | `/new 名称` | 创建新 Agent 会话 |
-| `/tools` | 查看当前会话可用工具子集；可用 `/tools all`、`/tools none` 或 `/tools 名称,...` 调整 |
 | `/tasks` | 查看本会话创建的子任务；`/tasks cancel ID` 取消任务（详见[会话工具](session-tools.md)） |
 | `/plan` | 只读查看当前会话的任务计划、步骤状态与阻塞原因（详见[任务计划使用说明](task-plans.md)） |
 | `/switch ID前缀` | 恢复显示或切换已加载会话 |
@@ -27,6 +26,7 @@ Enter 发送，Alt+Enter 换行；Ctrl+N 新建，Ctrl+C 停止当前任务，Ct
 | `/models` | 搜索并选择模型预设 |
 | `/permissions` | 搜索并选择权限模式 |
 | `/policy 模式` | 设置当前会话权限模式；`default` 恢复环境默认 |
+| `/environment [sandbox|local|default]` | 查看或切换命令执行环境；`default` 恢复应用配置默认值 |
 | `/delete [ID前缀]`、`/del` | 明确确认后将该会话及其委派后代移入回收区 |
 | `/cleanup [cache|logs|sessions|all]` | 预览所选内容并明确确认清理；无参数只显示预览 |
 | `/details [on|off]` | 显示或隐藏工具参数、结果与思考详情；只改变显示 |
@@ -90,7 +90,7 @@ crud_tests/
 因为文件操作可能已经成功；先检查工作区，再决定是否继续。流式输出正常结束或取消时保存，
 进程被强制杀死时尚未保存的流式尾部可能丢失。导出使用唯一文件名，不覆盖之前的导出。
 
-每个根会话绑定自己的项目工作区 `SANDBOX_DIR/<根会话ID>/`；子 Agent 使用直接父 Agent 绑定的项目目录。默认根目录位于项目的 `crud_tests/`。知识库和模型配置仍共享。
+每个根会话默认绑定项目工作区 `SANDBOX_DIR/<根会话ID>/`，默认根目录位于项目的 `crud_tests/`。Linux 上可用 `/project /home/user/project` 选择已有的外部项目目录，`/project default` 恢复默认；子 Agent 使用直接父 Agent 绑定的项目目录。切换和删除会话均保留项目文件。知识库和模型配置仍共享。
 状态目录只保存记录、记忆和审计，不作为工具输出目录。即使使用 `--state-dir` 指向缓存位置，工具输出仍遵循 `SANDBOX_DIR`。
 旧版本 `<状态目录>/<会话ID>/workspace/` 中的文件会在首次执行工具时复制到新位置，原文件保留；
 若新旧工作区同时存在且没有完成迁移标记，会提示冲突，不覆盖文件。退出旧版 CLI 后再启动新版，使用 `/where` 核对路径。
@@ -147,7 +147,7 @@ CLI/session 工具本轮实现、验证和合成界面基准见 [交付报告](c
 `.agent/cli.log` 中的 `model_metrics`、`tool_metrics` 及各会话 `session.json` 的 `last_run` 记录首包、首个可见输出、最大帧间隔、总时长和工具用时。连接失败时，`model_metrics` 还记录 `failure_phase`、异常类别、传输错误类别及 `request_attempts`；日志不写入原始异常正文。
 工具用时包含用户确认等待；字符数不是 token 数。诊断日志不记录思考正文；思考详情保存在私有会话历史中。
 
-可运行 `uv run python -m scripts.diagnose --live --runs 3 --thinking disabled --read-timeout 60` 做真实模型工程探测。
+可运行 `uv run python -m agent_test.scripts.diagnose --live --runs 3 --thinking disabled --read-timeout 60` 做真实模型工程探测。
 它会使用当前 API 配额，在临时隔离工作区自动确认测试操作；仅保存测试输出至 `.cache/reports/system-diagnostics/`，不修改真实会话。
 
 
@@ -168,7 +168,7 @@ CLI/session 工具本轮实现、验证和合成界面基准见 [交付报告](c
 
 后台评估使用独立的 ASSESS_CONCURRENCY 池（默认 1），不占前台模型容量。
 
-审计配置：CLI 的审计按会话写入 `AGENT_STATE_DIR/<id>/audit.jsonl`；`AUDIT_LOG` 仅用于无会话 ToolContext 的独立工具调用。默认提示词统一位于 `src/ai_agent_startup/core/prompts.py`。测试路径为 `tests/`。
+审计配置：CLI 的审计按会话写入 `AGENT_STATE_DIR/<id>/audit.jsonl`；`AUDIT_LOG` 仅用于无会话 ToolContext 的独立工具调用。默认提示词统一位于 `src/agent_core/core/prompts.py`。测试路径为 `src/agent_test/tests/`。
 
 ## 增量持久化（v2）
 
@@ -202,3 +202,5 @@ last_run.model_calls 记录实际 model、fallbacks、input_tokens/output_tokens
 MODEL_STREAM_USAGE=True 时请求服务商 usage；否则按文本和 schema 估算。默认单模型行为不改变。
 INPUT_COST_PER_MILLION/OUTPUT_COST_PER_MILLION 为美元每百万 token，均 0 表示未知、成本为 null。
 备用条目可独立指定 input_cost_per_million/output_cost_per_million，未配置时不套用主模型价格；重试失败的服务商计费无法精确获知。
+
+工具能力由框架自动管理；CLI 不再提供 `/tools` 选择命令。部署策略和已保存会话的能力上限保留，详见[工具设计](tool-design.md)。

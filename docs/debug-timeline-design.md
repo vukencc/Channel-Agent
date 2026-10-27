@@ -46,12 +46,12 @@ token 指标按请求或累计显示 input/output，并标注来源：`provider`
 
 | 文件 | 已实现内容 |
 | --- | --- |
-| `src/ai_agent_startup/core/debug_runtime.py` | 有界事件与 span 缓存、generation/seq、增量窗口/gap/reset、白名单元数据。 |
-| `src/ai_agent_startup/core/sessions.py`、`src/ai_agent_startup/core/agent_tasks.py`、`src/ai_agent_startup/core/communication.py` | 轮次、工具、任务、Agent、消息和阶段边界事件。 |
-| `src/ai_agent_startup/core/llm.py`、`src/ai_agent_startup/core/history_context.py` | token usage 来源和上下文/Compact 指标事件。 |
-| `src/ai_agent_startup/web/app.py`、`src/ai_agent_startup/web/debug_details.py` | 只读时间线快照、增量游标和按需脱敏详情 API。 |
-| `src/ai_agent_startup/web/static/debug-view.js` | Agent lane、工具批次、通信、并发区间和曲线视图数据。 |
-| `src/ai_agent_startup/web/static/debug.js`、`src/ai_agent_startup/web/static/debug.html`、`src/ai_agent_startup/web/static/debug.css` | 时间线交互、页面刷新、详情分页、筛选缩放及响应式界面。 |
+| `src/agent_test/runtime.py` | 有界事件与 span 缓存、generation/seq、增量窗口/gap/reset、白名单元数据。 |
+| `src/agent_core/core/sessions.py`、`src/agent_core/core/agent_tasks.py`、`src/agent_core/core/communication.py` | 轮次、工具、任务、Agent、消息和阶段边界事件。 |
+| `src/agent_core/core/llm.py`、`src/agent_core/core/history_context.py` | token usage 来源和上下文/Compact 指标事件。 |
+| `src/agent_frontend/web/app.py`、`src/agent_test/web/debug_details.py` | 只读时间线快照、增量游标和按需脱敏详情 API。 |
+| `src/agent_test/static/debug-view.js` | Agent lane、工具批次、通信、并发区间和曲线视图数据。 |
+| `src/agent_test/static/debug.js`、`src/agent_test/static/debug.html`、`src/agent_test/static/debug.css` | 时间线交互、页面刷新、详情分页、筛选缩放及响应式界面。 |
 
 ## 验收边界
 

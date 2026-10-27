@@ -5,7 +5,7 @@
 项目要求 Python 3.12+。从仓库根目录安装锁定依赖（含 WebUI 可选依赖），只在 `.env` 不存在时创建本地配置：
 
 ```bash
-uv sync --locked --extra web
+uv sync --locked --extra web --extra desktop
 if [ ! -f .env ]; then cp .env.example .env; fi
 ```
 
@@ -36,18 +36,18 @@ chore: 更新依赖锁定
 ## 验证
 
 ```bash
-uv run --no-sync pytest -m 'not integration' -q
-uv run --no-sync pytest tests/test_command.py -q
-uv run --no-sync python scripts/ci_sandbox_probe.py
+COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m 'not integration' -q
+COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest src/agent_test/tests/test_command.py -q
+uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe
 ```
 
 沙箱探测需要 Linux 上的 Bubblewrap/prlimit 环境。真实模型集成测试需要本地模型与公开语料：
 
 ```bash
-RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run --no-sync pytest -m integration -q
+RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m integration -q
 ```
 
-CI 和常用脚本位于 `scripts/`，不是 `dev/`。测试、安全边界和配置细节见[文档索引](docs/README.md)。
+CI 和常用脚本位于 `src/agent_test/scripts/`，不是 `docs/dev/`。测试、安全边界和配置细节见[文档索引](docs/README.md)。
 
 ## Pull Request
 

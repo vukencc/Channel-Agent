@@ -8,7 +8,7 @@
 
 - [ ] `uv sync --locked --extra web`
 - [ ] `uv run pytest -m 'not integration' -q`
-- [ ] `uv run python scripts/ci_sandbox_probe.py`（Linux）
+- [ ] `uv run python -m agent_test.scripts.ci_sandbox_probe`（Linux）
 
 ## 配置与发布影响
 

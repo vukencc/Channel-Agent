@@ -26,7 +26,10 @@ WORKDIR /app
 #   --build-arg UV_SYNC_ARGS="--dev --extra documents"
 ARG UV_SYNC_ARGS="--no-dev"
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project --no-cache ${UV_SYNC_ARGS}
+COPY src/agent_core/pyproject.toml src/agent_core/pyproject.toml
+COPY src/agent_test/pyproject.toml src/agent_test/pyproject.toml
+COPY src/agent_frontend/pyproject.toml src/agent_frontend/pyproject.toml
+RUN uv sync --locked --no-install-workspace --no-cache ${UV_SYNC_ARGS}
 
 COPY . .
 RUN uv sync --locked --no-cache ${UV_SYNC_ARGS}

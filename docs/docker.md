@@ -117,7 +117,7 @@ docker run --rm -it --env-file .env \
 
 ```bash
 docker run --rm --entrypoint uv ai-agent-startup:v0.2.1 \
-  run --no-sync python scripts/ci_sandbox_probe.py
+  run --no-sync python -m agent_test.scripts.ci_sandbox_probe
 ```
 
 失败时依次尝试：

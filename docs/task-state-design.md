@@ -4,10 +4,10 @@
 
 ## 当前实现
 
-- [sessions.py](../src/ai_agent_startup/core/sessions.py#L35) 的 `Session` 持有前台 asyncio task、取消标志、确认状态和执行阶段；`SessionManager.submit` 将记录状态设为 `queued`，运行过程使用 `running`、`confirming`、`stopping`，结束时使用 `idle`、`checkpoint`、`error` 或 `cancelled`。恢复时 [storage.py](../src/ai_agent_startup/core/storage.py#L330) 将非终态标成 `interrupted`，不会重放工具。模型上下文在 [sessions.py](../src/ai_agent_startup/core/sessions.py#L656) 每轮构造，再交给 `prepare_model_history` 做预算控制。
-- [agent_tasks.py](../src/ai_agent_startup/core/agent_tasks.py#L16) 提供持久子 Agent 队列和并发槽。每个委派任务运行时占用槽位，并等待完整子会话结束；状态与结果由队列记录。入口 [tools/agent_tasks.py](../src/ai_agent_startup/tools/agent_tasks.py#L11) 注册 `delegate`、`task_status`、`cancel_agent_task`。
-- [command_jobs.py](../src/ai_agent_startup/core/command_jobs.py#L21) 提供独立的后台命令队列，运行前沿用当前权限模式的确认流程，按工作区串行写入；进程重启后将运行中任务标为 `interrupted`、结果未知且不自动重放。
-- [tools/__init__.py](../src/ai_agent_startup/tools/__init__.py#L7) 通过导入模块注册工具，并按配置注册可选队列工具。会话工具通过 `current_service()` 取得调用者身份，子 Agent 递归创建仍由会话入口、Agent 队列入口及根会话创建边界拒绝；系统提示也禁止递归，参见 [session_tools.py](../src/ai_agent_startup/tools/session_tools.py#L14)。本设计保留这些限制。
+- [sessions.py](../src/agent_core/core/sessions.py#L35) 的 `Session` 持有前台 asyncio task、取消标志、确认状态和执行阶段；`SessionManager.submit` 将记录状态设为 `queued`，运行过程使用 `running`、`confirming`、`stopping`，结束时使用 `idle`、`checkpoint`、`error` 或 `cancelled`。恢复时 [storage.py](../src/agent_core/core/storage.py#L330) 将非终态标成 `interrupted`，不会重放工具。模型上下文在 [sessions.py](../src/agent_core/core/sessions.py#L656) 每轮构造，再交给 `prepare_model_history` 做预算控制。
+- [agent_tasks.py](../src/agent_core/core/agent_tasks.py#L16) 提供持久子 Agent 队列和并发槽。每个委派任务运行时占用槽位，并等待完整子会话结束；状态与结果由队列记录。入口 [tools/agent_tasks.py](../src/agent_core/tools/agent_tasks.py#L11) 注册 `delegate`、`task_status`、`cancel_agent_task`。
+- [command_jobs.py](../src/agent_core/core/command_jobs.py#L21) 提供独立的后台命令队列，运行前沿用当前权限模式的确认流程，按工作区串行写入；进程重启后将运行中任务标为 `interrupted`、结果未知且不自动重放。
+- [tools/__init__.py](../src/agent_core/tools/__init__.py#L7) 通过导入模块注册工具，并按配置注册可选队列工具。会话工具通过 `current_service()` 取得调用者身份，子 Agent 递归创建仍由会话入口、Agent 队列入口及根会话创建边界拒绝；系统提示也禁止递归，参见 [session_tools.py](../src/agent_core/tools/session_tools.py#L14)。本设计保留这些限制。
 
 ## 状态模型
 
@@ -51,7 +51,7 @@ LLM 的 `completed` 仅代表自报完成，不代表验收通过。完成更新
 
 ## 数据与工具接口
 
-`src/ai_agent_startup/core/task_plans.py` 管理模型、迁移、DAG 校验、状态投影和并发更新；计划工具使用 Pydantic 参数模型和 `register_tool` 注册。工具只能经当前会话服务取得调用者身份；无有效调用者即拒绝，不能接受任意 owner、文件路径或权限参数。可信 UI 查询另走管理器内部接口。工具名使用 `plan_` 前缀，不与已有 `task_status` 冲突。
+`src/agent_core/core/task_plans.py` 管理模型、迁移、DAG 校验、状态投影和并发更新；计划工具使用 Pydantic 参数模型和 `register_tool` 注册。工具只能经当前会话服务取得调用者身份；无有效调用者即拒绝，不能接受任意 owner、文件路径或权限参数。可信 UI 查询另走管理器内部接口。工具名使用 `plan_` 前缀，不与已有 `task_status` 冲突。
 
 建议任务字段为：
 
@@ -115,7 +115,7 @@ docs_finalize: 写入实测结果与使用说明，depends_on=[verify, docs_draf
 
 文档示例中的并行是 DAG 依赖关系；不会自动启动多个 Agent。实际并行仍由父 LLM 显式选择已有队列，并受当前权限、确认策略和队列并发上限约束。保留单层委派：现有委派槽覆盖子会话整个生命周期，若子 Agent 持槽等待同队列里的孙 Agent，在并发数为 1 或所有槽被等待者占用时会死锁。支持递归需要先设计独立调度和层级资源预算，不属于本次方案。
 
-第一阶段 MVP 已实现：计划模型与六个工具位于 `src/ai_agent_startup/core/task_plans.py`、`src/ai_agent_startup/tools/task_plans.py`，并接入工具注册、会话上下文、原子持久化、证据记录和恢复流程；CLI `/plan` 与 Web 只读计划 GET/看板提供查看入口。配置默认关闭；没有计划时不注入摘要。实现没有增加依赖、规划模型请求或自动执行调度，也未放开递归委派。测试覆盖由 `tests/test_task_plans.py` 维护；本文不记录未经核对的测试结果。
+第一阶段 MVP 已实现：计划模型与六个工具位于 `src/agent_core/core/task_plans.py`、`src/agent_core/tools/task_plans.py`，并接入工具注册、会话上下文、原子持久化、证据记录和恢复流程；CLI `/plan` 与 Web 只读计划 GET/看板提供查看入口。配置默认关闭；没有计划时不注入摘要。实现没有增加依赖、规划模型请求或自动执行调度，也未放开递归委派。测试覆盖由 `src/agent_test/tests/test_task_plans.py` 维护；本文不记录未经核对的测试结果。
 
 后续阶段可设计结构化 `ToolOutcome` 与自动验收，再考虑多计划切换或自动 DAG 调度。MVP 只辅助 LLM 规划和追踪，不包含自动执行调度、工具重放或递归子代理；递归委派仍受现有后端拒绝和系统提示约束。
 
@@ -133,4 +133,4 @@ docs_finalize: 写入实测结果与使用说明，depends_on=[verify, docs_draf
 | 模型链路 | 使用模型替身跑“模型更新计划→调用真实注册工具→真实工具结果→计划证据引用”的完整链路；验证禁递归委派回归仍拒绝 |
 | 兼容与上下文 | 关闭时无新 schema/摘要；启用但无计划不注入摘要；上限按真实预算生效；懒加载与缓存有效；收窄工具集不扩权；任务文本注入攻击不改变安全语义 |
 
-实现阶段的验证命令包括 `uv sync --locked`、`uv run pytest tests/test_task_plans.py -q`、`uv run pytest -m 'not integration' -q`；涉及工具边界还须运行 `uv run python scripts/ci_sandbox_probe.py`，受环境限制时如实记录。本文给出覆盖矩阵，不记录测试执行数字或性能结论。
+实现阶段的验证命令包括 `uv sync --locked`、`uv run pytest src/agent_test/tests/test_task_plans.py -q`、`uv run pytest -m 'not integration' -q`；涉及工具边界还须运行 `uv run python -m agent_test.scripts.ci_sandbox_probe`，受环境限制时如实记录。本文给出覆盖矩阵，不记录测试执行数字或性能结论。
