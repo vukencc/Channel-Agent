@@ -24,7 +24,7 @@
 3. 确认版本号严格匹配 `vN.N.N`，且与 `pyproject.toml`、`uv.lock` 的包版本和 `CHANGELOG.md` 对应标题一致；工作流还会检查注解 tag 及提交是否位于 `origin/main`。
 4. `uv sync --locked` 成功。
 5. `uv run pytest -m 'not integration' -q` 全绿。
-6. `uv run python scripts/ci_sandbox_probe.py` 通过（Linux）。
+6. `uv run python -m agent_test.scripts.ci_sandbox_probe` 通过（Linux）。
 7. 可选：`RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=<parquet> uv run pytest -m integration -q`。
 8. 创建并推送注解 tag；不要直接推送 `main`：
 
@@ -44,6 +44,6 @@
 
 ## 模板与分支
 
-- 新方向从当前基线 tag 开分支：`git switch -c feat/<topic> v0.2.1`。
+- 当前工作区已有开发时，沿用当前分支并保留未提交改动；不要为开始工作切回旧 tag。只有明确要从已发布基线开始独立的新模板方向时，才从所选 tag 创建新分支，并先确认工作区状态与目标 tag。
 - 较大分歧方向使用 GitHub「Use this template」新建仓库；模板复制默认分支内容，不复制 tag 与其他分支。
 - 详见 [贡献指南](../CONTRIBUTING.md) 与 [README](../README.md)。

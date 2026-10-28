@@ -1,135 +1,78 @@
-# Codex 多代理（subagent）协作系统
+# Codex 多代理协作
 
-本文说明维护者可在本地工作区使用的 OpenAI Codex CLI 子代理系统：它由哪些文件组成、Codex 在什么
-情况下启动哪个子代理、并行与写入冲突如何处理，以及如何扩展。`.codex/` 与
-`AGENTS.md` 是本地维护资产，不纳入版本控制，也不会随 clone 分发；本页描述其约定供本地使用。
+本文记录本机 Codex 配置和仓库内的代理分工。Codex 子代理通过 `spawn_agent` 创建，使用 `followup_task` 追加工作、`wait_agent` 等待结果，并可通过 `send_message` 交换信息。本仓库要求子代理向父代理报告，不继续派生代理。应用本身的 Agent/子 Agent 是另一套运行时功能，不能与 Codex 子代理混为一谈；应用委派边界见[会话工具](session-tools.md)。
 
-## 背景与目标
+## 本地配置
 
-Codex 支持多代理工作流：主代理（`/root`）可以用 `spawn_agent` 创建子代理，用
-`followup_task` 追加任务，用 `wait_agent` 等待结果，用 `send_message` 传递消息。子代理
-各自消耗模型与工具额度，因此**只在任务可拆分、可并行时使用**。
+`.codex/config.toml` 的当前项目配置为：
 
-关键约束（Codex 当前行为）：
+```toml
+project_doc_max_bytes = 16384
 
-- **必须显式请求才会 spawn。** 系统提示中的 `<multi_agent_mode>` 明确说明：除非用户或
-  适用的 `AGENTS.md`/skill 指令明确要求委派或并行代理，否则不要启动子代理。因此本项目把
-  调度策略写进本地根目录 `AGENTS.md`，作为常驻的显式指令。
-- **并发槽位有限。** 当前构建提供 4 个并发槽位（含根代理），并建议批量不超过 3 个 worker。
-- **共享工作区。** 所有代理使用同一个容器、同一个工作目录；任一代理的改动立即对其他代理
-  可见，因此并行写入同一文件会产生冲突。
-- **模型/推理强度继承规则。** 完整历史 fork（`fork_turns` 省略或为 `"all"`）会继承父
-  代理的模型与推理强度，且不接受覆盖；只有在显式指定 `model`/`reasoning_effort` 时才应
-  把 `fork_turns` 设为 `"none"` 或正整数。
-- **`max_depth` 默认 1。** 子代理可以再 spawn，但本系统设计为扁平委派，不依赖多层嵌套。
-
-## 文件结构
-
-```text
-.codex/
-  config.toml                 # [agents] 限制、multi_agent 开关、AGENTS.md 字节预算
-  agents/
-    repo-explorer.toml        # repo_explorer：只读代码探查
-    rag-specialist.toml       # rag_specialist：RAG 管线实现
-    sandbox-auditor.toml      # sandbox_auditor：只读安全/边界审计
-    test-engineer.toml        # test_engineer：pytest 覆盖
-    reviewer.toml             # reviewer：只读缺陷优先评审
-    docs-writer.toml          # docs_writer：文档同步
-    perf-analyst.toml         # perf_analyst：性能测量
-AGENTS.md                     # 本地 “Multi-agent Workflow” 章节：调度策略（Codex 读取）
-docs/codex-multiagent.md      # 本文
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
 ```
 
-每个 `.codex/agents/*.toml` 定义一个子代理，必填字段为 `name`、`description`、
-`developer_instructions`；可选 `nickname_candidates`、`model`、
-`model_reasoning_effort`、`sandbox_mode`、`mcp_servers`、`skills.config`。Codex 以
-`name` 字段为准识别代理，文件名只用于区分。
+`max_concurrent_threads_per_session` 限制同一会话中的已派生代理，不计主代理。Codex 配置解析可能接受兼容别名，但本项目以 `max_concurrent_threads_per_session` 为准。`project_doc_max_bytes` 控制项目指令文档的读取预算。
 
-只读代理显式声明 `sandbox_mode = "read-only"`，作为硬限制；写入类代理省略
-`sandbox_mode`，继承父会话沙箱，避免绕过用户当前的沙箱与审批策略。
+代理定义位于 `.codex/agents/*.toml`。每个定义必须提供 `name`、`description` 和 `developer_instructions`；名称用于选择角色。模型和推理强度只在这些 TOML 文件中维护。角色指令要求只读角色不写文件；这一职责由指令约束，不能当作沙箱级只读保证。代理继承父会话的 provider、沙箱和审批边界，角色配置不能自行提升权限。具名角色的模型和推理强度优先于派生参数及 agents 默认值；要改变设置，应选择其他角色或修改对应文件，不能依靠派生参数临时覆盖。
 
-## 角色与触发条件
+`.codex/` 和根 `AGENTS.md` 是随仓库提供的项目级默认配置；`docs/dev/` 是不随 clone 分发的本地资料。认证、根模型与权限由调用端管理。此页描述项目约定，官方配置格式以[子代理配置说明](https://learn.chatgpt.com/docs/agent-configuration/subagents)和[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)为准。
 
-| 子代理 | 模型 / 强度 | 沙箱 | 触发条件 |
-| --- | --- | --- | --- |
-| `repo_explorer` | gpt-6-luna / low | read-only | 需要定位代码、追踪调用路径，或在改动前收集 `file:line` 证据 |
-| `rag_specialist` | gpt-6-sol / high | 继承 | 改动涉及 `src/ai_agent_startup/rag/**`、`tools/rag_search.py`，或检索质量、索引、RAG 延迟 |
-| `sandbox_auditor` | gpt-6-astra / high | read-only | 改动涉及沙箱/命令/文件/网络工具、权限、审计、预算，或需要边界安全评审 |
-| `test_engineer` | gpt-6-sol / medium | 继承 | 行为变更需要回归测试，或失败测试需要定位并修复 |
-| `reviewer` | gpt-6-astra / high | read-only | 实现完成、准备提 PR，需要对相对基线的 diff 做缺陷优先评审 |
-| `docs_writer` | gpt-6-luna / medium | 继承 | 文档、`.env.example`、`README.md`、`CONTRIBUTING.md`、`CHANGELOG.md` 需与代码同步 |
-| `perf_analyst` | gpt-6-luna / medium | 继承 | 需要性能改动的前后对比数据（RAG、沙箱、CLI） |
+## 角色分工
 
-模型选择依据本地模型目录：`gpt-6-astra` 面向最困难的工作（评审、安全审计用高强度），
-`gpt-6-sol` 是编码主力（实现类任务），`gpt-6-luna` 快且经济（探查、文档、测量）。
+调度触发条件和责任分工以根 `AGENTS.md` 的 Codex Delegation 部分为准；模型与推理强度以 `.codex/agents/*.toml` 为准，本文不重复维护。
 
-## 调度规则
+| 角色 | 负责范围 |
+| --- | --- |
+| `repo_explorer` | 只读代码探查、调用路径与文件行证据。 |
+| `rag_specialist` | RAG 管线、索引、检索质量与延迟。 |
+| `sandbox_auditor` | 只读沙箱、权限、命令/文件/网络边界和审计检查。 |
+| `test_engineer` | pytest 覆盖、失败测试诊断与修复。 |
+| `reviewer` | 实现完成后的只读缺陷优先评审。 |
+| `docs_writer` | 文档、README、示例配置和更新日志同步。 |
+| `perf_analyst` | RAG、沙箱或 CLI 的可复现实测。 |
+| `implementation_worker` | 范围明确、文件归属清楚的实现与修复。 |
+| `ui_specialist` | 界面复现、视觉和交互修复及实际界面检查。 |
+| `architecture_advisor` | 已有针对性证据后，针对未解决的跨模块决策提供只读建议。 |
 
-### 应该委派
+当前选择将 Terra 用于有界实现、界面和文档，Sol 用于复杂代码、RAG、测试、性能及安全审查，Luna 用于范围明确的只读探查；遇到尚未解决的困难架构决策时按需使用 Astra。这是参考[官方模型定位](https://learn.chatgpt.com/docs/models)和[模型选择指南](https://developers.openai.com/api/docs/guides/model-selection)的工程选择，并非性能或费用基准。角色的实际配置以 TOML 为准，可在仓库根目录只打印角色名、模型和推理强度：
 
-- **读多而独立**：并行探查、日志/测试输出分析、跨目录定位。
-- **领域隔离**：单个改动集中在一个领域（RAG、沙箱、文档）且可由一个子代理独立完成。
-- **可并行的独立子任务**：每个子任务有明确问题与预期产出，例如按维度拆分代码评审。
+```bash
+python3 -c 'import pathlib,tomllib; [(lambda d: print(d["name"], d.get("model"), d.get("model_reasoning_effort")))(tomllib.loads(p.read_text())) for p in sorted(pathlib.Path(".codex/agents").glob("*.toml"))]'
+```
 
-### 不应该委派
+## 委派与共享工作区
 
-- 几步工具调用就能完成的小改动、单文件且有明显修法的改动。
-- 依赖上一步结果的串行推理（留在主线程）。
-- 需要当前主线程已有上下文的工作。
+按根 `AGENTS.md` 的 Codex Delegation 规则，对可独立开展的实质任务主动委派；小型、紧密耦合或依赖前序结果的工作留在主线程。独立只读探查可以并行；写入任务要划分不同文件责任，避免同时编辑同一文件。所有代理共享当前 checkout，修改会立即互相可见。开始前检查 `git status --short`，保留已有更改；不要用 reset、clean 或切换旧 tag 来整理共享工作区。子代理完成后由父代理整合并负责最终验证。
 
-### 并行与写入
+`fork_turns` 使用 `"none"` 或 `"all"`。默认从 `"none"` 开始并提供具体任务范围；只有子任务确实需要当前对话时才传 `"all"`。不要传整数。Codex 子代理可以继续创建其他代理，但本项目工作流要求子代理把独立后续需求交回父代理，不自行继续派发。
 
-- 独立只读任务并行；每批不超过 3 个 worker（并发槽位含根代理共 4 个）。
-- 所有代理共享工作树，**同一文件/目录同一时间只允许一个写入者**；写操作必须串行。
-- 只读代理（`repo_explorer`、`sandbox_auditor`、`reviewer`）可以安全并行。
-
-### 上下文传递
-
-- 默认用 `fork_turns = "none"`（或较小整数）让子代理从干净上下文开始，避免上下文污染，
-  并让 TOML 中固定的模型/强度生效。
-- 仅当子代理确实需要父会话完整历史时才传全量（此时模型与强度会继承父级，不能覆盖）。
-
-## 输出契约
-
-子代理返回**提炼后的结论**，而不是原始转录：
-
-- 探查/审计：`path/to/file.py:line` + 一行相关性说明，按重要性排序；结论先行。
-- 实现：改动文件、运行过的命令与测试、最终状态、残余风险。
-- 评审：先列发现（`[P0]`–`[P3]`），再给总体评估与测试缺口。
-
-子代理改完代码后，**最终验证由主线程负责**：运行
-`uv run pytest -m 'not integration' -q`；若涉及工具或沙箱边界，再运行
-`uv run python scripts/ci_sandbox_probe.py`。
-
-## 兼容与回退
-
-若某个 Codex 运行时无法按名字解析 `.codex/agents/*.toml` 中的自定义代理（部分工具化
-/API 会话存在该限制），则回退为：spawn 内置 `worker`（只读任务用 `explorer`），并把
-对应 `.codex/agents/<name>.toml` 的 `developer_instructions` 原文拼进任务描述。这样
-即使命名代理不可用，也能保持相同的角色指令与产出契约。
-
-## 扩展方式
-
-1. 新建 `.codex/agents/<name>.toml`，包含 `name`、`description`、
-   `developer_instructions`，按需设置 `model`、`model_reasoning_effort`、
-   `sandbox_mode`、`nickname_candidates`。
-2. 在根 `AGENTS.md` 的 Roster 表中新增一行，写清触发条件与产出。
-3. 如新增领域约束，在 `developer_instructions` 中引用具体路径与验证命令，保持与
-   `AGENTS.md`、`CONTRIBUTING.md` 一致。
-4. 不要为同一职责创建多个重叠代理，避免调度歧义。
+只读角色的文件修改限制来自角色指令；有效沙箱和审批由父会话及运行环境决定。不要仅凭角色名称或角色文件中的描述推断硬隔离。
 
 ## 验证
 
-- 校验 TOML 语法：`python -c "import tomllib,glob; [tomllib.load(open(p,'rb')) for p in glob.glob('.codex/**/*.toml', recursive=True)]"`。
-- 确认 `AGENTS.md` 会被读取：在仓库根运行
-  `codex debug prompt-input "probe"`，检查输出中是否包含 “Multi-agent Workflow” 章节。
-- 确认配置可加载：`codex doctor --summary --no-color`（Configuration 一节应显示 `config loaded`）。
-- 实际调度验证：在 Codex 会话中要求“并行探查 X、Y”，观察 `/agent` 面板中出现的子代理
-  名称与角色。
+从仓库根目录检查本地 TOML 语法：
 
-## 相关文档
+```bash
+python -c "import tomllib,glob; [tomllib.load(open(p,'rb')) for p in glob.glob('.codex/**/*.toml', recursive=True)]"
+```
 
-- 本地仓库约定与调度策略：根目录 `AGENTS.md`（仅本地文件，不随 clone 分发）
-- 贡献流程：[CONTRIBUTING.md](../CONTRIBUTING.md)
-- 沙箱语义：[sandbox.md](sandbox.md)
-- RAG 工程与验证：[rag.md](rag.md)
+Codex CLI 当前支持的严格配置检查命令为：
+
+```bash
+codex --strict-config doctor --json
+```
+
+这会验证 CLI 配置并输出诊断 JSON；它不单独证明每个自定义角色已成功启动。继续验证角色时，应在 Codex 会话中按角色明确请求一项小型、只读的探查，并检查交回的结果和共享工作区状态。
+
+本轮 WSL Codex CLI 为 `0.160.0`，满足官方文档中 Terra 的 CLI 最低版本 `0.159`；严格诊断返回 `overallStatus=ok`。十个角色 TOML 已解析并检查模型、推理强度及权限覆盖。`codex debug models --bundled` 的离线目录列出 Astra、Sol 6.1 和 Luna，但该旧快照未收录 Terra，不能据此判断服务不可用，也不能将 doctor 结果当作模型授权证明。本轮 `docs_writer` 作为 Terra/medium 子代理实际完成文档工作；三个新增角色尚未逐一真实派生。这些是 Codex 协作验证，不是应用内 Agent 的真实模型测试、保存轨迹回放或受控 fixture 验收。
+
+Windows npm CLI 本轮实测仍为 `0.154.0`，低于 Terra 所需版本；本仓库的 CLI 检查使用 WSL，未升级全局 CLI 或修改桌面应用。
+
+历史验证：先前 WSL 严格诊断返回 `overallStatus=ok`、`config.load=ok` 和 `mcp.config=ok`。当时的 `codex debug prompt-input` 渲染包含项目指令、交接引用和七个角色名称，不包含工具 schema，也未验证角色派生或模型可用性；当时没有发起模型推理请求。
+
+修改配置后先检查当前会话可用角色；宿主若未重新发现，需在同一工作区新开会话再检查。诊断输出可能包含本机配置，不要公开完整配置、认证或 prompt 记录。
+
+相关工作流程：[仓库指南](../AGENTS.md)、[贡献指南](../CONTRIBUTING.md)、[沙箱说明](sandbox.md)、[文档索引](README.md)。

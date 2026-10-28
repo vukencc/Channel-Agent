@@ -1,0 +1,8 @@
+# Project-local Codex defaults. Authentication, root model and permissions stay
+# with the user's desktop/CLI configuration. See .codex/README.md.
+project_doc_max_bytes = 16384
+
+[agents]
+enabled = true
+# Spawned agents only; the primary thread is not counted in this limit.
+max_concurrent_threads_per_session = 3

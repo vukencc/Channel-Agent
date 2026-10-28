@@ -16,17 +16,24 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform == 'darwin'",
 ]
 
+[manifest]
+members = [
+    "ai-agent-core",
+    "ai-agent-frontend",
+    "ai-agent-startup",
+    "ai-agent-test",
+]
+
 [[package]]
-name = "ai-agent-startup"
+name = "ai-agent-core"
 version = "0.2.1"
-source = { editable = "." }
+source = { editable = "src/agent_core" }
 dependencies = [
     { name = "fastembed" },
     { name = "httpx" },
     { name = "jieba" },
     { name = "numpy" },
     { name = "openai" },
-    { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "rank-bm25" },
@@ -47,9 +54,83 @@ documents = [
 vision = [
     { name = "pillow" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastembed", specifier = ">=0.8.1" },
+    { name = "hnswlib", marker = "extra == 'ann'", specifier = ">=0.8.0,<0.9" },
+    { name = "httpx", specifier = ">=0.28.1,<1" },
+    { name = "jieba", specifier = ">=0.42.1" },
+    { name = "numpy", specifier = ">=2.5.3" },
+    { name = "openai", specifier = ">=2.15.0,<4" },
+    { name = "pillow", marker = "extra == 'vision'", specifier = ">=12,<13" },
+    { name = "pydantic", specifier = ">=2.13.0,<3" },
+    { name = "pypdf", marker = "extra == 'documents'" },
+    { name = "python-docx", marker = "extra == 'documents'" },
+    { name = "python-dotenv", specifier = ">=1.2.0,<2" },
+    { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "sentence-transformers", specifier = ">=6.1.0" },
+    { name = "tavily-python", specifier = ">=0.8.0,<0.9" },
+    { name = "torch", specifier = ">=2.14,<3", index = "https://download.pytorch.org/whl/cpu" },
+]
+provides-extras = ["documents", "vision", "ann"]
+
+[[package]]
+name = "ai-agent-frontend"
+version = "0.2.1"
+source = { editable = "src/agent_frontend" }
+dependencies = [
+    { name = "ai-agent-core" },
+    { name = "prompt-toolkit" },
+]
+
+[package.optional-dependencies]
+debug = [
+    { name = "ai-agent-test" },
+]
+desktop = [
+    { name = "pyside6-essentials" },
+]
 web = [
     { name = "fastapi" },
     { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ai-agent-core", editable = "src/agent_core" },
+    { name = "ai-agent-test", marker = "extra == 'debug'", editable = "src/agent_test" },
+    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115,<1" },
+    { name = "prompt-toolkit", specifier = ">=3.0.53,<4" },
+    { name = "pyside6-essentials", marker = "extra == 'desktop'", specifier = ">=6.8,<7" },
+    { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.34,<1" },
+]
+provides-extras = ["web", "desktop", "debug"]
+
+[[package]]
+name = "ai-agent-startup"
+version = "0.2.1"
+source = { virtual = "." }
+dependencies = [
+    { name = "ai-agent-frontend" },
+    { name = "ai-agent-test" },
+]
+
+[package.optional-dependencies]
+ann = [
+    { name = "ai-agent-core", extra = ["ann"] },
+]
+desktop = [
+    { name = "ai-agent-frontend", extra = ["desktop"] },
+]
+documents = [
+    { name = "ai-agent-core", extra = ["documents"] },
+]
+vision = [
+    { name = "ai-agent-core", extra = ["vision"] },
+]
+web = [
+    { name = "ai-agent-frontend", extra = ["web"] },
 ]
 
 [package.dev-dependencies]
@@ -61,32 +142,36 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115,<1" },
-    { name = "fastembed", specifier = ">=0.8.1" },
-    { name = "hnswlib", marker = "extra == 'ann'", specifier = ">=0.8.0,<0.9" },
-    { name = "httpx", specifier = ">=0.28.1,<1" },
-    { name = "jieba", specifier = ">=0.42.1" },
-    { name = "numpy", specifier = ">=2.5.3" },
-    { name = "openai", specifier = ">=2.15.0,<4" },
-    { name = "pillow", marker = "extra == 'vision'", specifier = ">=12,<13" },
-    { name = "prompt-toolkit", specifier = ">=3.0.53,<4" },
-    { name = "pydantic", specifier = ">=2.13.0,<3" },
-    { name = "pypdf", marker = "extra == 'documents'" },
-    { name = "python-docx", marker = "extra == 'documents'" },
-    { name = "python-dotenv", specifier = ">=1.2.0,<2" },
-    { name = "rank-bm25", specifier = ">=0.2.2" },
-    { name = "sentence-transformers", specifier = ">=6.1.0" },
-    { name = "tavily-python", specifier = ">=0.8.0,<0.9" },
-    { name = "torch", specifier = ">=2.14,<3", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.34,<1" },
+    { name = "ai-agent-core", extras = ["ann"], marker = "extra == 'ann'", editable = "src/agent_core" },
+    { name = "ai-agent-core", extras = ["documents"], marker = "extra == 'documents'", editable = "src/agent_core" },
+    { name = "ai-agent-core", extras = ["vision"], marker = "extra == 'vision'", editable = "src/agent_core" },
+    { name = "ai-agent-frontend", editable = "src/agent_frontend" },
+    { name = "ai-agent-frontend", extras = ["desktop"], marker = "extra == 'desktop'", editable = "src/agent_frontend" },
+    { name = "ai-agent-frontend", extras = ["web"], marker = "extra == 'web'", editable = "src/agent_frontend" },
+    { name = "ai-agent-test", editable = "src/agent_test" },
 ]
-provides-extras = ["web", "documents", "vision", "ann"]
+provides-extras = ["web", "desktop", "documents", "vision", "ann"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "onnx", specifier = ">=1.23.0" },
     { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pytest", specifier = ">=8" },
+]
+
+[[package]]
+name = "ai-agent-test"
+version = "0.2.1"
+source = { editable = "src/agent_test" }
+dependencies = [
+    { name = "ai-agent-core" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ai-agent-core", editable = "src/agent_core" },
+    { name = "fastapi", specifier = ">=0.115,<1" },
 ]
 
 [[package]]
@@ -1521,6 +1606,21 @@ wheels = [
 ]
 
 [[package]]
+name = "pyside6-essentials"
+version = "6.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "shiboken6" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/90/d528f8dd3f9f20712bc719e10c698d27c998e1dd76ed3f33b6fb606d0972/pyside6_essentials-6.12.0-cp310-abi3-macosx_14_0_universal2.whl", hash = "sha256:0867b709a724db28b161227c7d6ecb5ed10cc09226a53542417ac6dee1308239", size = 116002775, upload-time = "2026-10-08T09:09:54.453Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/3c/7597d8dcb36aa8315427635ec6ec9d850ffbad4ce78b9118ac854889f2d3/pyside6_essentials-6.12.0-cp310-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:16f4b5e41daf49235ae048458243da9efe5f3d8040f9cc5aa454ce69893d3bd9", size = 84346433, upload-time = "2026-10-08T09:10:02.825Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/4e/f4fd4c016719be832ec49d3c87940459e87fd666179a0a199a3998d07916/pyside6_essentials-6.12.0-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:08c5841063fc1df69b7fa1ee405f539e66576a83fc48004be3e2c5e35ccbfa69", size = 83810102, upload-time = "2026-10-08T09:10:09.13Z" },
+    { url = "https://files.pythonhosted.org/packages/03/61/9a7e32a37b224f68506785bfb0f288d516098ec71681782d72b695a6c95d/pyside6_essentials-6.12.0-cp310-abi3-win_amd64.whl", hash = "sha256:c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42", size = 82153795, upload-time = "2026-10-08T09:10:15.104Z" },
+    { url = "https://files.pythonhosted.org/packages/92/11/43afb3d0e7c25dd09f0eb7e44f1283dadb5fa8d8b517249fe3fde02e6702/pyside6_essentials-6.12.0-cp310-abi3-win_arm64.whl", hash = "sha256:c76aa689989bf9bb9b45535e0a81c6733294df720b0eed1308fa30d2606b98cc", size = 62073456, upload-time = "2026-10-08T09:10:20.202Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1931,6 +2031,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b27b655beb4b4e9c62313a4e8da8c676e142cc210d58e/shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de", size = 10310, upload-time = "2023-10-24T04:13:40.426Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686", size = 9755, upload-time = "2023-10-24T04:13:38.866Z" },
+]
+
+[[package]]
+name = "shiboken6"
+version = "6.12.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b5/45/11536fba5f50a57671eb14441c6098096f3e57074e54c9d7d66039a5831e/shiboken6-6.12.0-cp310-abi3-macosx_14_0_universal2.whl", hash = "sha256:47105e05baf57d35453e07d240bbe59cb4b8d9565377ea5134ff9fb37d4f5c02", size = 479653, upload-time = "2026-10-08T09:10:41.506Z" },
+    { url = "https://files.pythonhosted.org/packages/49/c2/a04fa003b4360e99d8e3fc2829abacf37396ace63ea1cd616402209ec7c6/shiboken6-6.12.0-cp310-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:3bde565bb0890044b5c7f63808adddede5abc241e9395a2bfed61919884d6240", size = 279268, upload-time = "2026-10-08T09:10:42.982Z" },
+    { url = "https://files.pythonhosted.org/packages/97/ca/a4415e6218e0dff764fe2b2d30db2fc8f499a08ace07634232ade3f73adc/shiboken6-6.12.0-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:ff72a72b3277b418902d562b987b33a6f6818bed9fe40a49d634d09bc67f620e", size = 276562, upload-time = "2026-10-08T09:10:44.25Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/b6/bee97e7a2edeab72aafabb46ee5adc939790a638d107860b4cad7a20e407/shiboken6-6.12.0-cp310-abi3-win_amd64.whl", hash = "sha256:a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e", size = 1265476, upload-time = "2026-10-08T09:10:45.627Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/d5/5894d35f8a470ca8acff0d1cd8f15b1c94cbfdfe0ce4a6ec0fcf10b95bd1/shiboken6-6.12.0-cp310-abi3-win_arm64.whl", hash = "sha256:da382e68f0815b31b6dc2bce11a465b148c4f42c37b91546a361de1576567d10", size = 1838851, upload-time = "2026-10-08T09:10:47.123Z" },
 ]
 
 [[package]]

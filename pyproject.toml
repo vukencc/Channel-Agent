@@ -1,34 +1,16 @@
 [project]
 name = "ai-agent-startup"
 version = "0.2.1"
-description = "一个带工具调用（function calling）的最小流式对话 Agent"
+description = "AgentCore、AgentTest 与 Frontend 的开发工作区"
 requires-python = ">=3.12"
-dependencies = [
-    "fastembed>=0.8.1",
-    "httpx>=0.28.1,<1",
-    "jieba>=0.42.1",
-    "numpy>=2.5.3",
-    "openai>=2.15.0,<4",
-    "prompt-toolkit>=3.0.53,<4",
-    "pydantic>=2.13.0,<3",
-    "python-dotenv>=1.2.0,<2",
-    "rank-bm25>=0.2.2",
-    "sentence-transformers>=6.1.0",
-    "tavily-python>=0.8.0,<0.9",
-    "torch>=2.14,<3",
-]
-
-[project.scripts]
-ai-agent-startup = "ai_agent_startup.main:main"
-ai-agent-web = "ai_agent_startup.web.server:main"
+dependencies = ["ai-agent-frontend==0.2.1", "ai-agent-test==0.2.1"]
 
 [project.optional-dependencies]
-web = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1"]
-documents = ["pypdf", "python-docx"]
-vision = ["Pillow>=12,<13"]
-ann = [
-    "hnswlib>=0.8.0,<0.9",
-]
+web = ["ai-agent-frontend[web]"]
+desktop = ["ai-agent-frontend[desktop]"]
+documents = ["ai-agent-core[documents]"]
+vision = ["ai-agent-core[vision]"]
+ann = ["ai-agent-core[ann]"]
 
 [dependency-groups]
 dev = [
@@ -37,24 +19,24 @@ dev = [
     "pytest>=8",
 ]
 
-# torch 固定使用 PyTorch CPU 索引：镜像与开发环境更小，reranker 默认 CPU 推理。
-# 需要 GPU 时改为对应索引（如 pytorch-cu126）并重新执行 `uv lock`。
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["src/agent_core", "src/agent_test", "src/agent_frontend"]
+
+[tool.uv.sources]
+ai-agent-core = { workspace = true }
+ai-agent-frontend = { workspace = true }
+ai-agent-test = { workspace = true }
+torch = [{ index = "pytorch-cpu" }]
+
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
-[tool.uv.sources]
-torch = [{ index = "pytorch-cpu" }]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/ai_agent_startup"]
-
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["tests"]
+testpaths = ["src/agent_test/tests"]
 markers = ["integration: real local embedding and reranking models"]

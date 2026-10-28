@@ -13,15 +13,14 @@ Web 搜索由 WEB_SEARCH_TIMEOUT 限制网络等待；评估池与前台分开�
 ## BUG-19：Headless 契约（单次入口已由 FREE-09 实现）
 
 计划入口 `--prompt TEXT --json --state-dir PATH`：复用 SessionStore/SessionManager，一次输入执行至 idle/checkpoint/error，等待已授权工具收尾，刷新保存队列后退出。
-不启用 TUI、不读取键盘；无确认代理时所有写入/命令/网络确认默认拒绝，拒绝仍作为对应 tool_call_id 的工具结果反馈。禁止提供默认自动批准的 --yes-all。
+不启用 TUI、不读取键盘。Headless 默认使用 `readonly`；待确认操作立即拒绝，并作为对应 tool_call_id 的工具结果反馈。当前公开策略仅为 `readonly`、`smart`、`full_access`；只有显式选择 `full_access` 才自动批准工具确认，仍受工具开关、沙箱和路径边界约束。禁止提供默认自动批准的 `--yes-all`。
 需要自动化批准时，未来独立审批通道应校验 session_id、turn_id、tool_call_id、请求内容哈希与有效期，审批不能串会话。
 
 标准输出仅一个 JSON 对象：`version/session_id/turn_id/status/messages/metrics/error`，stderr 为诊断日志，不输出密钥；状态码 0=正常完成、2=配置或参数错误、3=检查点未完成、4=执行失败、130=取消。
 流式版本另设 `--jsonl`，事件含递增 seq、session/turn、type、payload，最终 done 事件；重连不重放工具副作用。
 现有 `main.py` 和 `--list` 保持兼容。最小验收包括 fake model 的纯文本结束、拒绝真实写入、配对结果、超时检查点、SIGINT 后持久化、无 stdout 日志污染。
 
-FREE-09 状态：`--prompt/--json/--session/--policy` 已提供，真实服务和子进程 SIGINT 已验证；默认拒绝人工确认，
-仅显式 `--policy trusted` 应用已配置范围规则。JSON messages 为本轮消息，完整历史保留磁盘；参数错误 stderr/退出 2。
+FREE-09 当前入口：`--prompt/--json/--session/--policy` 已提供。Headless 默认 `readonly`；可通过 `--policy` 指定 `readonly`、`smart` 或 `full_access`，待人工确认时拒绝，`full_access` 自动批准工具确认。JSON messages 为本轮消息，完整历史保留磁盘；参数错误 stderr/退出 2。
 `--jsonl`、审批服务和 HTTP/SSE 仍为下述设计，不宣称已提供。详见 `docs/optimization-progress.md`。
 
 ## HTTP API + SSE（仅设计）
@@ -46,7 +45,7 @@ FREE-09 状态：`--prompt/--json/--session/--policy` 已提供，真实服务�
 ## BUG-20：持续集成
 
 `.github/workflows/tests.yml` 在 PR/main push 上运行 uv sync --locked 和离线 pytest；使用 Ubuntu 22.04，安装 Bubblewrap/util-linux。
-先执行 `dev/ci_sandbox_probe.py` 的真实命名空间与资源限制探测，不支持时非零失败并说明环境限制，不静默跳过命令测试。
+先执行 `src/agent_test/scripts/ci_sandbox_probe.py` 的真实命名空间与资源限制探测，不支持时非零失败并说明环境限制，不静默跳过命令测试。
 workflow_dispatch 可显式开启真实模型集成任务；缓存公开模型和语料，以准备脚本及固定清单哈希更新缓存键。
 默认 PR 不下载模型、不调用付费 API；手动集成包含原有完整链路、strictness 配对过滤和固定公开 qrels 回归。
 本轮只在本机验证脚本及工作流静态契约，未触发远端 GitHub Actions，不把配置完成当成远端运行成功。
