@@ -22,7 +22,7 @@ WebUI 默认监听本机 `127.0.0.1:8765`。默认权限策略为 `smart`；无�
 
 ## 功能与文档
 
-- 独立原生窗口、经典 Agent 与可视化流程：[桌面 GUI](docs/desktop.md)、[Agent Flow](docs/agent-flow.md)
+- 原生桌面和 WebUI 均可使用经典 Agent 与可视化 Flow：[桌面 GUI](docs/desktop.md)、[Agent Flow](docs/agent-flow.md)
 - 工具自动管理与重复入口简化：[工具设计](docs/tool-design.md)
 
 - 多会话 CLI、子 Agent 与父子消息：[CLI 指南](docs/cli.md)、[会话工具](docs/session-tools.md)

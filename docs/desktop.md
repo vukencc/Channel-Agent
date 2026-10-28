@@ -1,6 +1,6 @@
 # 原生桌面 GUI
 
-桌面客户端使用 Qt Widgets，直接调用 AgentCore，不启动 HTTP 服务，不嵌入 WebView，也不需要浏览器。CLI 和 WebUI 保留原有入口。
+桌面客户端使用 Qt Widgets，直接调用 AgentCore，不启动 HTTP 服务，不嵌入 WebView，也不需要浏览器。WebUI 也提供 Agent 与 Flow 入口；CLI 提供会话入口。
 
 ## 启动
 

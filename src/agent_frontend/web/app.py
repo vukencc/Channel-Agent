@@ -4,6 +4,7 @@ import concurrent.futures
 import copy
 import hmac
 import json
+import uuid
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -14,6 +15,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from agent_core.core.flows import Definition, FlowService
+from agent_core.core.headless import redact_result
 
 from agent_core.api import (
     config, call_model, TOOL_SCHEMAS, ModelParameters, PERMISSION_POLICIES,
@@ -34,6 +37,20 @@ class NewSession(Arguments):
     title: str = Field(default='新会话', min_length=1, max_length=120)
     workspace_path: str | None = Field(default=None, max_length=4096)
     execution_environment: Literal['sandbox', 'local'] | None = None
+    permission_policy: Literal['readonly', 'smart', 'full_access'] | None = None
+
+
+class NewFlow(Arguments):
+    title: str = Field(default='新建Flow', min_length=1, max_length=120)
+    workspace_path: str | None = None
+    handoff: str = ''
+    execution_environment: Literal['sandbox', 'local'] | None = None
+    permission_policy: Literal['full_access', 'smart', 'readonly'] | None = None
+    model_profile: str | None = None
+
+
+class FlowRun(Arguments):
+    definition: Definition | None = None
 
 
 class Message(Arguments):
@@ -136,11 +153,19 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         current_store = store or await asyncio.to_thread(SessionStore, Path(state_dir or config.AGENT_STATE_DIR))
         app.state.manager = SessionManager(current_store, notify=app.state.updates.notify,
                                           model=model, cascade_deletions=True, observer=create_observer())
+        app.state.flows_revision = 0
+        app.state.flows_epoch = uuid.uuid4().hex
+        app.state.flow_secrets = set()
+        def flow_changed():
+            app.state.flows_revision += 1
+            app.state.updates.notify()
+        app.state.flows = FlowService(app.state.manager, on_change=flow_changed)
         app.state.locks = {}
         app.state.mutations = asyncio.Lock()
         try:
             yield
         finally:
+            await app.state.flows.shutdown()
             await app.state.updates.close()
             await app.state.manager.shutdown()
             await asyncio.to_thread(app.state.io.shutdown, wait=True)
@@ -195,9 +220,10 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
-        if request.url.path == '/api/models' or request.url.path.startswith('/api/models/'):
+        if (request.url.path == '/api/models' or request.url.path.startswith('/api/models/')
+                or request.url.path == '/api/flows' or request.url.path.startswith('/api/flows/')):
             # FastAPI's default validation includes raw input (including credential bodies).
-            return JSONResponse({'detail': '模型设置格式无效'}, status_code=422)
+            return JSONResponse({'detail': '请求格式无效'}, status_code=422)
         from fastapi.exception_handlers import request_validation_exception_handler
         return await request_validation_exception_handler(request, exc)
 
@@ -247,9 +273,45 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             result['plan'] = app.state.manager.task_plans.peek(value)
         return result
 
+    def clean_flow(value):
+        cleaned = redact_result(value)
+        for identifier in app.state.manager.model_registry.ids():
+            endpoint = app.state.manager.model_registry.resolve(identifier)
+            if endpoint is not None and len(endpoint.api_key) >= 8:
+                app.state.flow_secrets.add(endpoint.api_key)
+        def clean(item):
+            if isinstance(item, str):
+                for secret in app.state.flow_secrets:
+                    item = item.replace(secret, '[已隐藏配置密钥]')
+                return item
+            if isinstance(item, dict):
+                return {key: clean(child) for key, child in item.items()}
+            if isinstance(item, list):
+                return [clean(child) for child in item]
+            return item
+        return clean(cleaned)
+
+    def flow_summaries():
+        return clean_flow([{'id': row['id'], 'title': row['title'],
+                            'status': (row.get('run') or {}).get('status', 'idle'),
+                            'node_count': len(row['nodes']), 'revision': row['revision'],
+                            'current_node': (row.get('run') or {}).get('current_node')}
+                           for row in app.state.flows.list()])
+
+    def flow(identifier):
+        try:
+            return app.state.flows.get(identifier)
+        except (KeyError, ValueError):
+            raise HTTPException(404, 'Flow 不存在') from None
+
+    def flow_active():
+        return any(not task.done() for task in app.state.flows.tasks.values()) or bool(app.state.manager.project_reservations)
+
     def snapshot():
         return {'sessions': [summary(value) for value in app.state.manager.sessions.values()],
-                'runtime': app.state.manager.concurrency_status(), 'revision': app.state.updates.revision}
+                'runtime': app.state.manager.concurrency_status(), 'revision': app.state.updates.revision,
+                'flows': flow_summaries(), 'flows_revision': app.state.flows_revision,
+                'flows_epoch': app.state.flows_epoch}
 
     async def materialize(value):
         if isinstance(value.record, LazyRecord):
@@ -302,6 +364,16 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         future = asyncio.get_running_loop().run_in_executor(app.state.io, partial(function, *args, **kwargs))
         return await wait_for_io_completion(future)
 
+    def flow_model_check(identifier, *, deleting=False):
+        for row in app.state.flows.list():
+            profiles = {row.get('model_profile'), *(node.get('model_profile') for node in row['nodes'])}
+            if identifier in profiles:
+                if deleting:
+                    raise ValueError('Flow 仍在使用该模型，请先修改流程或节点的模型设置')
+                task = app.state.flows.tasks.get(row['id'])
+                if task is not None and not task.done():
+                    raise ValueError('Flow 运行期间不能修改其模型连接')
+
     def model_idle(identifier):
         for value in app.state.manager.sessions.values():
             if value.record.get('model_profile') == identifier and (value.busy or value.tool_workers):
@@ -316,12 +388,23 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                 audit(event, source='web_user', model_profile=identifier)
         await model_io(write)
 
+    async def flow_audit(event, identifier):
+        manager = app.state.manager
+        audit_context = ToolContext(manager.store.workspace_root, manager.store.root / 'audit.jsonl',
+                                    lambda *_: False, asyncio.Event())
+        def write():
+            with tool_context(audit_context):
+                audit(event, source='web_user', flow_id=identifier)
+        await model_io(write)
+
     @app.get('/api/models')
     async def models():
         return {'models': app.state.manager.model_registry.list_public(), 'default_model': config.MODEL}
 
     @app.post('/api/models', status_code=201)
     async def add_model(arguments: ModelSettings):
+        if len(arguments.api_key) >= 8:
+            app.state.flow_secrets.add(arguments.api_key)
         public = await model_io(app.state.manager.model_registry.add, **model_arguments(arguments))
         await model_audit('runtime_model_added', public['id'])
         app.state.updates.notify()
@@ -330,6 +413,10 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     @app.put('/api/models/{identifier}')
     async def edit_model(identifier: str, arguments: ModelSettings):
         model_idle(identifier)
+        flow_model_check(identifier)
+        clean_flow('')
+        if len(arguments.api_key) >= 8:
+            app.state.flow_secrets.add(arguments.api_key)
         public = await model_io(app.state.manager.model_registry.update, identifier, **model_arguments(arguments))
         await model_audit('runtime_model_updated', identifier)
         app.state.updates.notify()
@@ -338,12 +425,61 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     @app.delete('/api/models/{identifier}')
     async def remove_model(identifier: str):
         model_idle(identifier)
+        flow_model_check(identifier, deleting=True)
+        clean_flow('')
         if any(value.record.get('model_profile') == identifier for value in app.state.manager.sessions.values()):
             raise ValueError('会话仍在使用该模型，请先切换这些会话的模型设置')
         await model_io(app.state.manager.model_registry.delete, identifier)
         await model_audit('runtime_model_deleted', identifier)
         app.state.updates.notify()
         return {'deleted_id': identifier}
+
+    @app.get('/api/flows')
+    async def flows():
+        return {'flows': flow_summaries(), 'flows_revision': app.state.flows_revision,
+                'flows_epoch': app.state.flows_epoch}
+
+    @app.post('/api/flows', status_code=201)
+    async def new_flow(arguments: NewFlow):
+        result = app.state.flows.create(**arguments.model_dump())
+        await flow_audit('flow_created', result['id'])
+        return clean_flow(result)
+
+    @app.get('/api/flows/{identifier}')
+    async def flow_detail(identifier: str):
+        return clean_flow(flow(identifier))
+
+    @app.put('/api/flows/{identifier}')
+    async def save_flow(identifier: str, definition: Definition):
+        flow(identifier)
+        if definition.id != identifier:
+            raise HTTPException(422, 'Flow ID 不匹配')
+        result = app.state.flows.save(definition.model_dump())
+        await flow_audit('flow_save', identifier)
+        return clean_flow(result)
+
+    @app.post('/api/flows/{identifier}/run')
+    async def run_flow(identifier: str, arguments: FlowRun = FlowRun()):
+        flow(identifier)
+        if arguments.definition is not None and arguments.definition.id != identifier:
+            raise HTTPException(422, 'Flow ID 不匹配')
+        result = app.state.flows.start(identifier, arguments.definition.model_dump() if arguments.definition else None)
+        await flow_audit('flow_run', identifier)
+        return clean_flow(result)
+
+    @app.post('/api/flows/{identifier}/cancel')
+    async def cancel_flow(identifier: str):
+        flow(identifier)
+        app.state.flows.cancel(identifier)
+        await flow_audit('flow_cancel', identifier)
+        return clean_flow(flow(identifier))
+
+    @app.delete('/api/flows/{identifier}')
+    async def delete_flow(identifier: str, arguments: Consent):
+        flow(identifier)
+        app.state.flows.delete(identifier)
+        await flow_audit('flow_delete', identifier)
+        return {'flow_id': identifier}
 
     @app.get('/api/sessions')
     async def sessions():
@@ -356,11 +492,15 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     @app.get('/api/maintenance')
     async def maintenance():
         from agent_core.core.maintenance import maintenance_preview
-        return await io(maintenance_preview, app.state.manager)
+        result = await io(maintenance_preview, app.state.manager)
+        result['busy'] = result['busy'] or flow_active()
+        return result
 
     @app.post('/api/maintenance/cleanup')
     async def clear_data(arguments: Cleanup):
         from agent_core.core.maintenance import cleanup
+        if flow_active():
+            raise ValueError('Flow 仍在运行或项目预约尚未释放，请等待后清理')
         return await cleanup(app.state.manager, cache=arguments.cache,
                              logs=arguments.logs, sessions=arguments.sessions)
 
@@ -383,6 +523,8 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     @app.post('/api/sessions', status_code=201)
     async def new_session(arguments: NewSession):
         value = open_session(app.state.manager, title=arguments.title, workspace_path=arguments.workspace_path, execution_environment=arguments.execution_environment)
+        if 'permission_policy' in arguments.model_fields_set:
+            app.state.manager.set_permission_policy(value, arguments.permission_policy)
         await app.state.manager.flush()
         return summary(value)
 
@@ -434,6 +576,9 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         async with lock(identifier):
             value = session(identifier)
             idle(value)
+            app.state.manager.assert_project_available(value)
+            if app.state.manager.workspaces.identity(value) in app.state.manager.project_reservations:
+                raise ValueError('Flow 运行期间不能修改节点会话设置')
             await materialize(value)
             changes = arguments.model_fields_set
             if arguments.model_profile and not app.state.manager.model_registry.contains(arguments.model_profile):
@@ -484,6 +629,9 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         async with lock(identifier):
             value = session(identifier)
             idle(value)
+            app.state.manager.assert_project_available(value)
+            if app.state.manager.workspaces.identity(value) in app.state.manager.project_reservations:
+                raise ValueError('Flow 运行期间不能修改项目记忆')
             if len(arguments.content) > config.MEMORY_MAX_CHARS:
                 raise ValueError('记忆超过 MEMORY_MAX_CHARS')
             def write():

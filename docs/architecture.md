@@ -45,7 +45,7 @@ docs/
 
 内核的中性 instrumentation 接口负责事件作用域、span 和无操作观察器；`SessionManager(observer=...)` 接受注入的实现。默认内核不采集 Debug，即使环境变量 `DEBUG=true` 也是如此。Frontend 根据配置注入 AgentTest 的记录器。这样直接使用内核不会隐式启动诊断，关闭 Debug 的 Frontend 也能在没有 AgentTest 的安装环境中运行。
 
-Flow 定义、校验、持久化和节点执行位于 Core；原生画布位于 Frontend，Qt 不进入 Core。每个节点使用 Core 会话，并沿有向边传递项目与交接；可视化入口和使用限制见 [Agent Flow](agent-flow.md)。
+Flow 定义、校验、持久化和节点执行位于 Core；原生和 Web 画布位于 Frontend，Qt 与 Web 框架均不进入 Core。Web 状态流只携带流程摘要和修订号，选择流程后读取完整定义及运行状态。每个节点使用 Core 会话，并沿有向边传递项目与交接；可视化入口和使用限制见 [Agent Flow](agent-flow.md)。
 
 Debug 路由由 AgentTest 接收会话和存储服务后创建，沿用 `/debug`、`/api/debug` 与调试静态资源 URL。普通 WebUI 和诊断共享 Frontend 的鉴权、来源检查及请求限制。会话范围、因果标识、脱敏和按需读取语义不变。
 

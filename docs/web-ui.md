@@ -15,6 +15,14 @@ uv run --no-sync ai-agent-web
 
 WebUI 仅接受本机 Host，并拒绝跨站来源；它不是局域网部署或远程访问产品，服务启动器只允许上述回环主机。每个可写 HTTP 请求还须带 `Content-Length`，请求体上限为 1 MiB。
 
+## Agent Flow
+
+左栏新建项目可选择 Agent 或 Flow，也可打开已有 Flow。画布支持节点拖动、端口连线、检查器中的连接按钮、删除、缩放和适配；Flow、节点及运行检查器提供项目、模型、权限、交接和节点会话入口。保存、运行与停止沿用 Core 的校验和执行规则。Web Flow 随 `web` extra 提供，无需额外开关；完整操作和交接边界见 [Agent Flow 指南](agent-flow.md)。
+
+目录选择器浏览 Web 服务所在 Linux / WSL 的目录，不能把浏览器本机 Windows 目录句柄当作服务端项目；需要使用服务端可访问的 Linux 路径。
+
+Flow API 使用 `GET/POST /api/flows`、`GET/PUT/DELETE /api/flows/{id}` 及 `POST /api/flows/{id}/run`、`POST /api/flows/{id}/cancel`；运行可带 `definition`，删除请求体须为 `{"confirm": true}`。状态 SSE 提供轻量流程摘要和 `flows_revision`，选中流程后再读取完整内容。这些接口沿用 WebUI 的来源检查与请求限制。
+
 ## 首条消息出现 URL 配置错误
 
 如果发送首条消息时出现 URL 格式错误，检查 `BASE_URL`、`MODEL_FALLBACKS` 中的 `base_url`，以及仅在 `EMBEDDING_MODEL_SOURCE=API` 时使用的 `EMBEDDING_MODEL_URL`。WebUI 启动时会校验模型 URL、启用的 API 嵌入端点和代理环境；首次创建主模型或备用模型客户端时会再次校验模型 URL 和代理环境。模型 URL 或实际生效的代理变量中若有换行等控制字符，校验会失败且不会发出网络请求。代理按系统解析规则选择，同名小写变量优先于大写变量，即使小写变量为空也是如此；命中 `NO_PROXY`/`no_proxy` 的目标会绕过代理，其中独立的 `*` 表示所有目标都绕过。程序不会改写环境变量、自动清理 URL 或清除代理。请修正错误提示指出的变量，移除意外换行后重启实际运行的 WebUI 进程。

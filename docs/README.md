@@ -5,7 +5,7 @@
 ## 现行使用指南
 
 - [原生桌面 GUI](desktop.md)：不依赖浏览器的窗口、模型设置与会话操作。
-- [原生 Agent Flow](agent-flow.md)：画布编辑、项目继承、交接和运行状态。
+- [Agent Flow](agent-flow.md)：原生及 Web 画布、项目继承、交接和运行状态。
 
 - [CLI 指南](cli.md)：多会话操作、命令、持久化与确认。
 - [CLI 命令与权限模式](cli-command-modes.md)：命令选择器、权限模式和会话回收。
@@ -33,6 +33,8 @@
 - [DEBUG 因果时间线设计](debug-timeline-design.md)：总览、通信、异常、游标和指标语义。
 - [平台能力设计](platform-design.md)：跨平台、headless、API/MCP 与容器后端的设计边界。
 - [Codex 多代理](codex-multiagent.md)：本地代理配置和协作约定；技术配置以当前 Codex 配置和官方 schema 为准。
+
+- [Agent Flow 验证记录](agent-flow-validation.md)：多流程测试、修复与验证边界。
 
 ## 历史交付与诊断记录
 

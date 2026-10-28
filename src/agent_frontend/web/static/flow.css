@@ -1,0 +1,48 @@
+.flow-list { max-height: 28vh; overflow: auto; padding: 0 8px 8px; }
+.flow-active #inspector, .flow-active #inspector-resizer { display: none; }
+.flow-list-item { width: 100%; text-align: left; }
+.flow-empty { padding: 0 8px; }
+.flow-view { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.flow-view[hidden] { display: none; }
+.flow-header, .flow-project-bar, .flow-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border, #353a44); }
+.flow-header h1 { flex: 1; min-width: 0; margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.flow-actions { display: flex; gap: 6px; }
+.flow-project-bar span { flex: 1; min-width: 0; overflow-wrap: anywhere; color: #b7c1d1; }
+.flow-toolbar { flex-wrap: wrap; }
+.flow-error { margin: 8px 16px; }
+.flow-layout { display: flex; flex: 1; min-height: 0; }
+.flow-viewport { position: relative; flex: 1; min-width: 0; overflow: auto; background-color: #1d222b; background-image: radial-gradient(#46505e 1px, transparent 1px); background-size: 20px 20px; }
+.flow-stage { position: relative; overflow: hidden; }
+.flow-canvas { position: relative; }
+.flow-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.flow-edge { fill: none; stroke: #8caedc; stroke-width: 3; pointer-events: stroke; cursor: pointer; }
+.flow-edge.selected { stroke: #f5c674; stroke-width: 5; }
+.flow-edges marker path { fill: #8caedc; }
+.flow-node { position: absolute; width: 180px; min-height: 80px; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 12px 18px; background: #303844; border: 1px solid #667589; border-radius: 9px; cursor: grab; user-select: none; touch-action: none; overflow-wrap: anywhere; }
+.flow-node.selected { border-color: #a6caff; box-shadow: 0 0 0 2px #7399ca66; }
+.flow-node small { color: #acb9cb; }
+.flow-port { position: absolute; top: 32px; width: 14px; height: 14px; border: 2px solid #b8d5ff; border-radius: 50%; background: #273342; }
+.input-port { left: -8px; }.output-port { right: -8px; cursor: crosshair; }
+.flow-inspector { width: 310px; flex: 0 0 310px; min-height: 0; overflow: auto; border-left: 1px solid #353a44; background: #242932; }
+.flow-tabs { display: flex; position: sticky; top: 0; background: #242932; z-index: 1; border-bottom: 1px solid #353a44; }
+.flow-tab { flex: 1; border: 0; background: none; color: #aeb9c8; padding: 12px; cursor: pointer; }
+.flow-tab.active { color: #dbeaff; border-bottom: 2px solid #91b8ed; }
+.flow-inspector-body { padding: 14px; }
+.flow-field { margin-bottom: 13px; }
+.flow-field label { display: block; color: #bac5d5; }
+.flow-field input, .flow-field textarea, .flow-field select, .flow-inspector-body > select { display: block; width: 100%; margin-top: 5px; }
+.flow-field textarea { min-height: 100px; resize: vertical; }
+.flow-field .button { margin-top: 6px; }
+.flow-context { margin: 12px 0; }
+.flow-context summary { cursor: pointer; margin-bottom: 10px; }
+.flow-result { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; background: #1d222b; padding: 8px; border-radius: 5px; }
+.flow-inspector h4 { margin: 12px 0 4px; }
+.flow-picker .dialog-body { display: grid; gap: 8px; }
+.flow-picker .workspace-directory-list { max-height: 35vh; overflow: auto; }
+.flow-loading { padding: 24px; }
+@media (max-width: 800px) {
+  .flow-layout { flex-direction: column; overflow: auto; }
+  .flow-viewport { flex: none; height: 48vh; min-height: 260px; }
+  .flow-inspector { width: 100%; flex: none; max-height: none; border-left: 0; border-top: 1px solid #353a44; }
+  .flow-header, .flow-project-bar { flex-wrap: wrap; }
+}

@@ -344,17 +344,19 @@
     setText("connection-label", kind === "connected" ? "已连接" : kind === "offline" ? "连接中断 · 重试中" : "正在连接");
     renderComposer(); renderConnectionActions(); renderInspector();
   }
-  function scheduleSnapshot(snapshot) {
-    state.eventState = snapshot;
+  function scheduleSnapshot(snapshot, flowAuthoritative = false) {
+    state.eventState = { snapshot, flowAuthoritative: flowAuthoritative || Boolean(state.eventState?.flowAuthoritative) };
     if (!state.eventFrame) state.eventFrame = requestAnimationFrame(() => {
       state.eventFrame = null; const latest = state.eventState; state.eventState = null;
-      if (latest && state.ready) applySnapshot(latest);
+      if (latest && state.ready) applySnapshot(latest.snapshot, { flowAuthoritative: latest.flowAuthoritative });
     });
   }
   async function startEvents() {
     if (!state.ready) return;
     const generation = ++state.streamGeneration;
     state.streamAbort?.abort();
+    if (state.eventFrame) cancelAnimationFrame(state.eventFrame);
+    state.eventFrame = null; state.eventState = null;
     const controller = new AbortController(); state.streamAbort = controller;
     let watchdog;
     const armWatchdog = () => { clearTimeout(watchdog); watchdog = setTimeout(() => controller.abort(), 45000); };
@@ -366,16 +368,17 @@
       connectionStatus("connected"); connectedAt = Date.now(); armWatchdog();
       if (state.activeId) loadConversation(state.activeId, { quiet: true });
       const reader = response.body.getReader(), decoder = new TextDecoder();
-      let buffer = "", eventName = "message", dataLines = [];
+      let buffer = "", eventName = "message", dataLines = [], firstSnapshot = true;
       const dispatch = () => {
         if (dataLines.length && ["state", "message"].includes(eventName)) {
-          try { scheduleSnapshot(JSON.parse(dataLines.join("\n"))); }
+          try { scheduleSnapshot(JSON.parse(dataLines.join("\n")), firstSnapshot); firstSnapshot = false; }
           catch { /* Ignore malformed frames; a later state snapshot repairs the view. */ }
         }
         eventName = "message"; dataLines = [];
       };
       while (state.ready && generation === state.streamGeneration) {
         const { value, done } = await reader.read();
+        if (generation !== state.streamGeneration) return;
         if (done) throw new Error("实时连接已关闭。");
         armWatchdog(); buffer += decoder.decode(value, { stream: true });
         let newline;
@@ -394,8 +397,9 @@
       state.retryTimer = setTimeout(() => { if (state.ready) startEvents(); }, delay);
     } finally { clearTimeout(watchdog); }
   }
-  function applySnapshot(snapshot) {
+  function applySnapshot(snapshot, { flowAuthoritative = false } = {}) {
     if (!snapshot || !Array.isArray(snapshot.sessions)) return;
+    window.FlowUI?.snapshot(snapshot, { authoritative: flowAuthoritative });
     state.snapshotVersion++;
     const oldActive = selectedSession();
     const incoming = new Map(snapshot.sessions.filter((session) => !state.deletedIds.has(session.id)).map((session) => {
@@ -496,6 +500,7 @@
   }
   function saveDraft() { if (state.activeId) state.drafts.set(state.activeId, $("message-input").value); }
   function showWelcome() {
+    window.FlowUI?.hide();
     if ($("quick-dialog").open) $("quick-dialog").close();
     state.activeId = null; renderArchiveLink(); state.selectionGeneration++; state.planHydrationKey = null; $("welcome").hidden = false; $("conversation").hidden = true;
     sessionStorage.removeItem("agent-workspace-session"); renderSessions(); renderTabs(); renderRuntime();
@@ -503,6 +508,7 @@
   }
   function selectSession(id) {
     if (!state.sessions.has(id)) return;
+    window.FlowUI?.hide();
     if (id === state.activeId) { $("sidebar").classList.remove("mobile-open"); return; }
     if ($("quick-dialog").open) $("quick-dialog").close();
     saveDraft(); state.activeId = id; state.selectionGeneration++; state.planHydrationKey = null;
@@ -813,11 +819,22 @@
     finally { $("confirmation-allow").disabled = false; $("confirmation-deny").disabled = false; }
   }
 
-  function openNew() { $("new-title").value = ""; $("new-project-path").value = ""; $("new-execution-environment").value = ""; showError("new-error", null); $("new-dialog").showModal(); $("new-title").focus(); }
+  function updateNewMode() {
+    const flow = $("new-mode").value === "flow";
+    $("new-flow-options").hidden = !flow;
+    setText("new-dialog-title", flow ? "新建 Flow 项目" : "新建 Agent 项目");
+    setText("new-submit", flow ? "创建 Flow 项目" : "创建 Agent 项目");
+    setText("new-project-hint", flow ? "创建后也可在画布或检查器中选择目录；运行前需要已有项目。" : "创建后也可在会话设置中浏览选择目录。子 Agent 自动共享父项目文件，继承工具与权限，保留独立上下文。");
+  }
+  function openNew() { $("new-mode").value = "agent"; updateNewMode(); $("new-flow-handoff").value = ""; $("new-flow-policy").value = ""; $("new-title").value = ""; $("new-project-path").value = ""; $("new-execution-environment").value = ""; showError("new-error", null); $("new-dialog").showModal(); $("new-title").focus(); }
   async function createSession(event) {
     event.preventDefault(); $("new-submit").disabled = true; showError("new-error", null);
     try {
-      const session = await jsonApi("/api/sessions", { method: "POST", body: { title: $("new-title").value.trim() || "新会话", workspace_path: $("new-project-path").value.trim() || null, execution_environment: $("new-execution-environment").value || null } });
+      if ($("new-mode").value === "flow") {
+        const flow = await jsonApi("/api/flows", { method: "POST", body: { title: $("new-title").value.trim() || "新建Flow", workspace_path: $("new-project-path").value.trim() || null, execution_environment: $("new-execution-environment").value || null, permission_policy: $("new-flow-policy").value || null, handoff: $("new-flow-handoff").value } });
+        $("new-dialog").close(); window.FlowUI.openCreated(flow); return;
+      }
+      const session = await jsonApi("/api/sessions", { method: "POST", body: { title: $("new-title").value.trim() || "新会话", workspace_path: $("new-project-path").value.trim() || null, execution_environment: $("new-execution-environment").value || null, permission_policy: $("new-flow-policy").value || null } });
       state.sessions.set(session.id, session); $("new-dialog").close(); selectSession(session.id); renderRuntime(); focusInput();
     } catch (error) { showError("new-error", error); }
     finally { $("new-submit").disabled = false; }
@@ -1340,7 +1357,7 @@
   }
 
   const commands = [
-    { label: "新建会话", keywords: "new create session", icon: "＋", run: openNew },
+    { label: "新建项目", keywords: "new create session flow", icon: "＋", run: openNew },
     { label: "查看全部会话", keywords: "sessions list", icon: "◇", run: () => switchSidebar("sessions") },
     { label: "工作区文件", keywords: "files explorer", icon: "▤", run: () => switchSidebar("files") },
     { label: "会话设置", keywords: "settings policy model workspace permissions", icon: "⚙", requireSession: true, run: openSettings },
@@ -1356,7 +1373,7 @@
     { label: "删除当前会话…", keywords: "delete remove archive", icon: "×", requireSession: true, run: deleteSession },
   ];
   const slashCommands = [
-    { slash: "/new", label: "新建会话", run: openNew }, { slash: "/stop", label: "停止当前 Agent", run: () => stopSession() },
+    { slash: "/new", label: "新建项目", run: openNew }, { slash: "/stop", label: "停止当前 Agent", run: () => stopSession() },
     { slash: "/settings", label: "模型、权限与工具设置", run: openSettings }, { slash: "/memory", label: "查看与编辑会话记忆", run: openMemory },
     { slash: "/export", label: "导出当前会话", run: () => $("export-dialog").showModal() },
     { slash: "/files", label: "浏览工作区文件", run: () => switchSidebar("files") },
@@ -1414,6 +1431,9 @@
   $("cleanup-confirm").addEventListener("change", renderMaintenance);
   $("maintenance-dialog").addEventListener("cancel", (event) => { if (state.cleanupPending) event.preventDefault(); });
   $("new-form").addEventListener("submit", createSession);
+  $("new-mode").addEventListener("change", updateNewMode);
+  $("new-browse").addEventListener("click", () => window.FlowUI.pickDirectory({ input: $("new-project-path"), valid: () => $("new-dialog").open }));
+  window.FlowUI.init({ api: jsonApi, models: () => state.meta.models, selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
   $("refresh-sessions").addEventListener("click", refreshSessions); $("session-search").addEventListener("input", renderSessions);
   $("composer-form").addEventListener("submit", sendMessage); $("stop-agent").addEventListener("click", () => stopSession());
   $("message-input").addEventListener("input", () => { saveDraft(); resizeInput(); renderComposer(); state.slashIndex = 0; renderSlash(); });
