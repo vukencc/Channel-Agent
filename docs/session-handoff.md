@@ -1,8 +1,12 @@
 # 新会话交接说明
 
+> 2026-10-28 远端验收：功能与 CI 修复提交 `a25fc25` 已推送至 `codex/live-project-validation`。GitHub Actions [Regression tests](https://github.com/vukencc/Channel-Agent/actions/runs/40511336224) 成功，包含 locked sync、真实沙箱探针与完整非集成回归；手动集成任务按工作流条件跳过。GitHub API 核对 [PR #29](https://github.com/vukencc/Channel-Agent/pull/29) 为 open、非 draft、`mergeable=true`、`mergeable_state=clean`，main 基线为 `228575f`。尚未执行合并。此文档记录之后若有新提交，以 PR 当前 head 的检查和可合并状态为准。
+>
+> 干净源码副本的临时验收目录已在进程退出后精确清理，脱敏结果仍在本轮忽略报告目录；本机用户会话、项目、凭据和旧预览均保留。验收时工作区干净，既有项目改动及本轮功能均已提交。Flow 的真实 Core/工具与 Qt 交互由受控模型驱动验证，未额外宣称真实 provider 能力测评。
+
 > 2026-10-27 CI 隔离修复：PR #29 首轮 GitHub 回归发现 19 项失败，原因是旧测试依赖本机 `.env` 的权限/特性设置，以及 `runtime_paths.py` 启动器在 Git 索引中没有执行位。现已让确认、委派和预算测试显式声明各自前提，临时 dotenv 用例只读取自身配置；保留全部原有断言，并恢复共享工具注册表。启动器记录为 100755，未放宽运行时策略或可执行性检查。独立只读复核无确认发现，针对性回归 **226 passed、1 skipped**。
 >
-> 从修复后的 Git 索引导出干净源码副本（没有用户 `.env`，复用已锁定的现有依赖），确认源码使用默认 smart 策略后，完整非集成回归 **1551 passed、2 skipped、5 deselected（91.63 秒）**。两项跳过仍为未安装的可选 ANN extra。首次副本验收缺少测试约定的 `.venv/bin/python` 路径，补指向现有环境的链接后重跑通过，未重建环境。此修复需推送后核对新的远端检查；不要将本地通过等同于 CI 已通过。此前本轮自有 Qt 临时验收目录及进程已精确清理，脱敏截图/摘要仍保存在下述忽略目录，用户旧预览未动。
+> 从修复后的 Git 索引导出干净源码副本（没有用户 `.env`，复用已锁定的现有依赖），确认源码使用默认 smart 策略后，完整非集成回归 **1551 passed、2 skipped、5 deselected（91.63 秒）**。两项跳过仍为未安装的可选 ANN extra。首次副本验收缺少测试约定的 `.venv/bin/python` 路径，补指向现有环境的链接后重跑通过，未重建环境。此修复已推送，远端检查结果见本页最新记录；本地与远端结果分别记录。此前本轮自有 Qt 临时验收目录及进程已精确清理，脱敏截图/摘要仍保存在下述忽略目录，用户旧预览未动。
 
 > 2026-10-27 最终本地验收与提交：全部可分发的既有和本轮项目改动已提交为 `35f5057`，并以 `308a2c1` 正常合入最新 `origin/main`（七个上游提交、自动合并无剩余冲突）。主分支保持保护，沿用 PR #29；尚未直接合并 PR。合并后的最终非集成回归 **1551 passed、2 skipped、5 deselected（101.83 秒）**，两项跳过为可选 ANN extra 未安装；真实 Bubblewrap/prlimit、发布 stdlib 检查、locked sync/lock check、三包构建/资源导入均通过。删除脏 Flow 的最后回归也已包含在最终全量结果中，最终只读复核无确认缺陷。
 >
