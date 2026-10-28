@@ -677,7 +677,9 @@ class MainWindow(QMainWindow):
         if current_flow:
             self.title_label.setText(current_flow['title'])
             self.title_label.setToolTip(html.escape(current_flow['title']))
-            self.workspace_label.setText(current_flow.get('workspace_path') or '项目与 Handoff 沿箭头方向传递')
+            project_path = self.flow_panel.draft().get('workspace_path')
+            self.workspace_label.setText(f'流程项目：{project_path}' if project_path
+                                         else '在下方选择项目，也可为起点节点单独设置')
             self.workspace_label.setToolTip(html.escape(self.workspace_label.text()))
             self.activity_dock.hide()
             flow_status = (current_flow.get('run') or {}).get('status', 'idle')

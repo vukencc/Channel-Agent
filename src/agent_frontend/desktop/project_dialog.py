@@ -2,11 +2,12 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QVBoxLayout,
+    QDialog, QDialogButtonBox, QFormLayout, QLabel,
+    QLineEdit, QToolButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from .theme import ChoiceBox, icon
+from .theme import ChoiceBox
+from .project_picker import ProjectPicker
 
 
 class ProjectDialog(QDialog):
@@ -35,15 +36,9 @@ class ProjectDialog(QDialog):
         self.mode.setCurrentIndex(max(0, self.mode.findData(mode)))
         self.title = QLineEdit('新项目')
         self.title.setMaxLength(120)
-        self.workspace = QLineEdit()
+        self.project_picker = ProjectPicker(self)
+        self.workspace = self.project_picker.path_edit
         self.workspace.setPlaceholderText('已有 Linux 项目目录；可稍后在设置中选择')
-        workspace_row = QHBoxLayout()
-        workspace_row.setContentsMargins(0, 0, 0, 0)
-        workspace_row.addWidget(self.workspace, 1)
-        browse = QPushButton('选择')
-        browse.setIcon(icon('folder', size=16))
-        browse.clicked.connect(self._browse)
-        workspace_row.addWidget(browse)
         self.environment = ChoiceBox()
         for label, value in [('使用默认环境', None), ('隔离沙箱', 'sandbox'), ('Linux 本机', 'local')]:
             self.environment.addItem(label, value)
@@ -52,17 +47,28 @@ class ProjectDialog(QDialog):
             self.policy.addItem(label, value)
         form.addRow('模式', self.mode)
         form.addRow('名称', self.title)
-        form.addRow('项目目录', workspace_row)
+        form.addRow('项目目录', self.project_picker)
         form.addRow('执行环境', self.environment)
         form.addRow('权限模式', self.policy)
         layout.addLayout(form)
-        self.handoff_label = QLabel('初始 Handoff')
+        self.context_toggle = QToolButton()
+        self.context_toggle.setText('可选补充背景')
+        self.context_toggle.setCheckable(True)
+        self.context_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        layout.addWidget(self.context_toggle)
+        self.context_area = QWidget()
+        context_layout = QVBoxLayout(self.context_area)
+        context_layout.setContentsMargins(0, 0, 0, 0)
+        self.handoff_label = QLabel('项目背景（可选）')
         self.handoff = QTextEdit()
         self.handoff.setAcceptRichText(False)
-        self.handoff.setPlaceholderText('现状、已完成工作、验证方式和下一步。节点运行前会先阅读这份交接。')
+        self.handoff.setPlaceholderText('补充项目现状、已有工作或验证方式。')
         self.handoff.setMinimumHeight(80)
-        layout.addWidget(self.handoff_label)
-        layout.addWidget(self.handoff, 1)
+        context_layout.addWidget(self.handoff_label)
+        context_layout.addWidget(self.handoff)
+        layout.addWidget(self.context_area)
+        self.context_toggle.toggled.connect(self._context_changed)
+        self.handoff.textChanged.connect(self._expand_existing_context)
         self.error = QLabel()
         self.error.setObjectName('error')
         self.error.setWordWrap(True)
@@ -84,15 +90,18 @@ class ProjectDialog(QDialog):
 
     def _mode_changed(self, *_):
         flow = self.mode.currentData() == 'flow'
-        self.handoff_label.setVisible(flow)
-        self.handoff.setVisible(flow)
-        self.description.setText('将 AgentCore 节点拖入画布，用箭头传递同一项目与交接。运行前选择已有项目。'
+        self.context_toggle.setVisible(flow)
+        self._context_changed(self.context_toggle.isChecked())
+        self.description.setText('上游完成后会自动把结果和待办交给下游，无需手填。运行前选择已有项目。'
                                  if flow else '使用经典对话完成任务，项目目录可留空以使用默认工作区。')
 
-    def _browse(self):
-        directory = QFileDialog.getExistingDirectory(self, '选择已有项目', self.workspace.text())
-        if directory:
-            self.workspace.setText(directory)
+    def _context_changed(self, checked):
+        self.context_toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self.context_area.setVisible(checked and self.mode.currentData() == 'flow')
+
+    def _expand_existing_context(self):
+        if self.handoff.toPlainText():
+            self.context_toggle.setChecked(True)
 
     def accept(self):
         if not self.title.text().strip():

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import math
+import os
+from pathlib import PurePosixPath
 import uuid
 
 from PySide6.QtCore import QMimeData, QPointF, QRectF, QSignalBlocker, Qt, Signal
@@ -10,10 +12,12 @@ from PySide6.QtGui import QColor, QDrag, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QComboBox, QFormLayout, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
     QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QSizePolicy, QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .theme import ChoiceBox
+from .project_picker import ProjectPicker
+from . import project_picker
 
 
 STATUS_LABELS = {
@@ -274,6 +278,15 @@ class FlowPanel(QWidget):
         header.addWidget(self.heading, 1)
         header.addWidget(self.status)
         root.addLayout(header)
+        project_row = QHBoxLayout()
+        self.project_summary = _label('未选择项目')
+        self.project_summary.setWordWrap(True)
+        self.project_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.project_button = QPushButton('选择项目')
+        self.project_button.clicked.connect(self._choose_project)
+        project_row.addWidget(self.project_summary, 1)
+        project_row.addWidget(self.project_button)
+        root.addLayout(project_row)
         controls = QHBoxLayout()
         self.add_button = AddNodeButton('添加 AgentCore')
         self.save_button = QPushButton('保存')
@@ -293,12 +306,12 @@ class FlowPanel(QWidget):
         body.addWidget(self.inspector)
         self.flow_fields = self._make_form([
             ('名称', 'title', 'line'), ('项目目录', 'workspace_path', 'line'),
-            ('初始 Handoff', 'handoff', 'text'), ('执行环境', 'execution_environment', 'environment'),
+            ('项目背景（可选）', 'handoff', 'text'), ('执行环境', 'execution_environment', 'environment'),
             ('权限模式', 'permission_policy', 'policy'), ('模型', 'model_profile', 'model')])
         self.node_fields = self._make_form([
-            ('名称', 'title', 'line'), ('初始提示', 'prompt', 'text'),
-            ('项目目录（留空继承）', 'workspace_path', 'line'), ('Handoff', 'handoff', 'text'),
-            ('Handoff 文件相对路径', 'handoff_file', 'line'), ('模型', 'model_profile', 'model')])
+            ('名称', 'title', 'line'), ('节点指令', 'prompt', 'text'),
+            ('项目目录', 'workspace_path', 'line'), ('补充背景（可选）', 'handoff', 'text'),
+            ('已有交接文件（可选）', 'handoff_file', 'line'), ('模型', 'model_profile', 'model')])
         self.prompt_edit = self.node_fields['prompt']
         result_scroll = QScrollArea()
         result_scroll.setWidgetResizable(True)
@@ -331,8 +344,29 @@ class FlowPanel(QWidget):
         form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         layout.addLayout(form)
+        explanation = _label('上游完成后会自动把结果和待办交给下游，无需手填。')
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        toggle = QToolButton()
+        toggle.setText('可选补充背景')
+        toggle.setCheckable(True)
+        toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        layout.addWidget(toggle)
+        context = QWidget()
+        context_form = QFormLayout(context)
+        context_form.setContentsMargins(0, 0, 0, 0)
+        context_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        layout.addWidget(context)
+        toggle.toggled.connect(lambda checked: (context.setVisible(checked), toggle.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)))
+        context.hide()
+        toggle.setArrowType(Qt.ArrowType.RightArrow)
         fields = {}
         is_node = hasattr(self, 'flow_fields')
+        if is_node:
+            self.node_context_toggle = toggle
+        else:
+            self.flow_context_toggle = toggle
         for caption, key, kind in rows:
             if kind == 'text':
                 field = QTextEdit()
@@ -340,7 +374,19 @@ class FlowPanel(QWidget):
                 field.setMinimumHeight(90)
                 if key == 'handoff':
                     field.setMaximumHeight(130)
+                elif key == 'prompt':
+                    field.setPlaceholderText('定义这个节点的职责与要完成的任务。')
+                    field.setMaximumHeight(130)
                 field.textChanged.connect(lambda k=key, f=field, n=is_node: self._field_changed(k, f.toPlainText(), n))
+            elif key == 'workspace_path':
+                picker = ProjectPicker(guard=lambda n=is_node: self._picker_token(n))
+                field = picker.path_edit
+                field.setPlaceholderText('留空继承上游或 Flow 项目' if is_node else '选择已有项目目录')
+                field.textChanged.connect(lambda value, k=key, n=is_node: self._field_changed(k, value, n))
+                if is_node:
+                    self.node_project_picker = picker
+                else:
+                    self.flow_project_picker = picker
             elif kind == 'line':
                 field = QLineEdit()
                 field.textChanged.connect(lambda value, k=key, n=is_node: self._field_changed(k, value, n))
@@ -355,7 +401,20 @@ class FlowPanel(QWidget):
                     field.addItem(label, value)
                 field.currentIndexChanged.connect(lambda _, k=key, f=field, n=is_node: self._field_changed(k, f.currentData(), n))
             fields[key] = field
-            form.addRow(_label(caption), field)
+            target_form = context_form if key in ('handoff', 'handoff_file') else form
+            if key == 'workspace_path' and is_node:
+                project_container = QWidget()
+                project_layout = QVBoxLayout(project_container)
+                project_layout.setContentsMargins(0, 0, 0, 0)
+                project_layout.setSpacing(8)
+                project_layout.addWidget(picker)
+                self.node_project_summary = _label('留空时继承项目')
+                self.node_project_summary.setWordWrap(True)
+                self.node_project_summary.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                project_layout.addWidget(self.node_project_summary)
+                target_form.addRow(_label(caption), project_container)
+            else:
+                target_form.addRow(_label(caption), picker if key == 'workspace_path' else field)
         layout.addStretch()
         scroll.setWidget(container)
         self.inspector.addTab(scroll, '节点' if is_node else 'Flow')
@@ -387,6 +446,80 @@ class FlowPanel(QWidget):
     def _mark_dirty(self) -> None:
         self._dirty = True
         self._refresh_header()
+        self._refresh_projects()
+
+    def _picker_token(self, node: bool):
+        if not self._flow or self.running or (node and not self._selected):
+            return None
+        return (self._flow.get('id'), self._selected if node else None)
+
+    def _choose_project(self) -> None:
+        token = self._picker_token(False)
+        if token is None:
+            return
+        directory = project_picker.choose_project_directory(self, str(self._flow.get('workspace_path') or ''))
+        if directory and token == self._picker_token(False):
+            self.flow_fields['workspace_path'].setText(directory)
+
+    def _refresh_projects(self) -> None:
+        path = str(self._flow.get('workspace_path') or '')
+        if path:
+            summary = f'流程默认项目：{os.path.basename(path.rstrip("/")) or path}\n{path}'
+        else:
+            targets = {edge.get('target') for edge in self._flow.get('edges', [])}
+            roots = [node for node in self._flow.get('nodes', []) if node.get('id') not in targets]
+            if roots and all(node.get('workspace_path') for node in roots):
+                summary = '流程默认项目：未选择项目；起点已有节点项目，运行前由 Core 校验。'
+            else:
+                summary = '流程默认项目：未选择项目；也可为起点单独设置项目。'
+        self.project_summary.setText(summary)
+        self.project_button.setText('更换项目' if path else '选择项目')
+        if not self._selected or self._selected not in self.nodes:
+            self.node_project_summary.setText('留空时继承项目')
+            return
+        incoming = {}
+        for edge in self._flow.get('edges', []):
+            incoming.setdefault(edge.get('target'), []).append(edge.get('source'))
+
+        memo = {}
+        visiting = set()
+
+        def resolve(key):
+            if key in memo:
+                return memo[key]
+            if key in visiting or key not in self.nodes:
+                return None, '项目继承存在循环或无效节点'
+            visiting.add(key)
+            node = self.nodes[key].data
+            parents = incoming.get(key, [])
+            own = str(node.get('workspace_path') or '')
+            candidate = own or (path if not parents else '')
+            parsed = PurePosixPath(candidate) if candidate else None
+            # 这里只预览 Linux 路径语法；实际目录、身份与授权仍由 Core 校验。
+            invalid = parsed is not None and (not parsed.is_absolute() or '..' in parsed.parts
+                                              or parsed.anchor == '//')
+            if invalid:
+                result = None, '项目路径不合法：请选择绝对目录，不能包含 .. 或以 // 开头。'
+            elif not parents:
+                value = str(parsed) if parsed is not None else ''
+                result = (value, '本节点' if own else 'Flow') if value else (None, '尚未选择项目')
+            else:
+                results = [resolve(parent) for parent in parents]
+                if any(not value for value, _ in results):
+                    result = None, next(reason for value, reason in results if not value)
+                else:
+                    values = {value for value, _ in results}
+                    normalized_own = str(parsed) if own else ''
+                    if len(values) != 1 or (own and normalized_own not in values):
+                        result = None, '项目冲突，请检查本节点及上游项目'
+                    else:
+                        result = (normalized_own, '本节点') if own else (results[0][0], '上游')
+            visiting.remove(key)
+            memo[key] = result
+            return result
+
+        value, source = resolve(self._selected)
+        self.node_project_summary.setText(f'生效项目（{source}）：\n{value}' if value else source)
 
     def _field_changed(self, key, value, node) -> None:
         if self._loading or self.running or not self._flow:
@@ -470,6 +603,8 @@ class FlowPanel(QWidget):
                     self._selected = selected_id
                 self._fill_fields(self.flow_fields, self._flow)
                 self._fill_fields(self.node_fields, selected.data if selected else {})
+                self.flow_context_toggle.setChecked(bool(self._flow.get('handoff')))
+                self.node_context_toggle.setChecked(bool(selected and (selected.data.get('handoff') or selected.data.get('handoff_file'))))
         finally:
             self._loading = False
 
@@ -484,6 +619,9 @@ class FlowPanel(QWidget):
         self.save_button.setEnabled(bool(self._flow) and not running)
         self.run_button.setEnabled(bool(self._flow))
         self.run_button.setText('停止' if running else '运行')
+        self.project_button.setEnabled(bool(self._flow) and not running)
+        self.flow_project_picker.browse_button.setEnabled(bool(self._flow) and not running)
+        self.node_project_picker.browse_button.setEnabled(bool(self._flow) and not running and bool(self._selected))
         for item in self.nodes.values():
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not running)
             item.update()
@@ -493,6 +631,7 @@ class FlowPanel(QWidget):
                     field.setReadOnly(not enabled)
                 else:
                     field.setEnabled(enabled)
+        self._refresh_projects()
         self._show_result()
 
     def _selection_changed(self) -> None:
@@ -502,6 +641,7 @@ class FlowPanel(QWidget):
         self._selected = selected.data['id'] if selected else None
         self._loading = True
         self._fill_fields(self.node_fields, selected.data if selected else {})
+        self.node_context_toggle.setChecked(bool(selected and (selected.data.get('handoff') or selected.data.get('handoff_file'))))
         self._loading = False
         if selected:
             results = (self._flow.get('run') or {}).get('nodes', {})
@@ -512,7 +652,7 @@ class FlowPanel(QWidget):
         run = self._flow.get('run') or {}
         result = run.get('nodes', {}).get(self._selected, {})
         parts = []
-        for title, key in [('状态', 'status'), ('项目目录', 'workspace_path'), ('输入 Handoff', 'received_handoff'), ('输出 Handoff', 'output_handoff'), ('错误', 'error')]:
+        for title, key in [('状态', 'status'), ('项目目录', 'workspace_path'), ('输入交接', 'received_handoff'), ('输出交接', 'output_handoff'), ('错误', 'error')]:
             if result.get(key):
                 value = _status_text(result[key]) if key == 'status' else result[key]
                 parts.append(f"{title}：\n{value}")
