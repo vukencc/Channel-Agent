@@ -2,14 +2,14 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-03，当前任务为整理阶段文档，并按用户要求提交全部现有代码、测试与文档，发起 PR。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留全部已有改动；使用入口见 [快速上手](getting-started.md)，功能与限制见 [阶段状态](project-status.md)，按主题查 [文档索引](README.md)。
+截至 2026-11-03，阶段文档已整理，全部既有代码、测试与文档已提交并推送，已发起 [PR #35](https://github.com/vukencc/Channel-Agent/pull/35)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留全部已有改动；使用入口见 [快速上手](getting-started.md)，功能与限制见 [阶段状态](project-status.md)，按主题查 [文档索引](README.md)。
 
 ## 当前工作与 Git
 
 - 旧 PR #29 已合并。其后本地积累的 Flow 项目隔离、画布、创作与上下文修复均属于本次提交范围；排除凭据、用户状态和生成产物。
 - 已将旧分支安全快进到 `origin/main` 的 `032c062`，只更新上游 `uv.lock`，完整保留未提交改动；本次分支为 `codex/flow-milestone-docs`。
 - 文档整理新增入门与阶段总结，并将旧交接移到 [历史会话交接](session-history.md)。历史报告保留失败和验证边界，当前指南优先。
-- 功能代码、用例和回归已提交为 `f2f5419`；文档将在独立提交中交付。推送与 PR/CI 状态须在实际完成后更新，不能把本地通过当成远端通过。
+- 功能代码、用例和回归提交为 `f2f5419`，阶段文档为 `32014ac`；已推送 `origin/codex/flow-milestone-docs`。PR #35 目标 `main`，创建后检查无合并冲突；本交接提交同步 PR 位置，不合并 PR。CI 的当前结果请读取 PR 检查，不能把本地通过当成远端通过。
 
 ## 实现边界
 
@@ -44,6 +44,7 @@
 - Node：`/home/elaine_vuken/.nvm/versions/node/v24.21.0/bin/node`，非登录 shell 需将此目录加入 PATH。不要仅查 Windows PATH 就宣布 Node 不存在。
 - 根目录执行 `uv sync --locked --extra web --extra desktop`，随后 `uv run --no-sync ...` 保留已安装的可选依赖；`.env` 只在不存在时从样例创建。
 - 非集成回归显式设置 `COMMAND_EXECUTION_ENVIRONMENT=sandbox` 与 `QT_QPA_PLATFORM=offscreen`；工具变化还需真实 `python -m agent_test.scripts.ci_sandbox_probe`。实际界面检查、真实模型与受控 fixture 必须分别记录。
+- 此次 WSL Git 推送挂起，宿主 Git 原代理 `127.0.0.1:7892` 不可用；最终通过宿主 Git 的既有认证，以单次 `-c http.proxy=http://127.0.0.1:7890` 和 HTTP/1.1 完成推送。只对该仓库设置单次 `safe.directory`，没有更改全局 Git、系统代理或用户凭据。
 
 ## 数据与协作约束
 
