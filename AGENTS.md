@@ -4,6 +4,8 @@
 
 Read [docs/session-handoff.md](docs/session-handoff.md), then [docs/README.md](docs/README.md) and the relevant current guide. Run `git status --short`, `git branch --show-current`, and `git log --oneline -5` before editing. This checkout contains substantial uncommitted work; preserve it. Source code and current guides take precedence over historical reports. Do not reset, clean, switch to an old tag, or re-create the environment to recover missing context.
 
+For product onboarding, see [docs/getting-started.md](docs/getting-started.md); the dated capability and validation summary is [docs/project-status.md](docs/project-status.md). Keep current guidance separate from historical evidence.
+
 ## Layout and Development
 
 - `src/agent_core/`: runtime core, tools and RAG; no UI or Debug implementation imports. `src/agent_test/`: diagnostic adapters and Debug UI. `src/agent_frontend/`: CLI, WebUI and application composition. See `docs/architecture.md`.

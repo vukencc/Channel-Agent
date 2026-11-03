@@ -1,10 +1,12 @@
 # Docker 使用指南
 
+> 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
+
 GHCR 上的 `v0.2.1` 是已发布镜像，只包含该 tag 的代码，不包含当前工作树里的未提交功能。本文本次更新没有拉取或实机验收该发布镜像。需要运行当前源码时，从工作树本地构建；只有构建上下文中实际包含的文件会进入镜像。构建参数 `GIT_SHA` 标记当前提交，不表示工作树干净或涵盖未提交差异。
 
-## 快速开始（开包即用）
+## 快速开始
 
-### 方式 A：从 GHCR 拉取（推荐给其他人）
+### 方式 A：拉取已发布的 GHCR 版本
 
 ```bash
 if [ ! -f .env ]; then cp .env.example .env; fi  # 首次运行创建后填写 OPENCODE_API_KEY 等
@@ -94,6 +96,8 @@ docker run --rm --env-file .env \
 docker run --rm ai-agent-startup:v0.2.1 --platform
 ```
 
+直接运行 `docker run` 的示例未添加 Compose 的 seccomp 设置；需要隔离命令时，请按下文探针检查并按需添加 `--security-opt seccomp=unconfined`。
+
 ## 模型缓存与知识库
 
 RAG 首次使用会下载本地模型（约数 GB 量级）。复用宿主已有缓存可避免重复下载：
@@ -140,7 +144,7 @@ docker compose -f docker/docker-compose.yml run --rm agent --prompt "只回复�
 
 Compose 的 headless 调用同样默认为 `readonly`；确有写入需求时，应显式指定 `--policy full_access` 并检查沙箱与路径限制。
 
-需要命令沙箱时取消 `docker/docker-compose.yml` 中 `security_opt` 的注释，并用探针验证。
+Compose 已设置 `seccomp=unconfined`；仍需用探针验证宿主是否支持命令沙箱。不需要命令工具时可自行注释该设置，以恢复 Docker 默认 seccomp。
 
 ## 保存、分发与发布
 

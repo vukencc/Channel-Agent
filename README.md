@@ -1,8 +1,8 @@
 # AI Agent Startup
 
-Python 3.12+ 的 Agent 项目，提供原生桌面 GUI、全屏 CLI、本机 WebUI、多 Agent 会话、混合 RAG、结构化上下文与可选监督器、运行调试。工具执行受权限确认、沙箱和审计约束；详细配置与开发入口见[文档索引](docs/README.md)。
+一个基于 Python 3.12+ 的本地 Agent 工作区，提供对话、工具执行、多 Agent 协作、Flow 画布和混合 RAG。可选择原生桌面 GUI、浏览器 WebUI 或终端 CLI；模型请求需要自行配置可用的模型服务。
 
-新会话接手本地工作状态，请先读[会话交接说明](docs/session-handoff.md)。
+在 Linux 或 WSL 中运行；原生界面需要图形会话（WSL 使用 WSLg），CLI 需要交互终端。Windows 的 WSL 仓库请在 WSL 内运行 Linux 的 uv 和 Python。[快速上手](docs/getting-started.md)介绍安装 uv、配置模型、启动和创建第一个 Flow。
 
 ## 安装与启动
 
@@ -12,7 +12,7 @@ if [ ! -f .env ]; then cp .env.example .env; fi
 uv run --no-sync ai-agent-gui
 ```
 
-`.env` 不存在时才从模板创建，再填写模型服务凭据。已有 `.env` 保持不变。原生 GUI 直接连接内核，不启动浏览器。CLI 仍使用 `uv run --no-sync ai-agent-startup`。`--extra web` 保留 WebUI 依赖；启动 WebUI：
+`.env` 不存在时才从模板创建，可填写模型服务配置；桌面和 Web 也可通过“模型管理”添加连接。已有 `.env` 保持不变。原生 GUI 直接连接内核，不启动浏览器。CLI 使用 `uv run --no-sync ai-agent-startup`。`--extra web` 保留 WebUI 依赖；启动 WebUI：
 
 ```bash
 uv run --no-sync ai-agent-web
@@ -20,10 +20,16 @@ uv run --no-sync ai-agent-web
 
 WebUI 默认监听本机 `127.0.0.1:8765`。默认权限策略为 `smart`；无交互的 headless 任务默认为 `readonly`。权限模式、确认和沙箱边界见[配置说明](docs/configuration.md)与[沙箱说明](docs/sandbox.md)。
 
-## 功能与文档
+## 主要概念与文档
+
+- **Agent 会话**：与模型对话并使用工具；子 Agent 可共享父会话的项目工作区。
+- **Flow 模板**：用节点和连线描述任务及交接，可独立编辑和分享。设计助手生成模板但不执行节点。
+- **Flow 项目**：选择已有工作区并使用模板副本；运行前必须选择有效目录。节点各有会话，共享项目，按拓扑串行执行。
+
+[阶段状态](docs/project-status.md)说明已验证内容与质量边界。
 
 - 原生桌面和 WebUI 均可使用经典 Agent 与可视化 Flow：[桌面 GUI](docs/desktop.md)、[Agent Flow](docs/agent-flow.md)
-- 工具自动管理与重复入口简化：[工具设计](docs/tool-design.md)
+- 经典 Agent 工具自动管理、Flow 节点工具配置与重复入口简化：[工具设计](docs/tool-design.md)
 
 - 多会话 CLI、子 Agent 与父子消息：[CLI 指南](docs/cli.md)、[会话工具](docs/session-tools.md)
 - 本机浏览器界面与只读运行调试：[WebUI 指南](docs/web-ui.md)、[DEBUG 运行调试](docs/debug-runtime.md)

@@ -1,18 +1,20 @@
 # 发布与版本冻结
 
+> 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
+
 ## 版本与标签
 
 - tag 命名 `v<major>.<minor>.<patch>`，使用注解 tag（`git tag -a`）；**tag 一旦推送不再移动**。
 - `main` 是模板/稳定分支，受保护，只通过 PR 合入。
 - 每个 tag 对应一个可运行基线，变更记录写入 `CHANGELOG.md`。
-- 发布版本先更新 `pyproject.toml`、`uv.lock` 与 `CHANGELOG.md`，经 PR 合入 `main`；tag 版本须与包版本及变更记录标题一致。
+- 发布版本先更新根及三个模块的 `pyproject.toml`、模块间精确依赖、`uv.lock` 与 `CHANGELOG.md`，经 PR 合入 `main`；tag 版本须与全部包版本及变更记录标题一致。开发分支的未发布功能见 [阶段状态](project-status.md)，不能假定已有镜像包含它们。
 - 标签工作流要求 tag 为 `vN.N.N` 格式、注解 tag，且目标提交已位于 `origin/main`。已推送的 tag 不移动。
 - 发布镜像由标签工作流构建，镜像标注 `org.opencontainers.image.revision` 关联提交。
 
 ## 发布清单
 
-1. 更新 `pyproject.toml` 和 `uv.lock` 中的包版本，并在 `CHANGELOG.md` 添加对应版本标题及内容；通过 PR 合入 `main`，不要直接 push `main`。
-2. `git fetch origin`，再快进本地 `main` 到 `origin/main`，确认工作区干净：
+1. 同步根和 `src/agent_core/`、`src/agent_test/`、`src/agent_frontend/` 中的包版本及精确模块依赖，运行 `uv lock`；在 `CHANGELOG.md` 添加对应版本标题。通过 PR 合入 `main`，不要直接 push `main`。
+2. 确认没有待保留的未提交改动，再拉取和快进本地 `main`；有开发工作时先完成交付或使用独立工作区，不能重置或清理：
 
    ```bash
    git fetch origin
@@ -22,10 +24,10 @@
    ```
 
 3. 确认版本号严格匹配 `vN.N.N`，且与 `pyproject.toml`、`uv.lock` 的包版本和 `CHANGELOG.md` 对应标题一致；工作流还会检查注解 tag 及提交是否位于 `origin/main`。
-4. `uv sync --locked` 成功。
-5. `uv run pytest -m 'not integration' -q` 全绿。
-6. `uv run python -m agent_test.scripts.ci_sandbox_probe` 通过（Linux）。
-7. 可选：`RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=<parquet> uv run pytest -m integration -q`。
+4. `uv sync --locked --extra web --extra desktop` 成功，与发布 CI 的依赖选择一致；Linux 安装 Bubblewrap、util-linux 和 Qt 系统库。
+5. `QT_QPA_PLATFORM=offscreen COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m 'not integration' -q` 全绿。
+6. `uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe` 通过（Linux），分别构建三个 wheel 并核对静态资源，见[架构](architecture.md)。
+7. 可选：按 [RAG 指南](rag.md) 准备模型/语料，再运行 `RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet uv run --no-sync pytest -m integration -q`。记录未测或跳过项，不把包版本校验当成业务验收。
 8. 创建并推送注解 tag；不要直接推送 `main`：
 
    ```bash
@@ -38,7 +40,7 @@
 
 ## 回滚
 
-- 代码：从目标 tag 开修复分支（`git switch -c fix/xxx vX.Y.Z~` 或对应 tag），修复后按补丁版本发布。
+- 代码：在干净的独立工作区从明确选择的目标 tag 开修复分支（如 `git switch -c codex/release-repair vX.Y.Z`），修复后经 PR 按补丁版本发布。
 - 数据：`.agent/`、`crud_tests/`、`.cache/` 不在版本控制内，回滚前先导出备份；不要用旧版覆盖新数据目录。
 - 镜像：使用上一版本 tag 或 `docker save` 归档恢复。
 

@@ -1,5 +1,7 @@
 # CLI 命令与权限模式
 
+> 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
+
 ## 命令输入与选择
 
 在 CLI 输入 `/` 可浏览命令补全及参数提示，按 Tab 接受补全。Ctrl+P 打开命令搜索面板；使用上下键选择，Enter 执行或填入参数命令，Esc 返回。`/sessions` 和别名 `/resume` 搜索恢复会话（含已隐藏会话）；`/models` 搜索模型预设；`/permissions` 搜索权限模式。选择器均支持文字搜索。

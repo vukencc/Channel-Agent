@@ -1,6 +1,6 @@
-> 历史报告，不作为当前使用规范；保留当时的问题描述和实测结果。当前说明见[当前调试与上下文指南](debug-runtime.md)。
-
 # DEBUG 时间线交付报告
+
+> 文档类型：历史报告 · [当前阶段状态](project-status.md) · [文档导航](README.md)。保留当时的结果与失败；旧路径和本地产物不作为当前使用要求。 相关现行指南：[当前调试与上下文指南](debug-runtime.md)。
 
 验收日期：2026-10-15。已完成实现、回归测试、真实工具执行与浏览器验收。
 
@@ -49,7 +49,7 @@
 - 1440 px 桌面与 450 px 窄屏正常；窄屏工具栏无外部横向溢出，时间线内部可横向浏览。
 - 验证主子轨道、通信、工具展开与真实结果详情；暂停时画面停留在 133 个事件，后台继续到 197 个事件，恢复后补齐。
 - 验证缩放及重启后的代号切换与旧详情清理；最终浏览器控制台 **0 error、0 warning**。
-- 截图：[桌面](../.cache/reports/debug-timeline-desktop-133258.png)、[窄屏](../.cache/reports/debug-timeline-mobile-133258.png)。
+- 截图：桌面（历史本地产物：`.cache/reports/debug-timeline-desktop-133258.png`，不随仓库分发）、窄屏（历史本地产物：`.cache/reports/debug-timeline-mobile-133258.png`，不随仓库分发）。
 
 ## 性能数据
 
@@ -61,7 +61,7 @@
 | 512 条通信事件 | 0.631 / 1.604 ms | 0.299 / 1.260 ms |
 | 10000 条普通事件 | 1.836 / 2.574 ms | 1.765 / 2.461 ms |
 
-通信场景中位耗时降低约 83.9%。这是视图数据计算基准，**不是 DOM 绘制、浏览器帧率或整个模型任务的耗时**。原始数据：[优化前](../.cache/reports/debug-timeline-perf-6c03dfcdccda4fcda06662aa187b26ea.json)、[优化后](../.cache/reports/debug-timeline-perf-867a0954c09e4595963bdb87b024f63b.json)。
+通信场景中位耗时降低约 83.9%。这是视图数据计算基准，**不是 DOM 绘制、浏览器帧率或整个模型任务的耗时**。原始数据：优化前（历史本地产物：`.cache/reports/debug-timeline-perf-6c03dfcdccda4fcda06662aa187b26ea.json`，不随仓库分发）、优化后（历史本地产物：`.cache/reports/debug-timeline-perf-867a0954c09e4595963bdb87b024f63b.json`，不随仓库分发）。
 
 ## 概览密度更新（2026-10-15）
 
@@ -71,7 +71,7 @@
 
 浏览器 fixture 通过 `uv run python scripts/debug_timeline_validation.py --rounds 20` 启动，脚本使用受控模型回调，会实际执行工具、子任务和通信，监督器外部连接在脚本进程中显式关闭。参数范围为 1–100，状态使用临时目录。本轮 20 轮执行产生 2742 条事件、40 条父子消息，两个 Agent 的默认场景总高为 300 px。验证了聚合展开、28 次调用的两页列表、具体调用真实结果、Agent 筛选后的双端消息、收起恢复概览；450 px 窄屏无页面横向溢出，控制台 0 error / 0 warning。临时服务已关闭。
 
-截图：[整体概览](../.cache/reports/debug-overview-desktop-165156.png)、[局部详情](../.cache/reports/debug-overview-details-165156.png)、[窄屏](../.cache/reports/debug-overview-mobile-165156.png)。
+截图：整体概览（历史本地产物：`.cache/reports/debug-overview-desktop-165156.png`，不随仓库分发）、局部详情（历史本地产物：`.cache/reports/debug-overview-details-165156.png`，不随仓库分发）、窄屏（历史本地产物：`.cache/reports/debug-overview-mobile-165156.png`，不随仓库分发）。
 
 概览计算微基准在相同 Node v24.21.0 fixture 下执行 9 轮、预热 2 轮：
 
@@ -80,7 +80,7 @@
 | 500 个工具批次 | 2.362 / 2.954 ms | 2.602 / 3.382 ms |
 | 2500 个工具批次 | 26.102 / 33.054 ms | 11.023 / 13.343 ms |
 
-小输入的测量略慢，大输入改善；这些数据仅描述该用例下的视图计算，不代表浏览器 FPS、DOM 绘制或所有规模都更快。可复现命令：`node .cache/reports/debug-timeline-overview-bench.cjs before` 与 `after`。脚本保留旧布局算法，报告含源文件指纹；记录见 [优化前](../.cache/reports/debug-timeline-overview-before.json) 与 [优化后](../.cache/reports/debug-timeline-overview-after.json)。
+小输入的测量略慢，大输入改善；这些数据仅描述该用例下的视图计算，不代表浏览器 FPS、DOM 绘制或所有规模都更快。可复现命令：`node .cache/reports/debug-timeline-overview-bench.cjs before` 与 `after`。脚本保留旧布局算法，报告含源文件指纹；记录见 优化前（历史本地产物：`.cache/reports/debug-timeline-overview-before.json`，不随仓库分发） 与 优化后（历史本地产物：`.cache/reports/debug-timeline-overview-after.json`，不随仓库分发）。
 
 新增 `tests/test_debug_timeline_overview.py` 的 **9 项测试通过**，覆盖密集事件布局、完整成员、分支/通信/指标、分页、实时更新、确认计时和空闲边界；修复前已运行失败复现。最终验证：
 

@@ -6,9 +6,9 @@
 
 <!-- 列出实际执行的命令和结果；未执行的检查说明原因。 -->
 
-- [ ] `uv sync --locked --extra web`
-- [ ] `uv run pytest -m 'not integration' -q`
-- [ ] `uv run python -m agent_test.scripts.ci_sandbox_probe`（Linux）
+- [ ] `uv sync --locked --extra web --extra desktop`
+- [ ] `QT_QPA_PLATFORM=offscreen COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m 'not integration' -q`
+- [ ] `uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe`（Linux）
 
 ## 配置与发布影响
 

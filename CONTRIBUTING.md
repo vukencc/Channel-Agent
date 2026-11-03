@@ -1,5 +1,7 @@
 # 贡献指南
 
+首次使用先读[快速上手](docs/getting-started.md)，了解项目后再读[三模块架构](docs/architecture.md)。本页说明开发、验证与 PR 的最短流程；阶段成果和已知边界见[阶段状态](docs/project-status.md)。
+
 ## 准备环境
 
 项目要求 Python 3.12+。从仓库根目录安装锁定依赖（含 WebUI 可选依赖），只在 `.env` 不存在时创建本地配置：
@@ -9,11 +11,12 @@ uv sync --locked --extra web --extra desktop
 if [ ! -f .env ]; then cp .env.example .env; fi
 ```
 
-填写模型服务凭据后，可启动全屏 CLI 或本机 WebUI：
+在 Linux/WSL 中运行；WSL checkout 不使用 Windows uv/Python。原生 GUI 需图形会话及 Qt 系统库，WebUI 无需 Node 构建；依赖与排障见[桌面指南](docs/desktop.md)和[快速上手](docs/getting-started.md)。填写模型服务凭据后，选择一个入口：
 
 ```bash
 uv run --no-sync ai-agent-startup
 uv run --no-sync ai-agent-web
+uv run --no-sync ai-agent-gui
 ```
 
 CLI 支持 headless 单次任务：`uv run --no-sync ai-agent-startup --prompt "任务" --json --policy readonly`；`--platform` 只报告平台能力。Headless 默认 `readonly`，待确认操作会拒绝。可用选项以 `uv run --no-sync ai-agent-startup --help` 为准。
@@ -22,7 +25,7 @@ CLI 支持 headless 单次任务：`uv run --no-sync ai-agent-startup --prompt "
 
 开始前检查当前分支和工作区，保留已有未提交改动与用户数据。不要为了开始工作切回旧 tag；在当前基线状态上创建主题分支，或使用独立 clone/worktree。合并到 `main` 通过 PR，不直接 push 或 force push。分支和发布约定见[发布说明](docs/release.md)。
 
-建议使用 `feat/`、`fix/`、`perf/`、`docs/`、`ci/`、`chore/` 前缀。提交信息用简短前缀说明行为，例如：
+人工贡献可使用 `feat/`、`fix/`、`perf/`、`docs/`、`ci/`、`chore/` 前缀；Codex 按根 [AGENTS.md](AGENTS.md) 使用 `codex/<topic>`。提交信息用简短前缀说明行为，例如：
 
 ```text
 feat: 支持命名知识库过滤
@@ -36,7 +39,7 @@ chore: 更新依赖锁定
 ## 验证
 
 ```bash
-COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m 'not integration' -q
+QT_QPA_PLATFORM=offscreen COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m 'not integration' -q
 COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest src/agent_test/tests/test_command.py -q
 uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe
 ```
@@ -47,7 +50,9 @@ uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe
 RUN_RAG_INTEGRATION=1 RAG_QUALITY_CORPUS=/path/to/corpus.parquet COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m integration -q
 ```
 
-CI 和常用脚本位于 `src/agent_test/scripts/`，不是 `docs/dev/`。测试、安全边界和配置细节见[文档索引](docs/README.md)。
+Node 用于 Web/Debug 的 JavaScript 回归；WSL 中应检查 Linux/nvm PATH。真实 RAG 模型测试与付费模型业务验证分别准备环境，不把离线 fixture 当成真实调用。CI 和常用脚本位于 `src/agent_test/scripts/`；`docs/dev/` 不随 clone 分发。测试、安全边界和配置细节见[文档索引](docs/README.md)。
+
+新缺陷先用 `src/agent_test/tests/test_<feature>.py` 复现，再修复；工具测试复用 `sandbox_env`，文件使用 `tmp_path`。文档变更检查本地链接、示例命令与实际入口，历史报告保留当时结果，勿以旧数字代替本次验证。三个模块的构建与资源检查见[架构说明](docs/architecture.md)。
 
 ## Pull Request
 
