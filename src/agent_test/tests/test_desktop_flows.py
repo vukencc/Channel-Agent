@@ -2,6 +2,9 @@
 import asyncio
 import copy
 import json
+import os
+import sys
+import threading
 import time
 
 import pytest
@@ -22,7 +25,8 @@ def wait(app, predicate, seconds=8, diagnostic=None):
         app.processEvents()
         if predicate():
             return
-        QTest.qWait(10)
+        # Qt 事件处理后主动让出 Python 线程，避免后台运行时被测试等待循环饿死。
+        time.sleep(0.01)
     assert predicate(), f'等待 Flow 窗口超时：{diagnostic() if diagnostic else "无运行状态"}'
 
 
@@ -48,9 +52,39 @@ def test_flow_wait_reports_terminal_failure_immediately(monkeypatch):
         'status': 'failed', 'error': '受控错误', 'current_node': 'first',
         'nodes': {'first': {'status': 'failed', 'error': '节点错误'}},
     }}}})()
-    monkeypatch.setattr(QTest, 'qWait', lambda _: pytest.fail('终态不应继续等待'))
+    monkeypatch.setattr(time, 'sleep', lambda _: pytest.fail('终态不应继续等待'))
     with pytest.raises(AssertionError, match='受控错误.*节点错误'):
         wait_for_completed_flow(app, window)
+
+
+def test_wait_allows_background_python_thread_to_progress():
+    app = QApplication.instance() or QApplication([])
+    affinity = os.sched_getaffinity(0) if hasattr(os, 'sched_getaffinity') else None
+    previous_interval = sys.getswitchinterval()
+    started, proceed, done = threading.Event(), threading.Event(), threading.Event()
+
+    def worker():
+        started.set()
+        proceed.wait()
+        done.set()
+
+    thread = None
+    try:
+        if affinity is not None:
+            os.sched_setaffinity(0, {min(affinity)})
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert started.wait(1)
+        sys.setswitchinterval(10)
+        proceed.set()
+        wait(app, done.is_set, seconds=0.5)
+    finally:
+        sys.setswitchinterval(previous_interval)
+        proceed.set()
+        if thread is not None:
+            thread.join(timeout=1)
+        if affinity is not None:
+            os.sched_setaffinity(0, affinity)
 
 
 @pytest.fixture

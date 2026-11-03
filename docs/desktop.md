@@ -43,6 +43,8 @@ uv run --no-sync ai-agent-gui --state-dir /绝对路径/独立状态目录
 
 右侧设计助手支持多轮设计；节点检查器可设置工具、模型和推理，画布支持便携模板导入导出，具体边界见上述指南。
 
+运行状态与操作确认采用后台当前快照；完成后的面板状态在延迟操作确认返回后保持一致。
+
 ## 模块边界
 
 界面与线程桥接在 `src/agent_frontend/desktop/`。Qt 主线程只接收 JSON 快照和操作结果，Core 管理器由后台 asyncio 循环独占。Debug 记录器仍由 AgentTest 提供，原生 GUI 不把调试实现搬回内核。

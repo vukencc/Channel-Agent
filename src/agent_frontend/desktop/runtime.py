@@ -381,6 +381,9 @@ class RuntimeBridge(QObject):
             else:
                 raise ValueError('未知 Flow 操作。')
             await asyncio.to_thread(self._audit, action, flow_id=result.get('id', flow_id))
+            if action in ('flow_run', 'flow_cancel'):
+                # 审计期间运行可能已推进；确认应反映后台最新快照。
+                result = self._flows.get(flow_id)
             if result.get('project_id'):
                 result['project'] = self._projects.get(result['project_id'])
             return result

@@ -31,7 +31,12 @@
 
 PR 首轮 CI `41658238961` 出现 8 failed、1810 passed、7 skipped、5 deselected（177.22 秒）。6 项为冻结客服夹具的 CRLF/LF 原始哈希差异：现在仅归一 CRLF 后以 Git LF blob 指纹校验，原始报告哈希保留，数据和业务标准不改；7 项新增回归验证等价换行通过、其他字节变更失败。取消回归的固定 0.1 秒等待在受控慢保存下复现失败，现用有界事件同步，补普通/受阻保存两分支及真实排空断言。桌面 8 秒超时在隔离环境连续 10 次未复现，根因仍未知，只加终态与节点诊断和 1 项回归，不改期限或成功断言。三项修订均经只读复核。
 
-修订后禁用 `.env`、隔离全部测试路径的最终全量回归 **1833 passed、2 skipped、5 deselected（121.01 秒）**；真实隔离探针再通过。客服验收器 40 项、Core Flow 19 项、桌面 Flow 12 项聚焦通过，取消同步另 20 次独立运行合计 80 passed。当前工程验证以本段为准，首轮失败记录保留在本次本地报告，远端结果查看 PR 检查。
+首次 CI 修订后禁用 `.env`、隔离全部测试路径的全量回归 **1833 passed、2 skipped、5 deselected（121.01 秒）**；真实隔离探针再通过。客服验收器 40 项、Core Flow 19 项、桌面 Flow 12 项聚焦通过，取消同步另 20 次独立运行合计 80 passed。首轮失败记录保留在本次本地报告。
+
+
+第二轮 CI `41661036459` 为 1 failed、1827 passed、7 skipped、5 deselected（134.61 秒），仅余桌面 8 秒超时；新增诊断显示 first completed、next running 且两次模型回调已到。受控单核/线程切换实验复现测试等待泵阻碍后台线程推进，改为 `processEvents` 后主动 `time.sleep(.01)`，保留 8 秒期限和原断言；新真实线程回归覆盖，临时线程配置均恢复。该实验不证明 CI 使用了相同线程参数。
+
+同时独立复现生产竞态：运行审计等待期间先发布 completed，迟到的 queued 操作确认使面板倒退，而 window.state 仍 completed。桌面桥接在 run/cancel 审计后重读权威快照，受控真实 Core/Bridge 回归先失败后通过；此修复不能作为 window.state 超时的解释。最终新增 12 项回归，隔离完整回归 **1835 passed、2 skipped、5 deselected（110.73 秒）**，相关 Qt offscreen **14 passed**，Frontend wheel 已重建。只读复核无发现；本次无可见窗口/窄屏交互验证。当前工程验证以本段为准，远端最新结果查看 PR 检查。
 
 - [设计助手与客服实测](agent-flow-designer-customer-validation-2026-11-03.md)：五轮真实 Flow 中第 05 轮全部节点 completed，但原业务静态验收 562 通过、1 失败，语义另发现人工尝试增造。后续服务→人工定向执行和人工反馈修订后，14 服务/6 人工语义通过；没有新版五节点全量鲜跑，不能将旧失败追认为通过。
 - [创作功能验证](agent-flow-authoring-validation-2026-11-02.md)：区分真实 provider 设计、受控模型界面与实际 Chromium/WSLg 检查。
