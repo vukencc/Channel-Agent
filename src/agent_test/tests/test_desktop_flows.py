@@ -16,14 +16,41 @@ from agent_frontend.desktop.runtime import RuntimeBridge
 from agent_frontend.desktop.window import MainWindow
 
 
-def wait(app, predicate, seconds=8):
+def wait(app, predicate, seconds=8, diagnostic=None):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         app.processEvents()
         if predicate():
             return
         QTest.qWait(10)
-    assert predicate(), '等待 Flow 窗口超时'
+    assert predicate(), f'等待 Flow 窗口超时：{diagnostic() if diagnostic else "无运行状态"}'
+
+
+def wait_for_completed_flow(app, window):
+    def run_state():
+        return (window.state.get('selected_flow') or {}).get('run') or {}
+
+    def diagnostic():
+        run = run_state()
+        nodes = {key: {'status': node.get('status'), 'error': node.get('error')}
+                 for key, node in run.get('nodes', {}).items()}
+        return {'status': run.get('status'), 'error': run.get('error'),
+                'current_node': run.get('current_node'), 'nodes': nodes}
+
+    wait(app, lambda: run_state().get('status') in {'completed', 'failed', 'cancelled'},
+         diagnostic=diagnostic)
+    assert run_state().get('status') == 'completed', f'Flow 未完成：{diagnostic()}'
+
+
+def test_flow_wait_reports_terminal_failure_immediately(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = type('Window', (), {'state': {'selected_flow': {'run': {
+        'status': 'failed', 'error': '受控错误', 'current_node': 'first',
+        'nodes': {'first': {'status': 'failed', 'error': '节点错误'}},
+    }}}})()
+    monkeypatch.setattr(QTest, 'qWait', lambda _: pytest.fail('终态不应继续等待'))
+    with pytest.raises(AssertionError, match='受控错误.*节点错误'):
+        wait_for_completed_flow(app, window)
 
 
 @pytest.fixture
@@ -81,7 +108,7 @@ def test_flow_creation_run_handoff_and_classic_mode_are_independent(flow_desktop
     flow = create_flow(app, window, bridge, project)
     assert window.workspace_stack.currentWidget() is window.flow_page
     bridge.request('flow_run', flow_id=flow['id'], definition=flow)
-    wait(app, lambda: (window.state.get('selected_flow', {}).get('run') or {}).get('status') == 'completed')
+    wait_for_completed_flow(app, window)
     run = window.state['selected_flow']['run']
     assert '初始交接' in run['nodes']['first']['received_handoff']
     assert 'next-step' in run['nodes']['next']['received_handoff']

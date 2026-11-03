@@ -1,4 +1,5 @@
 """独立验收器受控变异回归；不调用模型，不代表真实业务产物。"""
+import hashlib
 import json
 from pathlib import Path
 
@@ -98,6 +99,43 @@ def test_controlled_case_retains_pending_semantics(controlled_case):
     assert report['business_passed'] is None
     assert len(report['semantic_review_pending']) == 30
     assert report['execution_type'] == 'controlled_validator_fixture'
+
+
+@pytest.mark.parametrize('newline', [b'\n', b'\r\n'])
+def test_expected_fingerprint_accepts_checkout_line_endings(controlled_case, tmp_path, newline):
+    """同一冻结内容的 LF/CRLF 检出形式均须通过完整受控验收。"""
+    canonical = controlled_case['expected_path'].read_bytes().replace(b'\r\n', b'\n')
+    assert hashlib.sha256(canonical).hexdigest() == '465a0869b2bfbca983d60601733b855293425166c29dff95411832b99e94c219'
+    expected_path = tmp_path / 'expected.json'
+    expected_path.write_bytes(canonical.replace(b'\n', newline))
+    report = validate(**{**controlled_case, 'expected_path': expected_path})
+    assert report['all_static_checks_passed'], [c for c in report['checks'] if not c['passed']]
+    assert report['expected_sha256'] == hashlib.sha256(expected_path.read_bytes()).hexdigest()
+    assert report['expected_canonical_sha256'] == hashlib.sha256(canonical).hexdigest()
+    assert report['business_passed'] is None
+
+
+@pytest.mark.parametrize('mutation', ['business_content', 'space', 'bare_cr', 'bom', 'final_newline'])
+def test_expected_fingerprint_rejects_other_byte_changes(controlled_case, tmp_path, mutation):
+    """仅归一 CRLF；业务内容、格式和其他字节变化均不能绕过冻结。"""
+    canonical = controlled_case['expected_path'].read_bytes().replace(b'\r\n', b'\n')
+    if mutation == 'business_content':
+        changed = canonical.replace(b'"technical"', b'"service"', 1)
+    elif mutation == 'space':
+        changed = b' ' + canonical
+    elif mutation == 'bare_cr':
+        changed = canonical.replace(b'\n', b'\r', 1)
+    elif mutation == 'bom':
+        # JSON 字符串中的 BOM 仍是合法 JSON，必须由冻结校验拒绝。
+        changed = b'{"marker": "\xef\xbb\xbf",' + canonical.lstrip()[1:]
+    else:
+        changed = canonical.rstrip(b'\n') if canonical.endswith(b'\n') else canonical + b'\n'
+    assert changed != canonical
+    expected_path = tmp_path / 'mutated-expected.json'
+    expected_path.write_bytes(changed)
+    report = validate(**{**controlled_case, 'expected_path': expected_path})
+    assert not report['all_static_checks_passed']
+    assert any(c['name'] == 'expected_frozen_sha256' and not c['passed'] for c in report['checks'])
 
 
 @pytest.mark.parametrize(('node', 'path', 'allowed'), [

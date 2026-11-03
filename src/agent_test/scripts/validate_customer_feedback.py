@@ -8,7 +8,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
-EXPECTED_SHA = '81f8c1d4c9842951a441b6e27c655b8f485597947afc5c39d525a230f7b1a08e'
+# 冻结 Git blob 的 LF 字节；检出时仅允许 CRLF/LF 差异，不解析或重排 JSON。
+EXPECTED_SHA = '465a0869b2bfbca983d60601733b855293425166c29dff95411832b99e94c219'
 
 
 def pair_messages(messages: list[dict]) -> tuple[list[dict], list[str]]:
@@ -102,8 +103,9 @@ def validate(*, workspace: Path, expected_path: Path, feedback_path: Path,
     if not isinstance(exp, dict) or not isinstance(exp.get('items'), list):
         return {'all_static_checks_passed': False, 'checks': checks, 'failed_checks': max(1, len(checks))}
     expected = {x['id']: x for x in exp['items']}
-    check('expected_frozen_sha256', digest(expected_path) == expected_sha256,
-          digest(expected_path))
+    expected_canonical_sha256 = hashlib.sha256(expected_path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+    check('expected_frozen_sha256', expected_canonical_sha256 == expected_sha256,
+          expected_canonical_sha256)
     out = workspace / 'outputs'
     groups: dict[str, dict] = {}
     target_ids = {
@@ -257,7 +259,8 @@ def validate(*, workspace: Path, expected_path: Path, feedback_path: Path,
     for source in (knowledge).glob('*.md'):
         check('knowledge_unchanged:' + source.name, (runtime_knowledge / source.name).is_file() and digest(source) == digest(runtime_knowledge / source.name))
     return {'execution_type': execution_type, 'validation_type': 'static_independent_validation', 'input_contract_version': 1,
-            'expected_sha256': digest(expected_path), 'checks': checks,
+            'expected_sha256': digest(expected_path), 'expected_canonical_sha256': expected_canonical_sha256,
+            'checks': checks,
             'passed_checks': sum(x['passed'] for x in checks), 'failed_checks': sum(not x['passed'] for x in checks),
             'all_static_checks_passed': all(x['passed'] for x in checks), 'citations': citation_details,
             'semantic_review_required': True,

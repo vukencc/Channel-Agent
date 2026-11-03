@@ -29,6 +29,10 @@
 
 本次检查 68 份 Markdown、413 个本地链接与 16 份 TOML/锁配置；三个 wheel 的 161 个源码/资源哈希匹配。修复可选质量测试遗留的 `scripts.rag.quality` 模块路径，正确模块为 `agent_test.scripts.rag.quality`；先复现旧入口 ModuleNotFoundError，再验证新入口 help 与 4 项离线测试。首次独立缓存在线 build 遇 PyPI TLS EOF，随后复用已有构建依赖离线成功，未更改锁文件或放松校验。所有 2419 个既有用户文件哈希保持，独立只读交付审查未发现问题。
 
+PR 首轮 CI `41658238961` 出现 8 failed、1810 passed、7 skipped、5 deselected（177.22 秒）。6 项为冻结客服夹具的 CRLF/LF 原始哈希差异：现在仅归一 CRLF 后以 Git LF blob 指纹校验，原始报告哈希保留，数据和业务标准不改；7 项新增回归验证等价换行通过、其他字节变更失败。取消回归的固定 0.1 秒等待在受控慢保存下复现失败，现用有界事件同步，补普通/受阻保存两分支及真实排空断言。桌面 8 秒超时在隔离环境连续 10 次未复现，根因仍未知，只加终态与节点诊断和 1 项回归，不改期限或成功断言。三项修订均经只读复核。
+
+修订后禁用 `.env`、隔离全部测试路径的最终全量回归 **1833 passed、2 skipped、5 deselected（121.01 秒）**；真实隔离探针再通过。客服验收器 40 项、Core Flow 19 项、桌面 Flow 12 项聚焦通过，取消同步另 20 次独立运行合计 80 passed。当前工程验证以本段为准，首轮失败记录保留在本次本地报告，远端结果查看 PR 检查。
+
 - [设计助手与客服实测](agent-flow-designer-customer-validation-2026-11-03.md)：五轮真实 Flow 中第 05 轮全部节点 completed，但原业务静态验收 562 通过、1 失败，语义另发现人工尝试增造。后续服务→人工定向执行和人工反馈修订后，14 服务/6 人工语义通过；没有新版五节点全量鲜跑，不能将旧失败追认为通过。
 - [创作功能验证](agent-flow-authoring-validation-2026-11-02.md)：区分真实 provider 设计、受控模型界面与实际 Chromium/WSLg 检查。
 - [设备借用验证](agent-flow-equipment-validation-2026-10-31.md)与 [画布验证](agent-flow-canvas-validation-2026-10-31.md)：保存多节点任务、业务断言及浏览器检查边界。早期 [客服实测](agent-flow-customer-service-validation-2026-11-02.md) 的业务缺陷仍保留。

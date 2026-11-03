@@ -23,3 +23,7 @@
 `expected.json` 的 `required_facts` 是人工语义验收标准，不建议逐字子串匹配。`required_doc_ids` 对应8条初答的硬性服务政策依据；6条立即转人工记录的该字段与 `required_clause_ids` 为空，政策背景移至非硬性 `optional_policy_notes`。`ops` 只用于技术反馈。退款、账户、人工升级相关边界是硬性条件，不能仅用平均准确率抵消失败。
 
 CF-016、CF-022、CF-027、CF-030 的 `routing_rule` 单独记录 SUP-02 辅助分流规则；这些记录 `required_facts` 中与是否误升级相关的事实，从 `decision` 和人工队列判断，不要求客户答复复述分流理由、检索或引用SUP-02。各自发票、席位、导出和账户的业务政策仍须真实RAG支持并完整回答；CF-018新需求登记的SUP-03仍是必需政策依据。
+
+## 冻结文件与换行
+
+Git 将文本规范化为 LF。验收器的 `expected_frozen_sha256` 只在冻结校验前将 CRLF 替换为 LF，再与仓库冻结指纹比较；不会解析重排 JSON、删除空格或修正业务值。`expected_sha256` 仍报告原始文件字节，`expected_canonical_sha256` 报告用于冻结比较的字节指纹。历史实测中的原始 CRLF 哈希保持原记录，不能拿不同换行的原始哈希直接比较内容是否改变。固定分类、政策、引用和升级标准保持不变，除 CRLF/LF 等价外的字节变更必须失败。
