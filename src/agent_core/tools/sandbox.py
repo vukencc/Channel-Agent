@@ -68,6 +68,8 @@ class ToolContext:
     session_id: str | None = None
     root_identity: tuple[int, int] | None = None
     execution_environment: str | None = None
+    flow_workspace_scope: bool = False
+    protected_paths: tuple[Path, ...] = ()
 
 
 _context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)

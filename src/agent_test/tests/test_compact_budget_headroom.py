@@ -162,11 +162,12 @@ def test_existing_archive_budget_can_shrink_view_without_new_summary_or_write(bu
         service = HistoryContext(manager, supervisor=supervisor)
         messages = [{'role': 'system', 'content': 'Keep permissions.'},
                     {'role': 'user', 'content': 'Continue task.'}, *_tool_group(0, 20000)]
-        schemas = [{'description': '摘' * 4200 + 's' * 16300}]
+        schemas = [{'description': '摘' * 4200 + 's' * 16300},
+                   {'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}]
         runtime = '态' * 1500
         try:
             # Establish a full durable summary before later fixed overhead tightens the window.
-            _, first = await service.prepare(session, messages, schemas=[], runtime='')
+            _, first = await service.prepare(session, messages, schemas=[schemas[1]], runtime='')
             assert first['compacted']
             manifest = service.cache[session.id]
             assert len(manifest['session_summary']) == config.CONTEXT_SUMMARY_CHARS
@@ -175,7 +176,7 @@ def test_existing_archive_budget_can_shrink_view_without_new_summary_or_write(bu
                       for path in directory.rglob('*') if path.is_file()}
             calls = supervisor.summary_calls
             fixed = service._compose(messages, {**manifest, 'session_summary': '',
-                'working_summary_chars': 0, 'working_reference_count': 0}, [], [], 1, runtime, '')
+                'working_summary_chars': 0, 'working_reference_count': 0}, [], [], 1, runtime, '', schemas)
             fixed_metrics = service._metrics(fixed, schemas, messages[1], messages)
             monkeypatch.setattr(config, 'MODEL_INPUT_TOKENS', math.ceil(
                 (fixed_metrics['sent_tokens'] + fixed_metrics['reserved_tokens']) / .99))

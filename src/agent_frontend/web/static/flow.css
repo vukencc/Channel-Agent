@@ -1,20 +1,27 @@
 .flow-list { max-height: 28vh; overflow: auto; padding: 0 8px 8px; }
 .flow-active #inspector, .flow-active #inspector-resizer { display: none; }
 .flow-list-item { width: 100%; text-align: left; }
+.flow-sidebar-actions { display: flex; gap: 6px; padding: 0 8px 8px; }
+.flow-sidebar-actions .button { min-width: 0; }
 .flow-empty { padding: 0 8px; }
 .flow-view { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .flow-view[hidden] { display: none; }
-.flow-header, .flow-project-bar, .flow-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border, #353a44); }
-.flow-header h1 { flex: 1; min-width: 0; margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.flow-header, .flow-controls { display: flex; align-items: center; gap: 12px; flex: none; padding: 7px 12px; border-bottom: 1px solid var(--border, #353a44); }
+.flow-header h1 { flex: 1; min-width: 0; margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flow-actions { display: flex; gap: 6px; }
-.flow-project-bar span { flex: 1; min-width: 0; overflow-wrap: anywhere; color: #b7c1d1; }
-.flow-toolbar { flex-wrap: wrap; }
+/* 项目和画布工具共用第二行；窄窗口只滚动此行，不挤占画布高度。 */
+.flow-controls { overflow-x: auto; }
+.flow-project-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 280px; }
+.flow-project-bar strong, .flow-project-bar .button { flex: none; white-space: nowrap; }
+.flow-project-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b7c1d1; }
+.flow-toolbar { display: flex; align-items: center; gap: 6px; flex: none; border-left: 1px solid var(--border, #353a44); padding-left: 12px; }
+.flow-controls .button { min-height: 32px; padding: 6px 10px; }
 .flow-error { margin: 8px 16px; }
 .flow-layout { display: flex; flex: 1; min-height: 0; }
 .flow-viewport { position: relative; flex: 1; min-width: 0; overflow: auto; background-color: #1d222b; background-image: radial-gradient(#46505e 1px, transparent 1px); background-size: 20px 20px; }
-.flow-stage { position: relative; overflow: hidden; }
+.flow-stage { position: relative; min-width: 100%; min-height: 100%; overflow: hidden; }
 .flow-canvas { position: relative; }
-.flow-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.flow-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .flow-edge { fill: none; stroke: #8caedc; stroke-width: 3; pointer-events: stroke; cursor: pointer; }
 .flow-edge.selected { stroke: #f5c674; stroke-width: 5; }
 .flow-edges marker path { fill: #8caedc; }
@@ -24,6 +31,7 @@
 .flow-port { position: absolute; top: 32px; width: 14px; height: 14px; border: 2px solid #b8d5ff; border-radius: 50%; background: #273342; }
 .input-port { left: -8px; }.output-port { right: -8px; cursor: crosshair; }
 .flow-inspector { width: 310px; flex: 0 0 310px; min-height: 0; overflow: auto; border-left: 1px solid #353a44; background: #242932; }
+.flow-inspector[hidden] { display: none; }
 .flow-tabs { display: flex; position: sticky; top: 0; background: #242932; z-index: 1; border-bottom: 1px solid #353a44; }
 .flow-tab { flex: 1; border: 0; background: none; color: #aeb9c8; padding: 12px; cursor: pointer; }
 .flow-tab.active { color: #dbeaff; border-bottom: 2px solid #91b8ed; }
@@ -35,14 +43,28 @@
 .flow-field .button { margin-top: 6px; }
 .flow-context { margin: 12px 0; }
 .flow-context summary { cursor: pointer; margin-bottom: 10px; }
+.flow-tool-choice { display: flex; align-items: center; gap: 7px; margin: 6px 0; overflow-wrap: anywhere; }
+.flow-designer-panel { display: flex; flex: 0 0 310px; width: 310px; min-width: 0; min-height: 0; flex-direction: column; gap: 10px; padding: 14px; border-left: 1px solid #353a44; background: #242932; }
+.flow-designer-header { display: flex; align-items: center; gap: 6px; }
+.flow-designer-header h2 { flex: 1; min-width: 0; margin: 0; font-size: 16px; }
+.flow-designer-placeholder { flex: 1; min-width: 0; padding: 24px; color: #b7c1d1; }
+.flow-designer-history { flex: 1; overflow: auto; }
+.flow-designer-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-designer-panel textarea { min-height: 80px; resize: vertical; }
+.flow-designer-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+.flow-designer-controls select { min-width: 0; max-width: 100%; }
 .flow-result { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; background: #1d222b; padding: 8px; border-radius: 5px; }
 .flow-inspector h4 { margin: 12px 0 4px; }
 .flow-picker .dialog-body { display: grid; gap: 8px; }
 .flow-picker .workspace-directory-list { max-height: 35vh; overflow: auto; }
 .flow-loading { padding: 24px; }
 @media (max-width: 800px) {
+  .flow-actions { overflow-x: auto; }
+  .flow-actions .button { flex: none; }
   .flow-layout { flex-direction: column; overflow: auto; }
   .flow-viewport { flex: none; height: 48vh; min-height: 260px; }
   .flow-inspector { width: 100%; flex: none; max-height: none; border-left: 0; border-top: 1px solid #353a44; }
-  .flow-header, .flow-project-bar { flex-wrap: wrap; }
+  .flow-designer-panel { width: 100%; flex: none; min-height: 360px; max-height: 55vh; border-left: 0; border-top: 1px solid #353a44; }
 }
+
+.flow-edge-preview { fill: none; stroke: #a6caff; stroke-width: 3; stroke-dasharray: 7 5; pointer-events: none; }

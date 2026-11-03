@@ -21,7 +21,7 @@ from agent_core.core.session_limits import limit as session_limit, context_budge
 from agent_core.core.log import get_logger
 from agent_core.core.context import estimate_tokens, request_tokens
 from agent_core.core.messages import PackMessage
-from agent_core.core.model_settings import active_endpoint, active_profile
+from agent_core.core.model_settings import active_endpoint, active_profile, active_reasoning_effort, active_thinking_mode
 from agent_core.core.tool_settings import selected_schemas
 from agent_core.core.budgets import BudgetExceeded, active_budget, reserve_request, settle_request
 from agent_core.tools import all_schemas
@@ -72,12 +72,14 @@ def endpoint_client(endpoint):
     if 'api_key' in endpoint:
         config.validate_proxy_environment()
         return AsyncOpenAI(api_key=key, base_url=base_url,
+                           default_headers={'x-opencode-session': str(uuid.uuid4())},
                            max_retries=0, timeout=config.TIMEOUT)
     identity = (base_url, key)
     with _client_lock:
         if identity not in _fallback_clients:
             config.validate_proxy_environment()
             _fallback_clients[identity] = AsyncOpenAI(api_key=key, base_url=base_url,
+                default_headers={'x-opencode-session': str(uuid.uuid4())},
                 max_retries=0, timeout=config.TIMEOUT)
         client = _fallback_clients[identity]
         client.chat.completions
@@ -195,13 +197,21 @@ def model_options() -> dict:
     """Explicit provider options; do not silently retry with different semantics."""
     runtime = active_endpoint.get()
     if runtime is not None:
-        return runtime.options()
-    options = dict(config.MODEL_PARAMETERS)
-    options.update(selected_profile().get('parameters', {}))
-    if config.REASONING_EFFORT and config.THINKING_MODE != "disabled":
-        options['reasoning_effort'] = config.REASONING_EFFORT
-    if config.THINKING_MODE != "auto":
-        options['extra_body'] = {'thinking': {'type': config.THINKING_MODE}}
+        options = runtime.options()
+    else:
+        options = dict(config.MODEL_PARAMETERS)
+        options.update(selected_profile().get('parameters', {}))
+    effort = active_reasoning_effort.get()
+    mode = active_thinking_mode.get()
+    if runtime is None:
+        effort = config.REASONING_EFFORT if effort is None else effort
+        mode = config.THINKING_MODE if mode is None else mode
+    if mode == 'disabled':
+        options.pop('reasoning_effort', None)
+    elif effort:
+        options['reasoning_effort'] = effort
+    if mode and mode != 'auto':
+        options['extra_body'] = {**options.get('extra_body', {}), 'thinking': {'type': mode}}
     return options
 
 

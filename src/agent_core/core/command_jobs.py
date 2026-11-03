@@ -90,6 +90,8 @@ class CommandJobs:
         detail = f'{command}\n后台时限 {timeout:g}s；联网={network}'
         detail += (f'\n执行环境：Linux 本机；工作目录：{context.root}；本机网络含 localhost；不施加沙箱资源限额'
                    if local else f'\n运行时档位：{runtime_profile}，虚拟地址空间上限：{memory_mb} MiB')
+        if local and context.flow_workspace_scope:
+            detail += '\n写入范围：Flow 项目工作区；localhost 服务仍可能代理宿主操作'
         if network and not local:
             detail += f'；白名单={config.COMMAND_NETWORK_ALLOWLIST}'
         if not ask_permission('start_command_job', detail, reason, command=command, force_confirmation=True):

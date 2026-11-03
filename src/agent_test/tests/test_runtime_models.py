@@ -22,6 +22,46 @@ def registry(tmp_path):
     return RuntimeModelRegistry(tmp_path)
 
 
+def test_runtime_requests_without_session_have_private_routing_id(monkeypatch):
+    """设计对话没有持久会话，也必须带可路由标识；节点仍可覆盖它。"""
+    from uuid import UUID
+
+    captured = []
+    sdk_client = llm.AsyncOpenAI
+
+    def handle(request):
+        routing_id = request.headers.get('x-opencode-session')
+        captured.append(routing_id)
+        if not routing_id:
+            return httpx.Response(400, json={'error': {'message': 'MissingSessionID', 'type': 'invalid_request_error'}})
+        return httpx.Response(200, json={'id': 'controlled-routing-check', 'object': 'chat.completion',
+            'created': 0, 'model': 'controlled-model', 'choices': [
+                {'index': 0, 'message': {'role': 'assistant', 'content': 'OK'}, 'finish_reason': 'stop'}]})
+
+    def client(**kwargs):
+        kwargs['http_client'] = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        return sdk_client(**kwargs)
+
+    monkeypatch.setattr(llm, 'AsyncOpenAI', client)
+
+    async def exercise():
+        first = llm.endpoint_client({'base_url': 'https://example.test/v1', 'api_key': 'controlled-key'})
+        second = llm.endpoint_client({'base_url': 'https://example.test/v1', 'api_key': 'controlled-key'})
+        try:
+            request = {'model': 'controlled-model', 'messages': [{'role': 'user', 'content': '检查路由'}]}
+            await first.chat.completions.create(**request)
+            await second.chat.completions.create(**request)
+            await first.chat.completions.create(**request, extra_headers={'x-opencode-session': 'actual-node-session'})
+        finally:
+            await asyncio.gather(first.close(), second.close())
+
+    asyncio.run(exercise())
+    assert str(UUID(captured[0])) == captured[0]
+    assert str(UUID(captured[1])) == captured[1]
+    assert captured[0] != captured[1]
+    assert captured[2] == 'actual-node-session'
+
+
 def test_registry_private_atomic_persistence_and_blank_key_retention(tmp_path):
     settings = registry(tmp_path)
     public = settings.add(name='My service', model='chat-test', base_url='https://example.test/v1',

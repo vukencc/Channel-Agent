@@ -83,9 +83,20 @@ def bounded_schemas(available: list[dict], names: list[str] | None) -> list[dict
     return result
 
 
+def effective_tool_names(names: list[str] | None) -> list[str] | None:
+    """部署上限始终约束历史会话与显式工具集。"""
+    deployment = config.MODEL_TOOL_NAMES
+    if names is None:
+        return deployment
+    if deployment is None:
+        return names
+    allowed = set(deployment)
+    return [name for name in names if name in allowed]
+
+
 def selected_schemas(available: list[dict]) -> list[dict]:
     names = active_tool_names.get()
-    return bounded_schemas(available, config.MODEL_TOOL_NAMES if names == 'default' else names)
+    return bounded_schemas(available, effective_tool_names(None if names == 'default' else names))
 
 
 @contextmanager

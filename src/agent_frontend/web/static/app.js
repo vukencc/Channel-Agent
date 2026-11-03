@@ -309,11 +309,12 @@
       const meta = await jsonApi("/api/meta");
       const snapshot = await jsonApi("/api/sessions");
       state.meta = meta; state.ready = true; state.retryCount = 0;
+      window.FlowUI?.refreshModels?.();
       renderArchiveLink();
       showError("connection-error", null); applySnapshot(snapshot);
       const remembered = sessionStorage.getItem("agent-workspace-session");
       const initial = state.sessions.has(remembered) ? remembered : state.sessions.keys().next().value;
-      if (initial) selectSession(initial); else showWelcome();
+      if (!window.FlowUI?.isActive?.()) { if (initial) selectSession(initial); else showWelcome(); }
       startEvents(); refreshTasks(true);
       // Model labels are supplementary; a library failure must not delay chat.
       loadModels().then(() => { if (state.activeId) renderConversationStatus(); if ($("settings-dialog").open) fillSelect("settings-model", state.meta.models, $("settings-model").value, "model"); }).catch(() => {});
@@ -413,7 +414,7 @@
     }
     state.sessions = incoming; state.runtime = snapshot.runtime || state.runtime;
     state.openTabs = state.openTabs.filter((id) => incoming.has(id));
-    if (state.activeId && !incoming.has(state.activeId)) {
+    if (state.activeId && !incoming.has(state.activeId) && !window.FlowUI?.isActive?.()) {
       const fallback = state.openTabs.at(-1) || incoming.keys().next().value;
       state.activeId = null;
       if (fallback) selectSession(fallback); else showWelcome();
@@ -824,15 +825,16 @@
     $("new-flow-options").hidden = !flow;
     setText("new-dialog-title", flow ? "新建 Flow 项目" : "新建 Agent 项目");
     setText("new-submit", flow ? "创建 Flow 项目" : "创建 Agent 项目");
-    setText("new-project-hint", flow ? "创建后也可在画布或检查器中选择目录；运行前需要已有项目。" : "创建后也可在会话设置中浏览选择目录。子 Agent 自动共享父项目文件，继承工具与权限，保留独立上下文。");
+    setText("new-project-hint", flow ? "选择已有 Flow 模板，项目会获得独立副本。" : "创建后也可在会话设置中浏览选择目录。子 Agent 自动共享父项目文件，继承工具与权限，保留独立上下文。");
   }
-  function openNew() { $("new-mode").value = "agent"; updateNewMode(); $("new-flow-handoff").value = ""; $("new-flow-policy").value = ""; $("new-title").value = ""; $("new-project-path").value = ""; $("new-execution-environment").value = ""; showError("new-error", null); $("new-dialog").showModal(); $("new-title").focus(); }
+  function openNew() { $("new-flow-template").replaceChildren(...window.FlowUI.templates().map((flow) => { const option = document.createElement("option"); option.value = flow.id; option.textContent = flow.title; return option; })); $("new-mode").value = "agent"; updateNewMode(); $("new-flow-handoff").value = ""; $("new-flow-policy").value = ""; $("new-title").value = ""; $("new-project-path").value = ""; $("new-execution-environment").value = ""; showError("new-error", null); $("new-dialog").showModal(); $("new-title").focus(); }
   async function createSession(event) {
     event.preventDefault(); $("new-submit").disabled = true; showError("new-error", null);
     try {
       if ($("new-mode").value === "flow") {
-        const flow = await jsonApi("/api/flows", { method: "POST", body: { title: $("new-title").value.trim() || "新建Flow", workspace_path: $("new-project-path").value.trim() || null, execution_environment: $("new-execution-environment").value || null, permission_policy: $("new-flow-policy").value || null, handoff: $("new-flow-handoff").value } });
-        $("new-dialog").close(); window.FlowUI.openCreated(flow); return;
+        if (!$("new-flow-template").value) throw new Error("请先创建并选择 Flow 模板。");
+        const project = await jsonApi("/api/projects", { method: "POST", body: { title: $("new-title").value.trim() || "新项目", flow_id: $("new-flow-template").value, workspace_path: $("new-project-path").value.trim() || null, execution_environment: $("new-execution-environment").value || null, permission_policy: $("new-flow-policy").value || null, handoff: $("new-flow-handoff").value } });
+        $("new-dialog").close(); window.FlowUI.open(project.flow_id); return;
       }
       const session = await jsonApi("/api/sessions", { method: "POST", body: { title: $("new-title").value.trim() || "新会话", workspace_path: $("new-project-path").value.trim() || null, execution_environment: $("new-execution-environment").value || null, permission_policy: $("new-flow-policy").value || null } });
       state.sessions.set(session.id, session); $("new-dialog").close(); selectSession(session.id); renderRuntime(); focusInput();
@@ -1090,6 +1092,7 @@
     // The public library intentionally contains no API key values.
     state.modelLibrary = (data.models || []).map((item) => ({ id: item.id, name: item.name, model: item.model, base_url: item.base_url, context_tokens: item.context_tokens, response_reserve_tokens: item.response_reserve_tokens, has_api_key: Boolean(item.has_api_key), editable: !item.read_only && item.editable !== false && !item.builtin && !item.built_in, source: item.source }));
     renderModels();
+    window.FlowUI?.refreshModels?.();
   }
   async function openModels() {
     resetModelForm(); $("models-dialog").showModal();
@@ -1120,6 +1123,7 @@
   }
   async function refreshModelOptions(selected) {
     const meta = await jsonApi("/api/meta"); state.meta = meta;
+    window.FlowUI?.refreshModels?.();
     fillSelect("settings-model", state.meta.models, selected ?? $("settings-model").value, "model");
     if (state.activeId) renderConversationStatus();
   }
@@ -1431,9 +1435,10 @@
   $("cleanup-confirm").addEventListener("change", renderMaintenance);
   $("maintenance-dialog").addEventListener("cancel", (event) => { if (state.cleanupPending) event.preventDefault(); });
   $("new-form").addEventListener("submit", createSession);
+  $("flow-create").addEventListener("click", async () => { const title = window.prompt("Flow 模板名称", "新建 Flow"); if (!title?.trim()) return; try { const flow = await jsonApi("/api/flows", {method: "POST", body: {title: title.trim()}}); window.FlowUI.openCreated(flow); } catch (error) { toast(errorText(error), "error"); } });
   $("new-mode").addEventListener("change", updateNewMode);
   $("new-browse").addEventListener("click", () => window.FlowUI.pickDirectory({ input: $("new-project-path"), valid: () => $("new-dialog").open }));
-  window.FlowUI.init({ api: jsonApi, models: () => state.meta.models, selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
+  window.FlowUI.init({ api: jsonApi, models: () => normalizeOptions(state.meta.models, "model"), selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
   $("refresh-sessions").addEventListener("click", refreshSessions); $("session-search").addEventListener("input", renderSessions);
   $("composer-form").addEventListener("submit", sendMessage); $("stop-agent").addEventListener("click", () => stopSession());
   $("message-input").addEventListener("input", () => { saveDraft(); resizeInput(); renderComposer(); state.slashIndex = 0; renderSlash(); });

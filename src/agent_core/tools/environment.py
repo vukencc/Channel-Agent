@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from agent_core import config
 from agent_core.tools.base import register_tool
-from agent_core.tools.command import _execute, development_resource_limits
+from agent_core.tools.command import _execute, _flow_scope, development_resource_limits
 from agent_core.tools.sandbox import (
     SandboxError, ask_permission, audit, check_command, check_workspace_quota,
     command_memory_limit_mb, isolated_command, resolve_path, sandbox_root,
@@ -98,6 +98,7 @@ def inspect_environment() -> str:
                                                 if (path / 'bin/node').is_file()]
         return json.dumps({'runtimes': runtimes, 'runtime_profile': profile,
             'execution_environment': mode,
+            'write_scope': 'flow_workspace' if local and _flow_scope() else mode,
             'working_directory': str(sandbox_root()) if local else '/workspace',
             'memory_limit_mb': None if local else command_memory_limit_mb(profile), 'host_candidates': candidates,
             'configured_runtimes': list(config.COMMAND_RUNTIME_PATHS),
@@ -227,6 +228,7 @@ def prepare_project_environment(manager: str, project_dir: str = '.', network: b
             'script_policy': (('允许源码构建和项目安装脚本' if manager == 'uv' else '允许 npm 生命周期脚本')
                               if allow_scripts else '禁止安装脚本和源码构建'),
             'execution_environment': mode,
+            'write_scope': 'flow_workspace' if local and _flow_scope() else mode,
             'network': 'host_including_localhost' if local else network,
             'domains': config.COMMAND_NETWORK_ALLOWLIST if network and not local else [],
             'timeout_seconds': timeout,

@@ -4,9 +4,99 @@ from pathlib import Path
 import re
 import signal
 import sys
+import shutil
+import stat
 
 from agent_core import config
 from agent_core.tools.sandbox import SandboxError, sandbox_root
+
+
+def _check_flow_workspace(root: Path) -> None:
+    """拒绝项目内嵌套挂载和连接到项目外的现存硬链接。"""
+    try:
+        for line in Path('/proc/self/mountinfo').read_text().splitlines():
+            fields = line.split()
+            if len(fields) < 6:
+                raise ValueError('mountinfo 格式无效')
+            mount = Path(re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1), 8)), fields[4]))
+            if mount != root and mount.is_relative_to(root):
+                raise SandboxError('Flow 项目内含嵌套挂载，拒绝执行本机命令')
+        links: dict[tuple[int, int], tuple[int, int]] = {}
+        def fail(error):
+            raise error
+        for directory, names, files in os.walk(root, followlinks=False, onerror=fail):
+            for name in (*names, *files):
+                info = os.lstat(Path(directory) / name)
+                if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                    key = (info.st_dev, info.st_ino)
+                    count, expected = links.get(key, (0, info.st_nlink))
+                    if expected != info.st_nlink:
+                        raise SandboxError('Flow 项目硬链接在检查期间改变')
+                    links[key] = (count + 1, expected)
+        if any(count != expected for count, expected in links.values()):
+            raise SandboxError('Flow 项目含指向项目外的硬链接，拒绝执行本机命令')
+    except (OSError, ValueError) as exc:
+        raise SandboxError('无法检查 Flow 项目的挂载或硬链接，拒绝执行') from exc
+
+
+def flow_local_command(argv: list[str], environment: dict[str, str], protected_paths=()) -> tuple[list[str], dict[str, str]]:
+    """保留宿主网络和运行时，只允许选定项目持久写入。"""
+    executable = shutil.which('bwrap', path='/usr/bin:/bin')
+    if sys.platform != 'linux' or not executable:
+        raise SandboxError('Flow 本机命令需要 Linux bubblewrap；拒绝无隔离执行')
+    root = sandbox_root()
+    _check_flow_workspace(root)
+    protected = [Path(p).resolve() for p in protected_paths]
+    protected += [Path(config.PROJECT_ROOT).resolve(), Path(config.AGENT_STATE_DIR).resolve(),
+                  Path(config.AUDIT_LOG).resolve()]
+    masks = [Path('/home'), Path('/root'), Path('/tmp'), Path('/run')]
+    for path in protected:
+        if path == Path('/') or path == root:
+            raise SandboxError('Flow 保护路径与项目工作区冲突')
+        if not any(path == base or path.is_relative_to(base) for base in masks):
+            if root.is_relative_to(path):
+                # 默认工作区可能位于状态目录内，随后只重新绑定该工作区。
+                pass
+            elif path.is_relative_to(root):
+                raise SandboxError('Flow 保护路径与项目工作区冲突')
+            masks.append(path)
+    args = [executable, '--unshare-user', '--unshare-pid', '--die-with-parent',
+            '--new-session', '--cap-drop', 'ALL', '--ro-bind', '/', '/']
+    for path in sorted(set(masks), key=lambda p: len(p.parts)):
+        if any(path != other and path.is_relative_to(other) for other in masks):
+            continue
+        if path.is_dir():
+            args += ['--tmpfs', str(path)]
+        elif path.exists():
+            args += ['--ro-bind', '/dev/null', str(path)]
+    args += ['--proc', '/proc', '--dev', '/dev']
+
+    def parents(path: Path) -> None:
+        for parent in reversed(path.parents):
+            if parent != Path('/'):
+                args.extend(['--dir', str(parent)])
+
+    # 仅暴露受信任的 NVM 版本目录及 uv 本体，避免暴露整个用户目录。
+    home = Path.home().resolve()
+    runtimes = []
+    for item in environment.get('PATH', '').split(':'):
+        path = Path(item)
+        if path.name == 'bin' and path.parent.parent.name == 'node' and path.parent.parent.parent.name == 'versions' and path.is_relative_to(home / '.nvm'):
+            runtimes.append((path.parent, path.parent))
+    uv = shutil.which('uv', path=environment.get('PATH', ''))
+    if uv:
+        runtimes.append((Path(uv).resolve(), Path(uv)))
+    for path, target in runtimes:
+        if path.exists() and not any(path == p or path.is_relative_to(p) or p.is_relative_to(path) for p in protected):
+            parents(target)
+            args += ['--ro-bind', str(path), str(target)]
+    parents(root)
+    args += ['--bind', str(root), str(root), '--chdir', str(root), '--', *argv]
+    environment = dict(environment)
+    environment.update(HOME='/tmp', TMPDIR='/tmp', TMP='/tmp', TEMP='/tmp',
+                       XDG_CACHE_HOME='/tmp/.cache', GRADLE_USER_HOME='/tmp/.gradle',
+                       UV_LINK_MODE='copy')
+    return args, environment
 
 
 def validate_local_execution() -> Path:

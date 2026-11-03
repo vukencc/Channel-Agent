@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "case_id": "customer-support-manual",
+  "title": "小团队售后工单管理台·手动体验",
+  "execution_environment": null,
+  "permission_policy": null,
+  "model_profile": null,
+  "handoff": "实际应用场景：一家小型软件服务团队现在通过聊天记录处理售后，容易遗漏客户问题，需要一个本机运行的中文售后工单管理台。目标是交付真正可运行的前后端，而非演示截图或只有设计说明。\n技术约定：只用 Python 标准库 HTTP 服务、SQLite 与原生 HTML/CSS/JavaScript，不下载第三方依赖、不使用 CDN。启动命令固定为 python app.py --host 127.0.0.1 --port 8000 --db-file ./support.sqlite；参数应能更换端口和数据库文件，数据库不存在时初始化为空。页面入口为 /，静态资源为 /static/style.css、/static/app.js，HTML 文件放在 static/index.html。只在用户选择的项目目录中工作。\n业务范围：用户填写标题、客户名、问题描述和优先级创建工单；优先级为 low/normal/high，状态为 pending/in_progress/resolved，创建时固定为 pending。可以查看列表、查看详情、修改状态，按状态和优先级组合筛选，以关键词搜索标题、客户名和问题描述，清空筛选回到全部列表。显示全局总工单数及三种状态的数量，筛选不改变全局统计口径。界面将枚举显示为中文。刷新或关闭服务再启动后，数据与状态必须保留。\n统一契约：GET /api/tickets?q=关键词&status=状态&priority=优先级 返回 {tickets:[工单对象]}，空结果返回空数组；GET /api/tickets/{id} 返回 {ticket:工单对象}；POST /api/tickets 接收 {title,customer,description,priority} 并返回201 {ticket:工单对象}；PATCH /api/tickets/{id} 接收 {status} 并返回200 {ticket:工单对象}；GET /api/stats 返回 {total,pending,in_progress,resolved} 四个非负整数。工单对象字段为 id 正整数、title、customer、description、priority、status、created_at、updated_at，时间使用 UTC ISO8601 字符串。列表按 id 降序，搜索为字面子串且 ASCII 大小写不敏感，q 为空表示不搜索，百分号和下划线按普通字符处理。status/priority 省略或为空表示全部，未知非空值返回400。\n输入与错误：title 去首尾空白后1至120字符，customer 为1至80字符，description 为1至4000字符，priority/status 必须属于约定枚举；非法或非对象 JSON、缺字段、无效类型和枚举返回400；不存在的工单或 API 返回404；错误统一为 {error:非空中文字符串}，拒绝的修改不能改变数据。使用参数化 SQL 和受控静态文件路径，避免 SQL 注入与路径穿越；前端用 textContent 等安全显示用户输入，所有表单控件有可见 label。\n交付文件：SPEC.md、app.py、static/index.html、static/style.css、static/app.js、README.md。界面简洁现代，有空列表、加载、成功和错误反馈，在450px窄屏可操作。该版本是本机单用户原型，不包含登录、附件、邮件或公网部署。\n这是四个独立 AgentCore 的串行 Flow。每个节点先阅读输入交接，再读取实际项目文件；只完成当前节点职责，不替后续节点实现功能，不另行委派子 Agent。节点结束时用不超过400字交接：实际修改文件、关键决定、下游注意事项、尚未验证的风险；交接正文由框架自动传递，无需另建交接文件。\n本用例由用户手动测试：所有节点不得运行自动测试、编译/语法检查、HTTP探测或启动应用服务；可通过阅读文件核对，不得宣称任何测试通过。完成实现后直接交接，由用户亲自启动应用和验收。不得修改项目外文件、Agent应用源码或用户配置。",
+  "nodes": [
+    {
+      "id": "requirements",
+      "title": "01 需求与接口设计",
+      "x": 60,
+      "y": 160,
+      "prompt": "你是需求设计 Agent。先阅读输入交接并查看项目目录，再仅编写 SPEC.md，将共同背景中的字段、API请求/响应、输入限制、HTTP状态、SQLite表、状态修改、统计口径和页面流程写清楚。保留既定技术栈和统一契约，不添加登录、邮件或依赖。可以列出供用户手动操作的验收项，但不运行任何测试或服务。不要创建 app.py、前端或交付说明，不委派。写完规格后立即交接，让后端节点负责实现。交接中明确后端必须遵守的约定和待确认事项，不能声称实现或测试已完成。"
+    },
+    {
+      "id": "backend",
+      "title": "02 后端与数据持久化",
+      "x": 420,
+      "y": 160,
+      "prompt": "你是后端实现 Agent。先阅读输入交接与 SPEC.md，再创建 app.py，用 Python 标准库和 SQLite 实现约定启动参数、工单列表/详情/创建/状态修改/统计接口、输入校验、错误响应和数据持久化。接口严格遵守规格，使用参数化SQL，字面搜索正确处理百分号和下划线，并发请求使用独立连接或等价线程安全设计。实现 / 返回 static/index.html 以及受控静态文件访问；此时前端文件尚未生成属于正常阶段，不要替前端创建页面或占位页面。仅通过阅读核对实现，不执行测试、语法检查、探测或服务启动，不委派。完成后交接已实现的接口、静态路径、数据库初始化方式和未验证事项；立即结束，把界面交给下一节点。"
+    },
+    {
+      "id": "frontend",
+      "title": "03 前端与业务交互",
+      "x": 780,
+      "y": 160,
+      "prompt": "你是前端实现 Agent。先阅读输入交接、SPEC.md 和 app.py 的接口，再仅创建 static/index.html、static/style.css、static/app.js，真实接入后端。提供中文工单列表、创建表单、详情区、状态修改、状态/优先级组合筛选、关键词搜索、清空筛选与全局统计；新建和修改后更新列表/详情/统计。支持空列表、加载、成功、失败反馈与450px窄屏；表单有label、按钮语义清楚，用户输入按文本呈现，不用CDN或第三方框架。只按既定契约适配，不改写后端；若发现后端疑点请交接给用户。不得运行测试、语法检查、HTTP请求或启动服务，不委派，不编写README。完成后立即交接界面入口、交互、文件和待用户验证的事项。"
+    },
+    {
+      "id": "delivery",
+      "title": "04 交付与手动操作说明",
+      "x": 1140,
+      "y": 160,
+      "prompt": "你是交付说明 Agent。先阅读输入交接及 SPEC.md、app.py 和前端文件，只通过阅读核对文件与约定，再创建中文 README.md，说明 Python要求、启动命令、数据库保存位置、页面入口、停止/重启、四个节点分工和用户手动验收步骤。手动步骤应包括新建高优先级工单、关键词搜索、组合筛选、详情查看、状态修改、统计变化、刷新、服务重启持久化、无效输入及窄屏。不要替用户执行步骤、测试、语法检查、HTTP请求或启动服务，不修改前面节点的业务代码；疑点如实列出。明确写出本轮没有执行测试或启动服务，功能正确性待用户验证，不得宣称通过。最后给出简短交付与待验证事项后结束。"
+    }
+  ],
+  "edges": [
+    {"source": "requirements", "target": "backend"},
+    {"source": "backend", "target": "frontend"},
+    {"source": "frontend", "target": "delivery"}
+  ]
+}

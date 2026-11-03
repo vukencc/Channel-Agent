@@ -4,13 +4,14 @@ from __future__ import annotations
 import copy
 import math
 import os
+import json
 from pathlib import PurePosixPath
 import uuid
 
-from PySide6.QtCore import QMimeData, QPointF, QRectF, QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QMimeData, QPointF, QRectF, QSaveFile, QIODevice, QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QDrag, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
+    QCheckBox, QComboBox, QFileDialog, QMessageBox, QFormLayout, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
     QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
     QSizePolicy, QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 from .theme import ChoiceBox
 from .project_picker import ProjectPicker
 from . import project_picker
+from .flow_designer import FlowDesigner
 
 
 STATUS_LABELS = {
@@ -269,6 +271,11 @@ class FlowPanel(QWidget):
         self._flow, self._models, self._cache = {}, [], {}
         self._dirty, self._loading, self._selected = False, False, None
         self._submitted = None
+        self._project_dirty = False
+        self._project_dirty_cache = {}
+        self._pending_project_action = None
+        self._directory_update_id = None
+        self._project_rows = {}
         self.nodes, self.edges = {}, []
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -277,6 +284,13 @@ class FlowPanel(QWidget):
         self.heading.setObjectName('title')
         header.addWidget(self.heading, 1)
         header.addWidget(self.status)
+        self.designer_button = QPushButton('设计助手')
+        self.designer_button.setCheckable(True)
+        self.import_button = QPushButton('导入')
+        self.export_button = QPushButton('导出')
+        header.addWidget(self.import_button)
+        header.addWidget(self.export_button)
+        header.addWidget(self.designer_button)
         root.addLayout(header)
         project_row = QHBoxLayout()
         self.project_summary = _label('未选择项目')
@@ -304,6 +318,13 @@ class FlowPanel(QWidget):
         self.inspector.setMinimumWidth(270)
         self.inspector.setMaximumWidth(340)
         body.addWidget(self.inspector)
+        self.designer = FlowDesigner()
+        self.designer.setMinimumWidth(210)
+        self.designer.setMaximumWidth(340)
+        self.designer.hide()
+        body.addWidget(self.designer)
+        self.designer.command.connect(self.command.emit)
+        self.designer_button.toggled.connect(self._toggle_designer)
         self.flow_fields = self._make_form([
             ('名称', 'title', 'line'), ('项目目录', 'workspace_path', 'line'),
             ('项目背景（可选）', 'handoff', 'text'), ('执行环境', 'execution_environment', 'environment'),
@@ -311,7 +332,27 @@ class FlowPanel(QWidget):
         self.node_fields = self._make_form([
             ('名称', 'title', 'line'), ('节点指令', 'prompt', 'text'),
             ('项目目录', 'workspace_path', 'line'), ('补充背景（可选）', 'handoff', 'text'),
-            ('已有交接文件（可选）', 'handoff_file', 'line'), ('模型', 'model_profile', 'model')])
+            ('已有交接文件（可选）', 'handoff_file', 'line'), ('模型', 'model_profile', 'model'),
+            ('思考模式', 'thinking_mode', 'thinking'), ('推理强度', 'reasoning_effort', 'effort')])
+        self.tools_toggle = QToolButton()
+        self.tools_toggle.setText('节点工具')
+        self.tools_toggle.setCheckable(True)
+        self.node_form.insertWidget(self.node_form.count() - 1, self.tools_toggle)
+        self.tools_container = QWidget()
+        self.tools_layout = QVBoxLayout(self.tools_container)
+        self.tools_layout.setContentsMargins(0, 0, 0, 0)
+        self.tools_mode = ChoiceBox()
+        self.tools_mode.addItem('继承部署工具', None)
+        self.tools_mode.addItem('自定义工具', 'custom')
+        self.tools_layout.addWidget(self.tools_mode)
+        self.tool_checks = {}
+        self.node_form.insertWidget(self.node_form.count() - 1, self.tools_container)
+        self.tools_container.hide()
+        self.tools_toggle.toggled.connect(self.tools_container.setVisible)
+        self.tools_mode.currentIndexChanged.connect(self._tools_changed)
+        self.import_button.clicked.connect(self._import_file)
+        self.export_button.clicked.connect(self._export_file)
+        self._export_path = None
         self.prompt_edit = self.node_fields['prompt']
         result_scroll = QScrollArea()
         result_scroll.setWidgetResizable(True)
@@ -333,6 +374,15 @@ class FlowPanel(QWidget):
         self.fit_button.clicked.connect(self._fit)
         self.inspector_button.clicked.connect(self._toggle_inspector)
         self.canvas.scene().selectionChanged.connect(self._selection_changed)
+
+    def _toggle_designer(self, visible: bool) -> None:
+        self.designer.setMaximumWidth(230 if self.width() < 750 else 340)
+        self.designer.setVisible(visible)
+        if visible and self.width() < 750:
+            self.inspector.hide()
+            self.canvas.show()
+        if not visible:
+            self.designer.cancel()
 
     def _make_form(self, rows):
         scroll = QScrollArea()
@@ -397,6 +447,10 @@ class FlowPanel(QWidget):
                     choices += [('隔离沙箱', 'sandbox'), ('Linux 本机', 'local')]
                 elif kind == 'policy':
                     choices += [('智能申请', 'smart'), ('只读', 'readonly'), ('完全访问', 'full_access')]
+                elif kind == 'thinking':
+                    choices += [(value, value) for value in ('auto', 'enabled', 'disabled')]
+                elif kind == 'effort':
+                    choices += [(value, value) for value in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh')]
                 for label, value in choices:
                     field.addItem(label, value)
                 field.currentIndexChanged.connect(lambda _, k=key, f=field, n=is_node: self._field_changed(k, f.currentData(), n))
@@ -413,8 +467,13 @@ class FlowPanel(QWidget):
                 self.node_project_summary.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
                 project_layout.addWidget(self.node_project_summary)
                 target_form.addRow(_label(caption), project_container)
+                target_form.setRowVisible(project_container, False)
             else:
                 target_form.addRow(_label(caption), picker if key == 'workspace_path' else field)
+                if not is_node and key in ('execution_environment', 'permission_policy'):
+                    self._project_rows[key] = (target_form, field)
+                if key in ('workspace_path', 'handoff_file', 'execution_environment', 'permission_policy'):
+                    target_form.setRowVisible(picker if key == 'workspace_path' else field, False)
         layout.addStretch()
         scroll.setWidget(container)
         self.inspector.addTab(scroll, '节点' if is_node else 'Flow')
@@ -443,6 +502,17 @@ class FlowPanel(QWidget):
                 drafts[current_id] = self._flow
         return copy.deepcopy(list(drafts.values()))
 
+    def project_is_dirty(self, flow_id: str) -> bool:
+        return self._project_dirty if self._flow.get('id') == flow_id else self._project_dirty_cache.get(flow_id, False)
+
+    def project_saved(self, flow_id: str, project: dict) -> None:
+        if self._flow.get('id') == flow_id:
+            self._flow['project'] = copy.deepcopy(project)
+            self._project_dirty = False
+        elif flow_id in self._cache:
+            self._cache[flow_id][0]['project'] = copy.deepcopy(project)
+            self._project_dirty_cache[flow_id] = False
+
     def _mark_dirty(self) -> None:
         self._dirty = True
         self._refresh_header()
@@ -457,22 +527,27 @@ class FlowPanel(QWidget):
         token = self._picker_token(False)
         if token is None:
             return
-        directory = project_picker.choose_project_directory(self, str(self._flow.get('workspace_path') or ''))
+        project = self._flow.get('project') or {}
+        directory = project_picker.choose_project_directory(self, str(project.get('workspace_path') or ''))
         if directory and token == self._picker_token(False):
-            self.flow_fields['workspace_path'].setText(directory)
+            self._directory_update_id = (self._flow['id'], self._flow['project_id'])
+            self._refresh_state()
+            self.command.emit('project_update', {'project_id': self._flow['project_id'], 'changes': {'workspace_path': directory, 'revision': project.get('revision')}})
 
     def _refresh_projects(self) -> None:
-        path = str(self._flow.get('workspace_path') or '')
+        path = str((self._flow.get('project') or {}).get('workspace_path') or '')
         if path:
-            summary = f'流程默认项目：{os.path.basename(path.rstrip("/")) or path}\n{path}'
+            summary = f'项目工作区：{os.path.basename(path.rstrip("/")) or path}\n{path}'
         else:
             targets = {edge.get('target') for edge in self._flow.get('edges', [])}
             roots = [node for node in self._flow.get('nodes', []) if node.get('id') not in targets]
             if roots and all(node.get('workspace_path') for node in roots):
-                summary = '流程默认项目：未选择项目；起点已有节点项目，运行前由 Core 校验。'
+                summary = '项目工作区：未选择项目；运行前由 Core 校验。'
             else:
-                summary = '流程默认项目：未选择项目；也可为起点单独设置项目。'
+                summary = '项目工作区：未选择项目。'
         self.project_summary.setText(summary)
+        if not self._flow.get('project_id'):
+            self.project_summary.setText('Flow 模板 · 导入项目后运行')
         self.project_button.setText('更换项目' if path else '选择项目')
         if not self._selected or self._selected not in self.nodes:
             self.node_project_summary.setText('留空时继承项目')
@@ -524,9 +599,12 @@ class FlowPanel(QWidget):
     def _field_changed(self, key, value, node) -> None:
         if self._loading or self.running or not self._flow:
             return
-        target = self.nodes.get(self._selected).data if node and self._selected in self.nodes else (None if node else self._flow)
+        project_field = not node and self._flow.get('project_id') and key in ('handoff', 'execution_environment', 'permission_policy', 'model_profile')
+        target = self._flow.get('project') if project_field else (self.nodes.get(self._selected).data if node and self._selected in self.nodes else (None if node else self._flow))
         if target is not None and target.get(key) != value:
             target[key] = value
+            if project_field:
+                self._project_dirty = True
             self._mark_dirty()
             if node:
                 self.nodes[self._selected].update()
@@ -541,12 +619,81 @@ class FlowPanel(QWidget):
                 field.setPlainText(str(value or ''))
             else:
                 field.setText(str(value or ''))
+        if fields is self.node_fields:
+            names = data.get('tool_names')
+            self.tools_mode.setCurrentIndex(0 if names is None else 1)
+            for name, check in self.tool_checks.items():
+                check.setChecked(bool(check.property('required')) or (names is not None and name in names))
+                check.setEnabled(names is not None and not check.property('required') and not self.running)
+
+    def set_tool_catalog(self, catalog: dict) -> None:
+        rows = catalog.get('tools', [])
+        if rows == getattr(self, '_tool_rows', None):
+            return
+        self._tool_rows = copy.deepcopy(rows)
+        for check in self.tool_checks.values():
+            self.tools_layout.removeWidget(check)
+            check.deleteLater()
+        self.tool_checks = {}
+        for row in rows:
+            name = row['name']
+            check = QCheckBox(name + ('（基础）' if row.get('required') else ''))
+            check.setToolTip(str(row.get('description') or ''))
+            check.setProperty('required', bool(row.get('required')))
+            check.toggled.connect(self._tools_changed)
+            self.tools_layout.addWidget(check)
+            self.tool_checks[name] = check
+        self._loading = True
+        self._fill_fields(self.node_fields, self.nodes[self._selected].data if self._selected in self.nodes else {})
+        self._loading = False
+
+    def _tools_changed(self, *_args) -> None:
+        custom = self.tools_mode.currentData() == 'custom'
+        for check in self.tool_checks.values():
+            check.setEnabled(custom and not check.property('required') and not self.running and bool(self._selected))
+        names = [name for name, check in self.tool_checks.items() if check.isChecked()] if custom else None
+        self._field_changed('tool_names', names, True)
+
+    def _import_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, '导入 Flow 模板', '', 'JSON (*.json)')
+        if not path:
+            return
+        try:
+            with open(path, 'rb') as stream:
+                raw = stream.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise ValueError('文件超过 1 MiB。')
+            payload = json.loads(raw.decode('utf-8'))
+            known = {row.get('id') for row in self._models if isinstance(row.get('id'), str)}
+            values = [payload] if isinstance(payload, dict) else []
+            if isinstance(payload, dict) and isinstance(payload.get('nodes'), list):
+                values.extend(row for row in payload['nodes'] if isinstance(row, dict))
+            missing = any(isinstance(row.get('model_profile'), str) and row['model_profile'] and row['model_profile'] not in known for row in values)
+            choice = QMessageBox.StandardButton.No
+            if missing:
+                choice = QMessageBox.question(self, '缺失模型', '模板引用的模型不存在，改为继承模型？\n选择“否”将严格检查模型。',
+                                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            self.command.emit('flow_import', {'payload': payload, 'missing_models': 'inherit' if choice == QMessageBox.StandardButton.Yes else 'error'})
+        except (OSError, ValueError, UnicodeError) as exc:
+            QMessageBox.warning(self, '导入失败', str(exc))
+
+    def _export_file(self) -> None:
+        if self._export_path is not None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, '导出 Flow 模板', '', 'JSON (*.json)')
+        if path:
+            self._export_path = path
+            self.export_button.setEnabled(False)
+            definition = self.draft()
+            definition.pop('project', None)
+            self.command.emit('flow_export', {'definition': definition})
 
     def set_flow(self, flow: dict | None, models: list[dict] | None = None) -> None:
         incoming = copy.deepcopy(flow or {})
         old_id, new_id = self._flow.get('id'), incoming.get('id')
         if models is not None and models != self._models:
             self._models = copy.deepcopy(models)
+            self.designer.set_models(models)
             self._loading = True
             for fields in (self.flow_fields, self.node_fields):
                 box = fields['model_profile']
@@ -562,6 +709,9 @@ class FlowPanel(QWidget):
                 and incoming['revision'] < self._flow['revision']):
             return
         if old_id != new_id:
+            if old_id:
+                self._project_dirty_cache[old_id] = self._project_dirty
+            self._project_dirty = self._project_dirty_cache.get(new_id, False)
             if old_id:
                 self._cache[old_id] = (copy.deepcopy(self._flow), self._dirty)
             cached = self._cache.get(new_id)
@@ -601,25 +751,37 @@ class FlowPanel(QWidget):
                 if selected:
                     selected.setSelected(True)
                     self._selected = selected_id
-                self._fill_fields(self.flow_fields, self._flow)
+                project = self._flow.get('project') or {}
+                values = dict(self._flow)
+                if self._flow.get('project_id'):
+                    values.update({key: project.get(key) for key in ('handoff', 'execution_environment', 'permission_policy', 'model_profile')})
+                self._fill_fields(self.flow_fields, values)
                 self._fill_fields(self.node_fields, selected.data if selected else {})
-                self.flow_context_toggle.setChecked(bool(self._flow.get('handoff')))
+                self.flow_context_toggle.setChecked(bool(values.get('handoff')))
                 self.node_context_toggle.setChecked(bool(selected and (selected.data.get('handoff') or selected.data.get('handoff_file'))))
         finally:
             self._loading = False
 
     def _refresh_header(self) -> None:
-        self.heading.setText(str(self._flow.get('title') or 'Agent Flow') + (' *' if self._dirty else ''))
+        title = (self._flow.get('project') or {}).get('title') or self._flow.get('title') or 'Agent Flow'
+        self.heading.setText(str(title) + (' *' if self._dirty else ''))
         self.status.setText(_status_text((self._flow.get('run') or {}).get('status')))
 
     def _refresh_state(self) -> None:
         self._refresh_header()
         running = self.running
         self.add_button.setEnabled(bool(self._flow) and not running)
-        self.save_button.setEnabled(bool(self._flow) and not running)
-        self.run_button.setEnabled(bool(self._flow))
+        updating_project = bool(self._pending_project_action or self._directory_update_id)
+        self.save_button.setEnabled(bool(self._flow) and not running and not updating_project)
+        self.export_button.setEnabled(bool(self._flow) and self._export_path is None)
+        self.run_button.setVisible(bool(self._flow.get('project_id')) or running)
+        self.inspector.setTabVisible(2, bool(self._flow.get('project_id')))
+        self.project_button.setVisible(bool(self._flow.get('project_id')))
+        for form, field in self._project_rows.values():
+            form.setRowVisible(field, bool(self._flow.get('project_id')))
+        self.run_button.setEnabled((bool(self._flow.get('project_id')) and not updating_project) or running)
         self.run_button.setText('停止' if running else '运行')
-        self.project_button.setEnabled(bool(self._flow) and not running)
+        self.project_button.setEnabled(bool(self._flow) and not running and not updating_project)
         self.flow_project_picker.browse_button.setEnabled(bool(self._flow) and not running)
         self.node_project_picker.browse_button.setEnabled(bool(self._flow) and not running and bool(self._selected))
         for item in self.nodes.values():
@@ -631,6 +793,9 @@ class FlowPanel(QWidget):
                     field.setReadOnly(not enabled)
                 else:
                     field.setEnabled(enabled)
+        self.tools_mode.setEnabled(not running and bool(self._selected))
+        for check in self.tool_checks.values():
+            check.setEnabled(not running and bool(self._selected) and self.tools_mode.currentData() == 'custom' and not check.property('required'))
         self._refresh_projects()
         self._show_result()
 
@@ -716,11 +881,25 @@ class FlowPanel(QWidget):
         self._refresh_state()
 
     def _submit(self, action: str) -> None:
-        definition = self.draft()
+        if self._pending_project_action or self._directory_update_id:
+            return
+        if action == 'flow_run' and not self._flow.get('project_id'):
+            return
+        if self._project_dirty and self._flow.get('project_id'):
+            project = self._flow.get('project') or {}
+            changes = {key: project.get(key) for key in ('revision', 'handoff', 'execution_environment', 'permission_policy', 'model_profile')}
+            self._pending_project_action = (action, self._flow['id'], self._flow['project_id'], self.draft(), changes)
+            self._refresh_state()
+            self.command.emit('project_update', {'project_id': self._flow['project_id'], 'changes': changes})
+            return
+        self._submit_definition(action, self.draft())
+
+    def _submit_definition(self, action: str, definition: dict) -> None:
+        definition.pop('project', None)
         self._submitted = (action, copy.deepcopy(definition))
         payload = {'definition': definition}
         if action == 'flow_run':
-            payload['flow_id'] = self._flow.get('id')
+            payload['flow_id'] = definition.get('id')
         self.command.emit(action, payload)
 
     def _run_or_stop(self) -> None:
@@ -730,11 +909,60 @@ class FlowPanel(QWidget):
             self._submit('flow_run')
 
     def accept_result(self, action: str, result: dict) -> None:
-        if action == 'flow_delete' and not result.get('error'):
+        if action == 'flow_design':
+            self.designer.accept_result(result)
+            return
+        if action == 'flow_export':
+            path, self._export_path = self._export_path, None
+            self.export_button.setEnabled(bool(self._flow))
+            if path and not result.get('error'):
+                data = json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8')
+                file = QSaveFile(path)
+                if len(data) > 1024 * 1024 or not file.open(QIODevice.OpenModeFlag.WriteOnly) or file.write(data) != len(data) or not file.commit():
+                    file.cancelWriting()
+                    QMessageBox.warning(self, '导出失败', '无法安全写入模板文件，或模板超过 1 MiB。')
+            return
+        if action == 'project_update':
+            directory_id = self._directory_update_id
+            if directory_id and (result.get('error') or result.get('id') == directory_id[1]):
+                self._directory_update_id = None
+            else:
+                directory_id = None
+            pending = self._pending_project_action
+            project = result.get('project', result)
+            if pending and (result.get('error') or project.get('id') == pending[2]):
+                self._pending_project_action = None
+            else:
+                pending = None
+            if not result.get('error'):
+                active = project.get('id') == self._flow.get('project_id')
+                flow_id = pending[1] if pending else directory_id[0] if directory_id else None
+                cached = self._cache.get(flow_id) if flow_id and not active else None
+                target = self._flow if active else cached[0] if cached else None
+                if target is not None:
+                    dirty = self._project_dirty if active else self._project_dirty_cache.get(flow_id, False)
+                    sent = pending[4] if pending else None
+                    changed = dirty and (not sent or any((target.get('project') or {}).get(key) != sent[key] for key in ('handoff', 'execution_environment', 'permission_policy', 'model_profile')))
+                    if changed:
+                        for key in ('handoff', 'execution_environment', 'permission_policy', 'model_profile'):
+                            project[key] = (target.get('project') or {}).get(key)
+                    target['project'] = project
+                    if active:
+                        self._project_dirty = changed
+                        self._refresh_state()
+                    elif flow_id:
+                        self._project_dirty_cache[flow_id] = changed
+                if pending:
+                    self._submit_definition(pending[0], pending[3])
+            self._refresh_state()
+            return
+        if action in ('flow_delete', 'project_delete') and not result.get('error'):
             identifier = result.get('flow_id')
             self._cache.pop(identifier, None)
+            self._project_dirty_cache.pop(identifier, None)
             if self._flow.get('id') == identifier:
                 self._flow, self._dirty, self._submitted = {}, False, None
+                self._project_dirty = False
                 self._rebuild()
                 self._refresh_state()
             return
@@ -778,10 +1006,10 @@ class FlowPanel(QWidget):
         if revision is not None:
             target['revision'] = revision
         current = copy.deepcopy(target)
-        for key in ('run', 'revision'):
+        for key in ('run', 'revision', 'project'):
             current.pop(key, None)
             submitted.pop(key, None)
-        dirty = current != submitted
+        dirty = current != submitted or (self._project_dirty if active else self._project_dirty_cache.get(submitted['id'], False))
         if 'run' in returned:
             target['run'] = copy.deepcopy(returned['run'])
         if active:
@@ -798,10 +1026,15 @@ class FlowPanel(QWidget):
     def _toggle_inspector(self) -> None:
         show = not self.inspector.isVisible()
         self.inspector.setVisible(show)
+        if self.width() < 750 and self.designer_button.isChecked():
+            self.designer.setVisible(not show)
         self.canvas.setVisible(not (show and self.width() < 750))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if event.oldSize().width() <= 0 and event.size().width() < 750:
+        self.designer.setMaximumWidth(230 if event.size().width() < 750 else 340)
+        if event.size().width() < 750 and (event.oldSize().width() <= 0 or event.oldSize().width() >= 750):
             self.inspector.hide()
+        if event.size().width() >= 750 or not self.inspector.isVisible():
+            self.designer.setVisible(self.designer_button.isChecked())
         self.canvas.setVisible(not (self.inspector.isVisible() and event.size().width() < 750))

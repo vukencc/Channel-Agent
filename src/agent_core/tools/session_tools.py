@@ -114,7 +114,7 @@ def create_session(title='新会话', task='', tool_names=None, max_rounds=0, de
         raise ValueError('Agent 创建子会话必须给出非空 task')
     if parent.record.get('delegated_from'):
         raise PermissionError('子 Agent 不得递归创建会话')
-    parent_tools = parent.record.get('tool_names', config.MODEL_TOOL_NAMES)
+    parent_tools = manager._effective_session_tools(parent)
     inherited = list(TOOL_REGISTRY if parent_tools is None else parent_tools)
     allowed = set(inherited)
     names = inherited if tool_names is None else tool_names
