@@ -1,5 +1,7 @@
 # 多会话 Agent CLI
 
+> 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
+
 ```bash
 uv sync --locked
 uv run ai-agent-startup
@@ -162,7 +164,7 @@ CLI/session 工具本轮实现、验证和合成界面基准见 [交付报告](c
 流超时、截断或无效调用可触发“小步骤恢复”。恢复额度按每个独立模型生成请求计算，默认 `MODEL_RECOVERY_LIMIT=1`，不是整段长任务共享一次；不完整生成中的工具不会执行，已完成的工具不会重放。任务整体仍受无进展、预算和取消等保护。连接中断的重试与 checkpoint 行为见上文；长任务恢复边界见[长任务执行指南](long-task-execution.md)。
 `MAX_TOOL_ROUNDS` 显式设为正数时，模型会看到剩余轮数并预留收尾；用尽后显示“阶段保存·可继续”，持久保存为 checkpoint，重启后也可继续。默认值 0 不设固定轮数上限，仍受长任务执行保护约束。
 
-使用 `scripts.diagnose` 的 `--replay-session .agent/<ID>/session.json` 可在临时工作区重放该会话最后一条用户要求。
+使用 `python -m agent_test.scripts.diagnose` 的 `--replay-session .agent/<ID>/session.json` 可在临时工作区重放该会话最后一条用户要求。
 该选项复制历史与工作区，不修改原始记录；每个测试任务最多 240 秒，测试确认自动批准，输出含私有会话副本，应保留在忽略目录。
 详细故障与复验见 [长文件修复报告](large-file-recovery.md)。
 

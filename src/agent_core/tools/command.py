@@ -146,6 +146,7 @@ def _run_local_command(command: str, reason: str, network: bool,
         timeout = config.LOCAL_COMMAND_TIMEOUT
         plan = json.dumps({'command': command, 'execution_environment': 'local',
             'working_directory': str(root), 'timeout_seconds': timeout,
+            'write_scope': 'Flow 项目工作区' if _flow_scope() else '本机',
             'network': '本机网络，包含 localhost；network 参数只控制 sandbox',
             'runtime_profile': runtime_profile, 'resource_profile': resource_profile,
             'resources': '本机资源，不施加 sandbox 的内存/CPU/文件/工作区限额'}, ensure_ascii=False)
@@ -160,6 +161,12 @@ def _run_local_command(command: str, reason: str, network: bool,
     except (OSError, ValueError, SandboxError) as exc:
         audit('blocked', action='run_command', execution_environment='local', reason=str(exc))
         return f'[已拦截] {exc}'
+
+
+def _flow_scope() -> bool:
+    from agent_core.tools.sandbox import _context
+    context = _context.get()
+    return bool(context and context.flow_workspace_scope)
 
 
 def _network_diagnostics(proxy) -> str:
@@ -187,6 +194,13 @@ def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None,
             check_workspace_quota()
         # 审批期间根目录被替换时仍关闭执行；本机模式也不能悄悄跟随新路径。
         root = sandbox_root()
+        if execution_mode == 'local':
+            from agent_core.tools.sandbox import _context
+            context = _context.get()
+            if context is not None and context.flow_workspace_scope:
+                from agent_core.tools.execution_environment import flow_local_command
+                isolated, environment = flow_local_command(argv, environment or {}, context.protected_paths)
+                audit('command_scope', scope='flow_workspace', execution_environment='local')
         process_options = {'env': environment} if environment is not None else {}
         tree = None
         proc = subprocess.Popen(

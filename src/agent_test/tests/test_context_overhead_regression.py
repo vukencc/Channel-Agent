@@ -75,7 +75,8 @@ def test_hard_budget_large_batch_uses_local_summary_and_preserves_archive(
         original = copy.deepcopy(messages)
         schemas = [{'type': 'function', 'function': {'name': 'read_file',
                     'description': '摘' * 4200 + 's' * 16300,
-                    'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}}}}}]
+                    'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}}}}},
+                   {'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}]
         runtime = '\nEngineering state: ' + '态' * 1500
         try:
             manifest = await service._manifest(session)

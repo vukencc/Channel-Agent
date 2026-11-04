@@ -223,7 +223,8 @@ def test_hard_budget_batches_protected_tool_groups_into_one_session_summary(cont
         supervisor = SupervisorStub()
         manager, session = await _manager(context_store, supervisor)
         try:
-            history, metrics = await manager.history_context.prepare(session, messages)
+            history, metrics = await manager.history_context.prepare(session, messages, schemas=[
+                {'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}])
             assert metrics['utilization'] <= 1
             assert 'CURRENT_USER_INPUT' in json.dumps(history, ensure_ascii=False)
             assert messages == original

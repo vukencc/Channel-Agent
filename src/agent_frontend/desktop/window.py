@@ -10,7 +10,7 @@ from PySide6.QtCore import QByteArray, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeyEvent, QKeySequence, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
     QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -281,11 +281,12 @@ class MainWindow(QMainWindow):
         self._preview_path = '.'
         self._compact_sidebar = False
         self._pending_close_drafts: dict[str, dict] | None = None
+        self._close_save_phase = None
         self.project_dialog: ProjectDialog | None = None
         self.setWindowTitle('Agent · 原生桌面')
         self.setWindowIcon(icon('brand', '#a5c4f4', 32))
         self.resize(1240, 840)
-        self.setMinimumSize(520, 460)
+        self.setMinimumSize(450, 460)
         self.setStyleSheet(STYLE)
         self._build()
         self.bridge.state_changed.connect(self._receive_state)
@@ -341,20 +342,30 @@ class MainWindow(QMainWindow):
         self.sessions.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.sessions.itemClicked.connect(self._select_item)
         left.addWidget(self.sessions, 1)
+        left.addWidget(_label('Flow 项目', 'section'))
+        self.projects = QListWidget()
+        self.projects.setMaximumHeight(130)
+        self.projects.setMinimumHeight(55)
+        self.projects.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.projects.itemClicked.connect(self._select_flow_item)
+        left.addWidget(self.projects, 1)
         flow_heading = QHBoxLayout()
-        flow_heading.addWidget(_label('Agent Flows', 'section'))
+        flow_heading.addWidget(_label('Flow 模板', 'section'))
         flow_heading.addStretch()
         self.new_flow_button = QPushButton('创建')
         self.new_flow_button.setObjectName('quiet')
         self.new_flow_button.setIcon(icon('plus', size=15))
-        self.new_flow_button.clicked.connect(lambda: self._new_project('flow'))
+        self.new_flow_button.clicked.connect(self._new_flow_template)
         flow_heading.addWidget(self.new_flow_button)
+        self.design_flow_button = QPushButton('设计')
+        self.design_flow_button.clicked.connect(self._open_flow_designer)
+        flow_heading.addWidget(self.design_flow_button)
         left.addLayout(flow_heading)
         self.flows = QListWidget()
-        self.flows.setMaximumHeight(230)
-        self.flows.setMinimumHeight(70)
+        self.flows.setMaximumHeight(130)
+        self.flows.setMinimumHeight(55)
         self.flows.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.flows.itemClicked.connect(lambda item: self.bridge.request('flow_select', flow_id=item.data(Qt.ItemDataRole.UserRole)))
+        self.flows.itemClicked.connect(self._select_flow_item)
         left.addWidget(self.flows, 1)
         models = QPushButton('模型管理')
         models.setObjectName('quiet')
@@ -417,6 +428,7 @@ class MainWindow(QMainWindow):
         flow_layout.addWidget(self.flow_error)
         self.flow_panel = FlowPanel()
         self.flow_panel.command.connect(lambda action, args: self.bridge.request(action, **args))
+        self.flow_panel.designer_button.toggled.connect(self._designer_toggled)
         flow_layout.addWidget(self.flow_panel, 1)
         self.workspace_stack.addWidget(self.flow_page)
         self.error_label = QLabel()
@@ -641,7 +653,8 @@ class MainWindow(QMainWindow):
         self._render_flows()
         current_flow = state.get('selected_flow')
         self.flow_panel.set_flow(current_flow, state.get('models', []))
-        self.workspace_stack.setCurrentWidget(self.flow_page if current_flow else self.agent_page)
+        self.flow_panel.set_tool_catalog(state.get('flow_tools', {}))
+        self.workspace_stack.setCurrentWidget(self.flow_page if current_flow or getattr(self, '_designer_open', False) else self.agent_page)
         if selected:
             self.title_label.setText(selected['title'])
             self.title_label.setToolTip(html.escape(selected['title']))
@@ -675,11 +688,12 @@ class MainWindow(QMainWindow):
             self.status_chip.setText('未选择')
             self.older_button.hide()
         if current_flow:
-            self.title_label.setText(current_flow['title'])
-            self.title_label.setToolTip(html.escape(current_flow['title']))
-            project_path = self.flow_panel.draft().get('workspace_path')
+            title = (current_flow.get('project') or {}).get('title') or current_flow['title']
+            self.title_label.setText(title)
+            self.title_label.setToolTip(html.escape(title))
+            project_path = (current_flow.get('project') or {}).get('workspace_path')
             self.workspace_label.setText(f'流程项目：{project_path}' if project_path
-                                         else '在下方选择项目，也可为起点节点单独设置')
+                                         else 'Flow 模板 · 导入项目后运行')
             self.workspace_label.setToolTip(html.escape(self.workspace_label.text()))
             self.activity_dock.hide()
             flow_status = (current_flow.get('run') or {}).get('status', 'idle')
@@ -695,23 +709,27 @@ class MainWindow(QMainWindow):
 
     def _render_flows(self) -> None:
         current = (self.state.get('selected_flow') or {}).get('id')
-        rows = [(row['id'], row['title'], row['status'], row['node_count']) for row in self.state.get('flows', [])]
+        rows = [('project', row['id'], row['title'], row.get('status', 'idle'), 0, row['flow_id']) for row in self.state.get('projects', [])]
+        rows += [('flow', row['id'], row['title'], row['status'], row['node_count'], row['id']) for row in self.state.get('flows', []) if not row.get('project_id')]
         if (rows, current) == getattr(self, '_flow_rows', None):
             return
         self._flow_rows = rows, current
-        position = self.flows.verticalScrollBar().value()
+        positions = {listing: listing.verticalScrollBar().value() for listing in (self.projects, self.flows)}
+        self.projects.clear()
         self.flows.clear()
-        for identifier, title, status, count in rows:
+        for kind, identifier, title, status, count, flow_id in rows:
             label = {'idle': '未运行', 'completed': '已完成', 'failed': '运行失败', 'running': '运行中',
                      'queued': '排队中', 'cancelled': '已停止', 'cancelling': '停止中', 'interrupted': '已中断'}.get(status, status)
-            item = QListWidgetItem(f'{title}\n{count} 个节点 · {label}')
+            item = QListWidgetItem(f'{title}\n' + (f'项目 · {label}' if kind == 'project' else f'模板 · {count} 个节点'))
             item.setSizeHint(QSize(0, 57))
-            item.setData(Qt.ItemDataRole.UserRole, identifier)
-            item.setIcon(icon('code', '#91b4dc', 18))
-            self.flows.addItem(item)
-            if identifier == current:
-                self.flows.setCurrentItem(item)
-        self.flows.verticalScrollBar().setValue(position)
+            item.setData(Qt.ItemDataRole.UserRole, (kind, identifier))
+            item.setIcon(icon('folder' if kind == 'project' else 'code', '#91b4dc', 18))
+            listing = self.projects if kind == 'project' else self.flows
+            listing.addItem(item)
+            if flow_id == current:
+                listing.setCurrentItem(item)
+        for listing, position in positions.items():
+            listing.verticalScrollBar().setValue(position)
 
     def _render_sessions(self) -> None:
         # 仅列表内容变化才重建，状态流不打断用户的列表滚动。
@@ -749,6 +767,8 @@ class MainWindow(QMainWindow):
             item.setHidden(query not in item.text().casefold() and query not in item.data(Qt.ItemDataRole.UserRole))
 
     def _select_item(self, item: QListWidgetItem) -> None:
+        self._designer_open = False
+        self.flow_panel.designer.cancel()
         self.bridge.request('select', session_id=item.data(Qt.ItemDataRole.UserRole))
 
     def render_transcript(self, messages: list[dict], partial: str, *, session_id: str) -> None:
@@ -848,19 +868,41 @@ class MainWindow(QMainWindow):
 
     def _finished(self, action: str, payload: str) -> None:
         result = json.loads(payload)
+        if self._pending_close_drafts is not None and self._close_save_phase and action == self._close_save_phase[0]:
+            _, identifier = self._close_save_phase
+            if result.get('error') or result.get('ok') is False:
+                self._pending_close_drafts = None
+                self._close_save_phase = None
+                self.centralWidget().setEnabled(True)
+                self._show_error(result.get('error') or '保存失败，请重试。')
+            elif action == 'project_update':
+                draft = self._pending_close_drafts[identifier]
+                if result.get('id') != draft.get('project_id'):
+                    self._pending_close_drafts = None
+                    self._close_save_phase = None
+                    self.centralWidget().setEnabled(True)
+                    self._show_error('项目保存结果不匹配，请重试。')
+                else:
+                    draft['project'] = result
+                    self.flow_panel.project_saved(identifier, result)
+                    self._close_save_definition(identifier)
+            elif result.get('id') == identifier:
+                self.flow_panel.accept_result(action, result)
+                self._pending_close_drafts.pop(identifier)
+                self._close_save_phase = None
+                self._close_save_next()
+            else:
+                self._pending_close_drafts = None
+                self._close_save_phase = None
+                self.centralWidget().setEnabled(True)
+                self._show_error('Flow 保存结果不匹配，请重试。')
+            return
+        if action in ('project_update', 'project_delete'):
+            self.flow_panel.accept_result(action, result)
         if action.startswith('flow_'):
             self.flow_panel.accept_result(action, result)
             if not result.get('error'):
                 self.flow_error.hide()
-            if action == 'flow_save' and self._pending_close_drafts is not None:
-                if result.get('error'):
-                    self._pending_close_drafts = None
-                    self.centralWidget().setEnabled(True)
-                else:
-                    self._pending_close_drafts.pop(result['id'], None)
-                    if not self._pending_close_drafts:
-                        self._pending_close_drafts = None
-                        self._begin_shutdown()
         if action in {'files', 'file'} and not result.get('error') and self.current_session and result.get('session_id') == self.current_session['id']:
             self.file_path_label.setText(result['path'] + ('（仅前 256 KiB）' if result.get('truncated') else ''))
             if action == 'files':
@@ -896,16 +938,42 @@ class MainWindow(QMainWindow):
     def _new_project(self, mode: str = 'agent') -> None:
         if self._closing:
             return
-        dialog = ProjectDialog(self, mode=mode)
+        dialog = ProjectDialog(self, mode=mode, templates=[row for row in self.state.get('flows', []) if not row.get('project_id')])
         self.project_dialog = dialog
         if dialog.exec() == QDialog.DialogCode.Accepted:
             payload = dict(dialog.result_payload)
             flow = payload.pop('mode') == 'flow'
             if not flow:
                 payload.pop('handoff', None)
-            self.bridge.request('flow_create' if flow else 'create', **payload)
+                payload.pop('flow_id', None)
+            self.bridge.request('project_create' if flow else 'create', **payload)
         self.project_dialog = None
         dialog.deleteLater()
+
+    def _select_flow_item(self, item) -> None:
+        self._designer_open = False
+        self.flow_panel.designer.cancel()
+        kind, identifier = item.data(Qt.ItemDataRole.UserRole)
+        if kind == 'project':
+            self.bridge.request('project_select', project_id=identifier)
+        else:
+            self.bridge.request('flow_select', flow_id=identifier)
+
+    def _new_flow_template(self) -> None:
+        title, accepted = QInputDialog.getText(self, '新建 Flow 模板', '模板名称')
+        if accepted and title.strip():
+            self.bridge.request('flow_create', title=title.strip())
+
+    def _open_flow_designer(self) -> None:
+        self._designer_open = True
+        self.workspace_stack.setCurrentWidget(self.flow_page)
+        self.flow_panel.designer_button.setChecked(True)
+
+    def _designer_toggled(self, visible: bool) -> None:
+        if not visible:
+            self._designer_open = False
+            if not self.state.get('selected_flow'):
+                self.workspace_stack.setCurrentWidget(self.agent_page)
 
     def _older(self) -> None:
         if self.current_session:
@@ -1076,7 +1144,10 @@ class MainWindow(QMainWindow):
         flow = self.state.get('selected_flow') if self.state else None
         if flow:
             if self.delete_button.isEnabled() and self._confirm_dialog(self, '删除 Flow', f'删除“{flow["title"]}”的流程记录？项目文件与节点会话保留。'):
-                self.bridge.request('flow_delete', flow_id=flow['id'])
+                if flow.get('project_id'):
+                    self.bridge.request('project_delete', project_id=flow['project_id'])
+                else:
+                    self.bridge.request('flow_delete', flow_id=flow['id'])
             return
         value = self.current_session
         if not value or not self.delete_button.isEnabled():
@@ -1161,6 +1232,9 @@ class MainWindow(QMainWindow):
         event.ignore()
         if self._closing or self._pending_close_drafts is not None:
             return
+        if self.flow_panel._pending_project_action or self.flow_panel._directory_update_id:
+            self._show_error('项目设置正在保存，请完成后再退出。')
+            return
         drafts = self.flow_panel.pending_drafts()
         if drafts:
             box = QMessageBox(self)
@@ -1180,10 +1254,29 @@ class MainWindow(QMainWindow):
             if decision == QMessageBox.StandardButton.Save:
                 self._pending_close_drafts = {draft['id']: draft for draft in drafts}
                 self.centralWidget().setEnabled(False)
-                for draft in drafts:
-                    self.bridge.request('flow_save', definition=draft)
+                self._close_save_next()
                 return
         self._begin_shutdown()
+
+    def _close_save_next(self) -> None:
+        if not self._pending_close_drafts:
+            self._pending_close_drafts = None
+            self._begin_shutdown()
+            return
+        identifier, draft = next(iter(self._pending_close_drafts.items()))
+        if draft.get('project_id') and self.flow_panel.project_is_dirty(identifier):
+            project = draft.get('project') or {}
+            changes = {key: project.get(key) for key in ('revision', 'handoff', 'execution_environment', 'permission_policy', 'model_profile')}
+            self._close_save_phase = ('project_update', identifier)
+            self.bridge.request('project_update', project_id=draft['project_id'], changes=changes)
+        else:
+            self._close_save_definition(identifier)
+
+    def _close_save_definition(self, identifier: str) -> None:
+        definition = dict(self._pending_close_drafts[identifier])
+        definition.pop('project', None)
+        self._close_save_phase = ('flow_save', identifier)
+        self.bridge.request('flow_save', definition=definition)
 
     def _begin_shutdown(self) -> None:
         self._closing = True

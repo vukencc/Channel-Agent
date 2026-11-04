@@ -29,6 +29,9 @@ def panel():
 
 def flow(path='', *, identifier='flow', handoff=''):
     return {'id': identifier, 'title': '测试流程', 'revision': 1, 'run': None,
+            'project_id': f'project-{identifier}',
+            'project': {'id': f'project-{identifier}', 'revision': 1, 'workspace_path': str(path),
+                        'handoff': handoff, 'model_profile': None, 'execution_environment': None, 'permission_policy': None},
             'workspace_path': str(path), 'handoff': handoff,
             'nodes': [{'id': 'first', 'title': '梳理', 'prompt': '检查项目',
                        'workspace_path': '', 'handoff': '', 'x': 0, 'y': 0},
@@ -73,22 +76,31 @@ def test_project_selection_updates_only_target_and_saved_draft(panel, tmp_path, 
     assert isinstance(panel.flow_fields['workspace_path'], QLineEdit)
     assert isinstance(panel.node_fields['workspace_path'], QLineEdit)
     calls = choose(monkeypatch, selected)
+    sent = []
+    panel.command.connect(lambda action, payload: sent.append((action, payload)))
     button = (panel.project_button if target == 'header' else
               panel.flow_project_picker.browse_button if target == 'flow' else
               panel.node_project_picker.browse_button)
+    if target != 'header':
+        assert button.isHidden() or not button.isVisible()
+        assert panel.draft()['project']['workspace_path'] == str(original)
+        assert all(node['workspace_path'] == '' for node in panel.draft()['nodes'])
+        return
     click(button)
     draft = panel.draft()
     assert len(calls) == 1
-    assert panel.is_dirty
-    assert draft['workspace_path'] == str(original if target == 'node' else selected)
-    assert draft['nodes'][0]['workspace_path'] == (str(selected) if target == 'node' else '')
+    assert sent == [('project_update', {'project_id': 'project-flow', 'changes': {'workspace_path': str(selected), 'revision': 1}})]
+    assert draft['workspace_path'] == str(original)
+    assert draft['nodes'][0]['workspace_path'] == ''
     assert draft['nodes'][1]['workspace_path'] == ''
-    sent = []
-    panel.command.connect(lambda action, payload: sent.append((action, payload)))
+    panel.accept_result('project_update', {**draft['project'], 'workspace_path': str(selected), 'revision': 2})
     click(panel.save_button)
-    assert sent[-1] == ('flow_save', {'definition': draft})
+    assert sent[-1][0] == 'flow_save'
+    assert 'project' not in sent[-1][1]['definition']
+    draft = panel.draft()
+    assert draft['project']['workspace_path'] == str(selected)
     panel.set_flow(flow(identifier='other'))
-    panel.set_flow(flow(original))
+    panel.set_flow(draft)
     assert panel.draft() == draft
 
 
@@ -98,13 +110,21 @@ def test_cancel_directory_selection_preserves_clean_draft(panel, tmp_path, monke
     panel.nodes['first'].setSelected(True)
     original = panel.draft()
     calls = choose(monkeypatch, '')
+    sent = []
+    panel.command.connect(lambda action, payload: sent.append((action, payload)))
     button = (panel.project_button if target == 'header' else
               panel.flow_project_picker.browse_button if target == 'flow' else
               panel.node_project_picker.browse_button)
+    if target != 'header':
+        assert not button.isVisible()
+        assert panel.draft() == original
+        assert not panel.is_dirty
+        return
     click(button)
     assert len(calls) == 1
     assert panel.draft() == original
     assert not panel.is_dirty
+    assert not sent
 
 
 @pytest.mark.parametrize('status', ['queued', 'running', 'cancelling'])
@@ -131,6 +151,8 @@ def test_modal_selection_rechecks_target_before_writing(panel, tmp_path, monkeyp
     definition = flow(tmp_path)
     panel.set_flow(definition)
     panel.nodes['first'].setSelected(True)
+    sent = []
+    panel.command.connect(lambda action, payload: sent.append((action, payload)))
 
     def change_while_choosing():
         if transition == 'running':
@@ -146,11 +168,17 @@ def test_modal_selection_rechecks_target_before_writing(panel, tmp_path, monkeyp
     button = (panel.project_button if target == 'header' else
               panel.flow_project_picker.browse_button if target == 'flow' else
               panel.node_project_picker.browse_button)
+    if target != 'header':
+        assert not button.isVisible()
+        assert panel.draft() == definition
+        assert not panel.is_dirty
+        return
     click(button)
     assert len(calls) == 1
-    assert panel.draft()['workspace_path'] == str(tmp_path)
+    assert panel.draft()['project']['workspace_path'] == str(tmp_path)
     assert all(node['workspace_path'] == '' for node in panel.draft()['nodes'])
     assert not panel.is_dirty
+    assert not sent
     if transition == 'switch_flow':
         panel.set_flow(definition)
         assert panel.draft() == definition
@@ -232,20 +260,24 @@ def test_failed_save_keeps_selected_project_and_context(panel, tmp_path, monkeyp
     selected = tmp_path / 'selected'
     selected.mkdir()
     choose(monkeypatch, selected)
+    sent = []
+    panel.command.connect(lambda action, payload: sent.append((action, payload)))
+    panel.flow_fields['handoff'].setPlainText('更新背景')
     click(panel.project_button)
+    panel.accept_result('project_update', {'error': '项目校验失败'})
+    assert sent[-1][0] == 'project_update'
     click(panel.save_button)
-    panel.accept_result('flow_save', {'ok': False, 'error': '项目校验失败'})
+    panel.accept_result('project_update', {'error': '项目校验失败'})
     assert panel.is_dirty
-    assert panel.draft()['workspace_path'] == str(selected)
-    assert panel.draft()['handoff'] == '必须保留'
-    assert panel.flow_fields['workspace_path'].text() == str(selected)
-    assert panel.pending_drafts()[0]['workspace_path'] == str(selected)
+    assert panel.draft()['project']['workspace_path'] == str(tmp_path)
+    assert panel.draft()['project']['handoff'] == '更新背景'
+    assert panel.pending_drafts()[0]['project']['handoff'] == '更新背景'
 
 
 @pytest.mark.parametrize('mode', ['agent', 'flow'])
 def test_new_project_picker_preserves_payload_and_permission(mode, tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
-    dialog = ProjectDialog(mode=mode)
+    dialog = ProjectDialog(mode=mode, templates=[{'id': 'template', 'title': '模板'}])
     dialog.show()
     try:
         assert isinstance(dialog.workspace, QLineEdit)
@@ -264,6 +296,7 @@ def test_new_project_picker_preserves_payload_and_permission(mode, tmp_path, mon
             'mode': mode, 'title': '新项目', 'workspace_path': str(tmp_path),
             'execution_environment': None, 'permission_policy': 'readonly',
             'handoff': '现有背景' if mode == 'flow' else '',
+            'flow_id': 'template' if mode == 'flow' else None,
         }
     finally:
         dialog.close()
@@ -276,7 +309,8 @@ def core_projects(definition, tmp_path):
         root=tmp_path / 'state', workspace_root=tmp_path / 'workspaces'))
     manager.workspaces = SessionWorkspaces(manager)
     order, incoming = _order(definition)
-    return FlowService._projects(SimpleNamespace(manager=manager), definition, order, incoming)
+    legacy = {**definition, 'project_id': None}
+    return FlowService._projects(SimpleNamespace(manager=manager), legacy, order, incoming)
 
 
 @pytest.mark.parametrize('suffix', ['/', '/.'])
@@ -369,11 +403,8 @@ def test_inherited_summary_refreshes_after_upstream_project_edit(panel, tmp_path
     panel.set_flow(flow(first))
     panel.nodes['second'].setSelected(True)
     assert str(first) in panel.node_project_summary.text()
-    panel.nodes['second'].setSelected(False)
-    panel.nodes['first'].setSelected(True)
-    panel.node_fields['workspace_path'].setText(str(changed))
-    panel.nodes['first'].setSelected(False)
-    panel.nodes['second'].setSelected(True)
+    panel._directory_update_id = ('flow', 'project-flow')
+    panel.accept_result('project_update', {**panel.draft()['project'], 'workspace_path': str(changed), 'revision': 2})
     assert str(changed) in panel.node_project_summary.text()
     assert str(first) not in panel.node_project_summary.text()
     assert panel.draft()['nodes'][1]['workspace_path'] == ''
@@ -383,25 +414,23 @@ def test_independent_roots_need_no_flow_default_project(panel, tmp_path):
     first, second = tmp_path / 'first', tmp_path / 'second'
     first.mkdir()
     second.mkdir()
-    definition = flow()
+    definition = flow(first)
     definition['edges'] = []
     definition['nodes'][0]['workspace_path'] = str(first)
     definition['nodes'][1]['workspace_path'] = str(second)
     panel.set_flow(definition)
-    assert '流程默认项目' in panel.project_summary.text()
-    assert '起点' in panel.project_summary.text()
-    assert '已有' in panel.project_summary.text()
-    assert '校验' in panel.project_summary.text()
-    for identifier, path in [('first', first), ('second', second)]:
-        panel.canvas.scene().clearSelection()
-        panel.nodes[identifier].setSelected(True)
-        assert str(path) in panel.node_project_summary.text()
-        assert '冲突' not in panel.node_project_summary.text()
+    assert str(first) in panel.project_summary.text()
+    project = definition['project']
+    service = SimpleNamespace(projects=SimpleNamespace(get=lambda _: {**project, 'flow_id': 'flow'},
+                                                       _workspace=lambda _: (1, 2)))
+    order, incoming = _order(definition)
+    assert FlowService._projects(service, definition, order, incoming) == {
+        'first': (str(first), (1, 2)), 'second': (str(first), (1, 2))}
     sent = []
     panel.command.connect(lambda action, payload: sent.append((action, payload)))
     click(panel.run_button)
     assert sent[-1][0] == 'flow_run'
-    assert sent[-1][1]['definition']['workspace_path'] == ''
+    assert sent[-1][1]['definition']['project_id'] == 'project-flow'
     assert [node['workspace_path'] for node in sent[-1][1]['definition']['nodes']] == [str(first), str(second)]
 
 

@@ -1,11 +1,13 @@
 # 任务状态与计划设计
 
+> 文档类型：开发与设计参考 · [文档导航](README.md) · [三模块架构](architecture.md)
+
 第一阶段任务计划 MVP 已实现：每个会话可维护一份有界 DAG 计划，通过显式工具记录步骤、依赖、证据和既有队列引用，并在 CLI/Web 中查看。已有会话运行状态、持久子 Agent 队列和后台命令队列仍由程序维护；计划表达 LLM 汇报的工作进度，不启动工具、不授予权限，也不替代现有队列。结构化自动验收、多计划切换和自动 DAG 调度属于后续阶段，尚未实现。
 
 ## 当前实现
 
 - [sessions.py](../src/agent_core/core/sessions.py#L35) 的 `Session` 持有前台 asyncio task、取消标志、确认状态和执行阶段；`SessionManager.submit` 将记录状态设为 `queued`，运行过程使用 `running`、`confirming`、`stopping`，结束时使用 `idle`、`checkpoint`、`error` 或 `cancelled`。恢复时 [storage.py](../src/agent_core/core/storage.py#L330) 将非终态标成 `interrupted`，不会重放工具。模型上下文在 [sessions.py](../src/agent_core/core/sessions.py#L656) 每轮构造，再交给 `prepare_model_history` 做预算控制。
-- [agent_tasks.py](../src/agent_core/core/agent_tasks.py#L16) 提供持久子 Agent 队列和并发槽。每个委派任务运行时占用槽位，并等待完整子会话结束；状态与结果由队列记录。入口 [tools/agent_tasks.py](../src/agent_core/tools/agent_tasks.py#L11) 注册 `delegate`、`task_status`、`cancel_agent_task`。
+- [agent_tasks.py](../src/agent_core/core/agent_tasks.py#L16) 提供持久子 Agent 队列和并发槽。每个委派任务运行时占用槽位，并等待完整子会话结束；状态与结果由队列记录。兼容入口 [tools/agent_tasks.py](../src/agent_core/tools/agent_tasks.py#L11) 注册旧工具；默认模型工具目录以 `create_session` 和 `wait_agent_task` 替代 `delegate` 和 `task_status`，兼容名称仍可在明确配置时使用。
 - [command_jobs.py](../src/agent_core/core/command_jobs.py#L21) 提供独立的后台命令队列，运行前沿用当前权限模式的确认流程，按工作区串行写入；进程重启后将运行中任务标为 `interrupted`、结果未知且不自动重放。
 - [tools/__init__.py](../src/agent_core/tools/__init__.py#L7) 通过导入模块注册工具，并按配置注册可选队列工具。会话工具通过 `current_service()` 取得调用者身份，子 Agent 递归创建仍由会话入口、Agent 队列入口及根会话创建边界拒绝；系统提示也禁止递归，参见 [session_tools.py](../src/agent_core/tools/session_tools.py#L14)。本设计保留这些限制。
 
@@ -133,4 +135,4 @@ docs_finalize: 写入实测结果与使用说明，depends_on=[verify, docs_draf
 | 模型链路 | 使用模型替身跑“模型更新计划→调用真实注册工具→真实工具结果→计划证据引用”的完整链路；验证禁递归委派回归仍拒绝 |
 | 兼容与上下文 | 关闭时无新 schema/摘要；启用但无计划不注入摘要；上限按真实预算生效；懒加载与缓存有效；收窄工具集不扩权；任务文本注入攻击不改变安全语义 |
 
-实现阶段的验证命令包括 `uv sync --locked`、`uv run pytest src/agent_test/tests/test_task_plans.py -q`、`uv run pytest -m 'not integration' -q`；涉及工具边界还须运行 `uv run python -m agent_test.scripts.ci_sandbox_probe`，受环境限制时如实记录。本文给出覆盖矩阵，不记录测试执行数字或性能结论。
+验证可先执行 `uv sync --locked --extra web`，再执行 `uv run --no-sync pytest src/agent_test/tests/test_task_plans.py -q`、`uv run --no-sync pytest -m 'not integration' -q`；涉及工具边界还须运行 `uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe`，受环境限制时如实记录。本文给出覆盖矩阵，不记录测试执行数字或性能结论。

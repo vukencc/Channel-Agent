@@ -335,7 +335,11 @@ def test_different_projects_run_concurrently_and_unknown_profile_is_atomic(tmp_p
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_failed_turn_drains_real_background_job_before_release(tmp_path, monkeypatch, cancel):
+@pytest.mark.parametrize("delayed_save", [False, True])
+def test_failed_turn_drains_real_background_job_before_release(
+    tmp_path, monkeypatch, sandbox_env, cancel, delayed_save,
+):
+    """离线模型/执行双替身；真实命令队列验证取消、排空和项目预约。"""
     import threading
     from agent_core import config
     from agent_core.core import command_jobs
@@ -351,11 +355,14 @@ def test_failed_turn_drains_real_background_job_before_release(tmp_path, monkeyp
             raise TimeoutError("test did not release job")
         return "[退出码] 0"
     monkeypatch.setattr(command, "_execute", execute)
-    project = tmp_path / "project"
+    project = sandbox_env / "project"
     project.mkdir()
     store = SessionStore(tmp_path / "state", workspace_root=tmp_path / "private")
     async def run():
         manager = None
+        model_ready = asyncio.Event()
+        save_started, save_release = asyncio.Event(), asyncio.Event()
+        job_cancelled = asyncio.Event()
         async def model(history, *, session_id, emit):
             session = manager.sessions[session_id]
             context = ToolContext(project, store.directory(session.id) / "audit.jsonl", lambda *_: True,
@@ -364,10 +371,27 @@ def test_failed_turn_drains_real_background_job_before_release(tmp_path, monkeyp
             with tool_context(context):
                 manager.command_jobs.start("printf done", timeout=2)
             assert await asyncio.to_thread(entered.wait, 2)
+            model_ready.set()
             if not cancel:
                 raise RuntimeError("controlled failure")
-            return {"role": "assistant", "content": "done"}
+            await asyncio.Event().wait()
         manager = SessionManager(store, model=model)
+        original_save = manager.save
+        def save(session):
+            saved = original_save(session)
+            if delayed_save and session.record["status"] in {"cancelled", "error"}:
+                async def delayed():
+                    save_started.set()
+                    await save_release.wait()
+                    await saved
+                return asyncio.create_task(delayed())
+            return saved
+        monkeypatch.setattr(manager, "save", save)
+        original_cancel = manager.command_jobs.cancel
+        def cancel_job(owner, identifier):
+            original_cancel(owner, identifier)
+            job_cancelled.set()
+        monkeypatch.setattr(manager.command_jobs, "cancel", cancel_job)
         service = FlowService(manager)
         flow = service.create(workspace_path=str(project))
         flow["nodes"] = [{"id": "a", "title": "A", "prompt": "A"}]
@@ -375,9 +399,18 @@ def test_failed_turn_drains_real_background_job_before_release(tmp_path, monkeyp
         service.start(flow["id"])
         try:
             assert await asyncio.to_thread(entered.wait, 2)
+            await asyncio.wait_for(model_ready.wait(), 2)
             if cancel:
                 service.cancel(flow["id"])
-            await asyncio.sleep(.1)
+            if delayed_save:
+                # 会话终态保存尚未返回时，Flow 仍须保留预约，不能先释放项目。
+                await asyncio.wait_for(save_started.wait(), 2)
+                assert not service.tasks[flow["id"]].done()
+                assert manager.project_reservations
+                assert not job_cancelled.is_set()
+                save_release.set()
+            # 观察真实取消请求后再检查，不假设保存和调度能在固定时长内结束。
+            await asyncio.wait_for(job_cancelled.wait(), 2)
             assert not service.tasks[flow["id"]].done()
             assert manager.project_reservations
             assert any(event.is_set() for event in manager.command_jobs.events.values())
@@ -385,8 +418,13 @@ def test_failed_turn_drains_real_background_job_before_release(tmp_path, monkeyp
             await asyncio.wait_for(service.tasks[flow["id"]], 3)
             assert not manager.project_reservations
             assert service.get(flow["id"])["run"]["status"] == ("cancelled" if cancel else "failed")
+            assert not manager.command_jobs.events
+            assert not manager.command_jobs.futures
+            assert {job["status"] for job in manager.command_jobs.records.values()} == {"cancelled"}
         finally:
+            save_release.set()
             release.set()
+            await service.shutdown()
             await manager.shutdown()
     try:
         asyncio.run(run())

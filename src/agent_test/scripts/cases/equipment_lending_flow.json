@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "case_id": "team-equipment-lending",
+  "title": "团队共享设备借用台·五Agent验收",
+  "handoff": "实际场景：一个20人的小团队共用投影仪、相机和测试设备，需要一个可运行的“共享设备借用台”。管理员录入设备和总数量，成员填写姓名借用/归还，任何操作都不能让可用库存小于0或超过总数。请交付真实前后端、SQLite持久化、可执行测试和中文README，不要仅返回设计。只用Python标准库+SQLite+原生HTML/CSS/JS，不下载第三方依赖。\n统一接口（所有节点必须遵守，字段可增加但不可替换约定）：\n启动 python app.py --host 127.0.0.1 --port PORT --db-file ABS_SQLITE；数据库不存在时初始化为空。\nEquipment={id:正整数,name:字符串,total:整数,available:整数}。Loan={id:正整数,equipment_id:正整数,borrower:字符串,quantity:整数,status:active或returned}。\nGET /api/equipment ->200 {equipment:[...]}; POST /api/equipment {name,total} ->201 {equipment:对象}。\nGET /api/loans 可选?status=active|returned ->200 {loans:[...]}; POST /api/loans {equipment_id,borrower,quantity} ->201 {loan:对象}。\nPOST /api/loans/{id}/return {} ->200 {loan:对象,status字段在loan内部为returned}；重复归还409且库存不变。\nGET /api/stats ->200 {equipment_types:整数,total_units:整数,available_units:整数,active_loans:整数}。\nname/borrower去首尾空白后1..80字符；total/quantity是严格整数（拒bool）且1..10000；equipment_id是正整数（拒bool）。无效JSON、非对象JSON、缺字段、无效类型/标题/数量、非法status返回400；未知设备/借用/未知API返回404；库存不足409；错误统一JSON {error:非空字符串}，失败不能改变设备、借用或统计。\n用真实SQLite事务保证并发：同一设备total=5，同时借出quantity=3的两请求只能一201一409，最终available=2、active_loans=1；归还后available=5，再归还仍409且保持5。重启必须保持设备、借用、状态与库存。用参数化SQL。\nGET / ->HTML，页面引用 /static/style.css 和 /static/app.js。设备表、添加设备表单、借用表单、活动/已归还筛选、归还按钮、统计和可见错误反馈都要真实接入上述API；无浏览器专有依赖。使用textContent等安全显示用户文本；原始和编码../路径穿越不能读取app.py或数据库。支持450px手机宽度。\n这是串行Flow。每个节点首先阅读输入交接；只做自己负责阶段，结束时用不超过500字写明改动文件、已执行的检查、剩余问题和下游注意事项。禁止委派子Agent代替下游节点；不要修改本应用或项目外目录。不要打印大文件/整份日志，只输出必要的测试摘要。",
+  "execution_environment": "local",
+  "permission_policy": "full_access",
+  "nodes": [
+    {
+      "id": "requirements",
+      "title": "01 需求与接口设计",
+      "x": 80,
+      "y": 160,
+      "prompt": "你负责需求阶段。首先阅读输入交接，再list_files确认项目。仅编写简短SPEC.md（建议80行以内），把统一接口、SQLite表/事务设计、页面流程与关键验收项具体化，不实现后端/前端，不启动服务，不委派。新空目录无需环境研究；若SPEC已存在则核对并补必要项。写完后立即以简短交接结束，把实现交给下一个Agent。"
+    },
+    {
+      "id": "backend",
+      "title": "02 后端与库存事务",
+      "x": 460,
+      "y": 160,
+      "prompt": "你负责后端。先读输入交接和SPEC.md，创建或核对完整app.py，使用ThreadingHTTPServer和SQLite实现统一接口、静态文件、输入验证、404/409、原子借用归还、并发库存和持久化。每请求独立连接或等价线程安全方案，事务保护库存。前端由下一节点创建。本阶段只做py_compile和必要的函数级检查；HTTP启动、并发、重启验证统一由质量节点负责。已有实现则只按证据修复，不重写。自测命令应能自行结束，不启动长驻服务器，不执行Shell后台服务和wait。不要输出源码/大日志。完成后立即简短交接并结束。"
+    },
+    {
+      "id": "frontend",
+      "title": "03 界面与业务交互",
+      "x": 840,
+      "y": 160,
+      "prompt": "你负责前端。先阅读输入交接与SPEC.md，创建static/index.html、static/style.css、static/app.js，接入已实现API。中文设备借用台，显示设备/库存与统计，添加设备、借用姓名/数量、借用列表筛选、归还、HTTP错误的可见提示；现代简洁排版，450px可用，不用外部CDN/依赖。输入须有label；按钮应易识别；用户文本用textContent，避免HTML注入。不要更改后端契约；仅在有证据时修接口适配。执行node --check或等价语法检查及静态引用检查；不能宣称浏览器E2E已通过。最后简短交接文件和待验交互并结束。"
+    },
+    {
+      "id": "quality",
+      "title": "04 测试与缺陷修复",
+      "x": 1220,
+      "y": 160,
+      "prompt": "你负责独立质量阶段。先阅读输入交接与SPEC.md，创建test_app.py，用unittest和真实HTTP子进程测试正常借用/归还、非法输入与错误不改库存、404/409、重复归还、两个并发借用只能一个成功、SQLite重启持久化和静态资源/路径穿越。每次测试用临时数据库和空闲端口，结束清理进程。至少15项有效测试，运行 python -m unittest -q。发现缺陷自行修复业务代码并重跑；不得删掉或放宽正确断言。创建QA.md记录实际命令、缺陷、修复和结果，禁止只写“静态检查通过”。输出仅摘要，最后简短交接并结束。 每个HTTP请求显式timeout最多5秒；服务器测试必须在Python subprocess.Popen的try/finally中执行terminate、wait(timeout=3)，必要时kill再wait。命令总时限120秒，控制测试整体耗时，不用Shell后台服务替代这些回收逻辑。"
+    },
+    {
+      "id": "delivery",
+      "title": "05 交付与运行核对",
+      "x": 1600,
+      "y": 160,
+      "prompt": "你负责交付。先读实际交接、SPEC.md和QA.md，核对app.py、三个前端文件及test_app.py均存在；实际再运行 python -m unittest -q 并核对前端脚本语法。创建中文README.md，说明无需依赖的启动命令、三步业务演示、数据库路径与测试命令，以及实际未测事项。只有真实检查失败时才修复并重跑；别重写完成的实现。创建DELIVERY.md写明节点交接与实际结果；不把模型文字当独立验收，不宣称做过浏览器操作。最后简短交付总结并结束。"
+    }
+  ],
+  "edges": [
+    {
+      "source": "requirements",
+      "target": "backend"
+    },
+    {
+      "source": "backend",
+      "target": "frontend"
+    },
+    {
+      "source": "frontend",
+      "target": "quality"
+    },
+    {
+      "source": "quality",
+      "target": "delivery"
+    }
+  ]
+}

@@ -45,7 +45,8 @@ def test_mouse_drag_nodes_connect_and_submit_draft():
     panel = FlowPanel()
     panel.resize(1000, 700)
     panel.show()
-    panel.set_flow({'id': 'f', 'title': 'Flow', 'revision': 1, 'nodes': [], 'edges': []})
+    panel.set_flow({'id': 'f', 'title': 'Flow', 'revision': 1, 'project_id': 'p',
+                    'project': {'id': 'p', 'revision': 1, 'workspace_path': '/project'}, 'nodes': [], 'edges': []})
     panel.add_node(QPointF(-260, -100))
     panel.add_node(QPointF(100, -100))
     app.processEvents()

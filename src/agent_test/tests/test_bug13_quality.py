@@ -35,7 +35,7 @@ def test_real_quality_report_optional(tmp_path):
     if not corpus:
         pytest.skip('设置 RAG_QUALITY_CORPUS 和本地模型路径后运行公开标注质量回归')
     output = tmp_path / 'quality'
-    subprocess.run([sys.executable, '-m', 'scripts.rag.quality', '--corpus', corpus, '--output', str(output)], check=True)
+    subprocess.run([sys.executable, '-m', 'agent_test.scripts.rag.quality', '--corpus', corpus, '--output', str(output)], check=True)
     summary = json.loads((output / 'summary.json').read_text())
     assert summary['queries'] == 10
     assert summary['evaluation_default']['hit@k'] >= .6

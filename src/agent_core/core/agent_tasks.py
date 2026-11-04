@@ -43,6 +43,8 @@ class AgentTasks:
 
     async def start(self, parent, task, tool_names, max_rounds=0, delay_seconds=0, *, title=None, workspace_mode=None):
         """内部入口；调用方须先完成委派确认。"""
+        if getattr(self.manager, '_tool_ceiling_archive', False):
+            raise ValueError('会话归档期间不能创建子 Agent')
         if self.closed or self.manager.closing or parent.cancelled.is_set() or parent.deleting:
             raise ValueError('父会话已取消或任务管理器正在关闭')
         if parent.record.get('delegated_from'):
@@ -51,7 +53,7 @@ class AgentTasks:
             raise ValueError('任务文本必须为 1..16000 字符')
         if not math.isfinite(delay_seconds) or not 0 <= delay_seconds <= 86400:
             raise ValueError('延时必须在 0..86400 秒之间')
-        parent_tools = parent.record.get('tool_names', config.MODEL_TOOL_NAMES)
+        parent_tools = self.manager._effective_session_tools(parent)
         allowed = set(TOOL_REGISTRY if parent_tools is None else parent_tools)
         if tool_names is None:
             tool_names = list(TOOL_REGISTRY if parent_tools is None else parent_tools)

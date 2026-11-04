@@ -4,7 +4,9 @@ import concurrent.futures
 import copy
 import hmac
 import json
+import time
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -14,8 +16,9 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from agent_core.core.flows import Definition, FlowService
+from agent_core.core.projects import ProjectService
 from agent_core.core.headless import redact_result
 
 from agent_core.api import (
@@ -51,6 +54,46 @@ class NewFlow(Arguments):
 
 class FlowRun(Arguments):
     definition: Definition | None = None
+
+
+class FlowImport(Arguments):
+    template: dict
+    missing_models: Literal['error', 'inherit'] = 'error'
+
+
+class FlowExport(Arguments):
+    definition: Definition
+
+
+class DesignerMessage(Arguments):
+    role: Literal['user', 'assistant']
+    content: str = Field(min_length=1, max_length=200000)
+
+
+class DesignerChat(Arguments):
+    messages: list[DesignerMessage] = Field(min_length=1, max_length=40)
+    model_profile: str | None = None
+    reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] | None = None
+    request_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
+
+
+class DesignerCancel(Arguments):
+    request_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+
+class NewProject(NewFlow):
+    title: str = Field(default='新项目', min_length=1, max_length=120)
+    flow_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
+
+
+class ProjectSettings(Arguments):
+    revision: int = Field(ge=0)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    workspace_path: str | None = Field(default=None, max_length=4096)
+    execution_environment: Literal['sandbox', 'local'] | None = None
+    permission_policy: Literal['full_access', 'smart', 'readonly'] | None = None
+    model_profile: str | None = None
+    handoff: str | None = None
 
 
 class Message(Arguments):
@@ -160,11 +203,18 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             app.state.flows_revision += 1
             app.state.updates.notify()
         app.state.flows = FlowService(app.state.manager, on_change=flow_changed)
+        app.state.projects = ProjectService(app.state.manager, app.state.flows, on_change=flow_changed)
         app.state.locks = {}
         app.state.mutations = asyncio.Lock()
+        app.state.designer_task = None
+        app.state.designer_id = None
+        app.state.designer_cancelled = OrderedDict()
         try:
             yield
         finally:
+            if app.state.designer_task and not app.state.designer_task.done():
+                app.state.designer_task.cancel()
+                await asyncio.gather(app.state.designer_task, return_exceptions=True)
             await app.state.flows.shutdown()
             await app.state.updates.close()
             await app.state.manager.shutdown()
@@ -197,7 +247,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                     return JSONResponse({'detail': '请求需要 Content-Length 且不能超过 1 MiB'}, status_code=413)
             if app.state.manager.maintenance and request.url.path not in {'/api/maintenance', '/api/events'}:
                 return JSONResponse({'detail': '正在清理数据，请稍后重试'}, status_code=409)
-        if request.url.path.startswith('/api/') and (request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}
+        if request.url.path not in {'/api/flow-designer/chat', '/api/flow-designer/cancel'} and request.url.path.startswith('/api/') and (request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}
                                                      or request.url.path not in snapshot_paths):
             # 文件读取、导出和修改共用屏障；清理须等已有读写及审计完成。
             async with app.state.mutations:
@@ -221,7 +271,8 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
         if (request.url.path == '/api/models' or request.url.path.startswith('/api/models/')
-                or request.url.path == '/api/flows' or request.url.path.startswith('/api/flows/')):
+                or request.url.path == '/api/flows' or request.url.path.startswith('/api/flows/')
+                or request.url.path.startswith('/api/flow-designer/')):
             # FastAPI's default validation includes raw input (including credential bodies).
             return JSONResponse({'detail': '请求格式无效'}, status_code=422)
         from fastapi.exception_handlers import request_validation_exception_handler
@@ -293,10 +344,33 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
 
     def flow_summaries():
         return clean_flow([{'id': row['id'], 'title': row['title'],
+                            'project_id': row.get('project_id'),
                             'status': (row.get('run') or {}).get('status', 'idle'),
                             'node_count': len(row['nodes']), 'revision': row['revision'],
                             'current_node': (row.get('run') or {}).get('current_node')}
                            for row in app.state.flows.list()])
+
+    def project_summaries():
+        rows = []
+        for project in app.state.projects.list():
+            related = app.state.flows.get(project['flow_id'])
+            rows.append({**{key: project.get(key) for key in (
+                'id', 'title', 'workspace_path', 'flow_id', 'source_flow_id',
+                'execution_environment', 'permission_policy', 'model_profile', 'revision')},
+                'status': (related.get('run') or {}).get('status', 'idle')})
+        return clean_flow(rows)
+
+    def project(identifier):
+        try:
+            return app.state.projects.get(identifier)
+        except (KeyError, ValueError):
+            raise HTTPException(404, '项目不存在') from None
+
+    def public_flow(value):
+        result = copy.deepcopy(value)
+        if result.get('project_id'):
+            result['project'] = project(result['project_id'])
+        return clean_flow(result)
 
     def flow(identifier):
         try:
@@ -305,12 +379,15 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             raise HTTPException(404, 'Flow 不存在') from None
 
     def flow_active():
-        return any(not task.done() for task in app.state.flows.tasks.values()) or bool(app.state.manager.project_reservations)
+        return (any(not task.done() for task in app.state.flows.tasks.values())
+                or bool(app.state.manager.project_reservations)
+                or bool(app.state.designer_task and not app.state.designer_task.done()))
 
     def snapshot():
         return {'sessions': [summary(value) for value in app.state.manager.sessions.values()],
                 'runtime': app.state.manager.concurrency_status(), 'revision': app.state.updates.revision,
                 'flows': flow_summaries(), 'flows_revision': app.state.flows_revision,
+                'projects': project_summaries(),
                 'flows_epoch': app.state.flows_epoch}
 
     async def materialize(value):
@@ -347,7 +424,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         return {'policies': ['full_access', 'smart', 'readonly'], 'models': app.state.manager.model_registry.ids(),
                 'tools': [row['function']['name'] for row in TOOL_SCHEMAS],
                 'limits': app.state.manager.concurrency_status()['limits'],
-                'load_errors': app.state.manager.store.errors,
+                'load_errors': [*app.state.manager.store.errors, *app.state.projects.errors],
                 'task_plans_enabled': app.state.manager.task_plans is not None,
                 'debug_enabled': app.state.manager.observer.enabled}
 
@@ -365,6 +442,13 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         return await wait_for_io_completion(future)
 
     def flow_model_check(identifier, *, deleting=False):
+        for project in app.state.projects.list():
+            if project.get('model_profile') == identifier:
+                if deleting:
+                    raise ValueError('项目仍在使用该模型，请先修改项目的模型设置')
+                task = app.state.flows.tasks.get(project['flow_id'])
+                if task is not None and not task.done():
+                    raise ValueError('项目运行期间不能修改其模型连接')
         for row in app.state.flows.list():
             profiles = {row.get('model_profile'), *(node.get('model_profile') for node in row['nodes'])}
             if identifier in profiles:
@@ -434,10 +518,121 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         app.state.updates.notify()
         return {'deleted_id': identifier}
 
+    @app.get('/api/flow-tools')
+    async def flow_tools():
+        from agent_core.core.flow_templates import flow_tool_catalog
+        return clean_flow(flow_tool_catalog())
+
+    @app.post('/api/flows/export')
+    async def export_flow(arguments: FlowExport):
+        result = app.state.flows.export_template(arguments.definition.model_dump())
+        await flow_audit('flow_export', arguments.definition.id)
+        return clean_flow(result)
+
+    @app.post('/api/flows/import', status_code=201)
+    async def import_flow(arguments: FlowImport):
+        try:
+            result = app.state.flows.import_template(arguments.template, missing_models=arguments.missing_models)
+        except ValidationError:
+            raise HTTPException(422, '模板格式无效') from None
+        except ValueError as exc:
+            raise HTTPException(409, clean_flow(str(exc))) from None
+        await flow_audit('flow_import', result['id'])
+        return clean_flow(result)
+
+    @app.post('/api/flow-designer/chat')
+    async def designer_chat(request: Request, arguments: DesignerChat):
+        from agent_core.core.flow_designer import design_flow
+        async with app.state.mutations:
+            if app.state.manager.maintenance:
+                raise HTTPException(409, '正在清理数据，请稍后重试')
+            if arguments.request_id in app.state.designer_cancelled:
+                raise HTTPException(409, '设计请求已取消')
+            if app.state.designer_task and not app.state.designer_task.done():
+                raise HTTPException(409, '已有设计请求正在进行')
+            await flow_audit('flow_designer', 'designer')
+            task = asyncio.create_task(design_flow(app.state.manager,
+                [item.model_dump() for item in arguments.messages],
+                model_profile=arguments.model_profile, reasoning_effort=arguments.reasoning_effort))
+            app.state.designer_task = task
+            app.state.designer_id = arguments.request_id
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=.1)
+                if await request.is_disconnected():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    raise HTTPException(499, '设计请求已取消')
+            return clean_flow(await task)
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if asyncio.current_task().cancelling():
+                raise
+            raise HTTPException(499, '设计请求已取消') from None
+        except ValueError as exc:
+            raise HTTPException(409, clean_flow(str(exc))) from None
+        finally:
+            if app.state.designer_task is task:
+                app.state.designer_task = None
+                app.state.designer_id = None
+
+    @app.post('/api/flow-designer/cancel')
+    async def designer_cancel(arguments: DesignerCancel):
+        async with app.state.mutations:
+            if app.state.manager.maintenance:
+                raise HTTPException(409, '正在清理数据，请稍后重试')
+            cancelled = app.state.designer_cancelled
+            now = time.monotonic()
+            while cancelled and next(iter(cancelled.values())) < now - 300:
+                cancelled.popitem(last=False)
+            cancelled.pop(arguments.request_id, None)
+            cancelled[arguments.request_id] = now
+            while len(cancelled) > 1024:
+                cancelled.popitem(last=False)
+            task = app.state.designer_task if app.state.designer_id == arguments.request_id else None
+            if task and not task.done():
+                task.cancel()
+            await flow_audit('flow_designer_cancel', arguments.request_id)
+        if task:
+            await asyncio.gather(task, return_exceptions=True)
+        return {'cancelled': True}
+
     @app.get('/api/flows')
     async def flows():
         return {'flows': flow_summaries(), 'flows_revision': app.state.flows_revision,
-                'flows_epoch': app.state.flows_epoch}
+                'flows_epoch': app.state.flows_epoch, 'projects': project_summaries()}
+
+    @app.get('/api/projects')
+    async def projects():
+        return {'projects': project_summaries()}
+
+    @app.post('/api/projects', status_code=201)
+    async def new_project(arguments: NewProject):
+        result = app.state.projects.create(**arguments.model_dump())
+        await flow_audit('project_created', result['flow_id'])
+        return clean_flow(result)
+
+    @app.get('/api/projects/{identifier}')
+    async def project_detail(identifier: str):
+        return clean_flow(project(identifier))
+
+    @app.patch('/api/projects/{identifier}')
+    async def update_project(identifier: str, arguments: ProjectSettings):
+        project(identifier)
+        changes = arguments.model_dump(exclude_unset=True)
+        if changes.get('title', '') is None or changes.get('handoff', '') is None:
+            raise HTTPException(422, '名称与背景不能为 null')
+        result = app.state.projects.update(identifier, **changes)
+        await flow_audit('project_updated', result['flow_id'])
+        return clean_flow(result)
+
+    @app.delete('/api/projects/{identifier}')
+    async def delete_project(identifier: str, arguments: Consent):
+        value = project(identifier)
+        app.state.projects.delete(identifier)
+        await flow_audit('project_deleted', value['flow_id'])
+        return {'project_id': identifier, 'flow_id': value['flow_id']}
 
     @app.post('/api/flows', status_code=201)
     async def new_flow(arguments: NewFlow):
@@ -447,7 +642,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
 
     @app.get('/api/flows/{identifier}')
     async def flow_detail(identifier: str):
-        return clean_flow(flow(identifier))
+        return public_flow(flow(identifier))
 
     @app.put('/api/flows/{identifier}')
     async def save_flow(identifier: str, definition: Definition):
@@ -456,7 +651,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             raise HTTPException(422, 'Flow ID 不匹配')
         result = app.state.flows.save(definition.model_dump())
         await flow_audit('flow_save', identifier)
-        return clean_flow(result)
+        return public_flow(result)
 
     @app.post('/api/flows/{identifier}/run')
     async def run_flow(identifier: str, arguments: FlowRun = FlowRun()):
@@ -465,14 +660,14 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             raise HTTPException(422, 'Flow ID 不匹配')
         result = app.state.flows.start(identifier, arguments.definition.model_dump() if arguments.definition else None)
         await flow_audit('flow_run', identifier)
-        return clean_flow(result)
+        return public_flow(result)
 
     @app.post('/api/flows/{identifier}/cancel')
     async def cancel_flow(identifier: str):
         flow(identifier)
         app.state.flows.cancel(identifier)
         await flow_audit('flow_cancel', identifier)
-        return clean_flow(flow(identifier))
+        return public_flow(flow(identifier))
 
     @app.delete('/api/flows/{identifier}')
     async def delete_flow(identifier: str, arguments: Consent):

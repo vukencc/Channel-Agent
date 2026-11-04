@@ -628,7 +628,7 @@ def test_hard_budget_archives_completed_post_user_tool_group_without_orphaning_r
         manager, session = await _manager(env)
         try:
             history, metrics = await manager.history_context.prepare(session, messages,
-                schemas=[{'name': 'read_file', 'description': 'read a file'}])
+                schemas=[{'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}])
             assert metrics['utilization'] <= 1
             assert 'CURRENT_USER_NEEDS_SUMMARY' in json.dumps(history, ensure_ascii=False)
             assert not any(item.get('role') == 'tool' for item in history)

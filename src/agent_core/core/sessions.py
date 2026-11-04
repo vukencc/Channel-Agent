@@ -26,8 +26,8 @@ from agent_core.core.task_plans import EvidenceCapacityError
 from agent_core.core.delegation_guidance import delegation_guide
 from agent_core.core.log import get_logger
 from agent_core.core.instrumentation import NullObserver, RuntimeObserver, observation_context, operation_span, traced, trace_function, tool_outcome
-from agent_core.core.model_settings import model_profile, active_profile, active_endpoint
-from agent_core.core.tool_settings import filter_schemas, bounded_schemas, model_tools
+from agent_core.core.model_settings import model_profile, model_thinking, active_profile, active_endpoint
+from agent_core.core.tool_settings import filter_schemas, bounded_schemas, model_tools, effective_tool_names
 from agent_core.core.budgets import BudgetLedger, BudgetExceeded, budget_scope
 from agent_core.rag.assess import assess_rag
 from agent_core.tools import TOOL_REGISTRY
@@ -170,6 +170,8 @@ class SessionManager:
             session.record.update(workspace_path=path, workspace_identity=list(identity))
         if parent is not None:
             session.record['delegated_from'] = parent.id
+            if self.flow_workspace_scope(parent):
+                session.record['flow_workspace_scope'] = True
         self.sessions[session.id] = session
         self.workspaces.register(session)
         self.save(session)
@@ -213,6 +215,21 @@ class SessionManager:
         if value not in {'sandbox', 'local'}:
             raise ValueError('会话执行环境无效，请在设置中重新选择')
         return value
+
+    def flow_workspace_scope(self, session: Session) -> bool:
+        """持久继承 Flow 边界；旧子会话沿可信父链追溯。"""
+        current, seen = session, set()
+        while current is not None and current.id not in seen:
+            seen.add(current.id)
+            if current.record.get('flow_id') or current.record.get('flow_workspace_scope'):
+                return True
+            parent_id = current.record.get('delegated_from')
+            if not parent_id:
+                return False
+            current = self.sessions.get(parent_id)
+            if current is None:
+                return True
+        return True
 
     def _ensure_local_command_jobs(self):
         """本机环境无需额外功能开关即可管理开发服务，仍遵循工具子集。"""
@@ -494,9 +511,11 @@ class SessionManager:
                                   lambda prompt, timeout: self._confirm(session, loop, prompt, timeout),
                                   tool_cancelled, turn_id=session.record.get('last_run', {}).get('turn_id', ''),
                                   tool_call_id=call['id'], job_manager=self.command_jobs, agent_tasks=self.agent_tasks, event_loop=loop, permission_policy=self.permission_override or session.record.get('permission_policy'), session_id=session.id,
-                                  root_identity=self.workspaces.identity(session), execution_environment=self.execution_environment(session))
+                                  root_identity=self.workspaces.identity(session), execution_environment=self.execution_environment(session),
+                                  flow_workspace_scope=self.flow_workspace_scope(session),
+                                  protected_paths=tuple(self.workspaces.protected_paths()))
             with tool_context(context), session_service_context(self, session.id, loop):
-                names = session.record.get('tool_names', config.MODEL_TOOL_NAMES)
+                names = self._effective_session_tools(session)
                 if names is not None and name not in names:
                     audit('tool_subset_denied', tool=name)
                     return '[拒绝] 工具不在当前会话工具子集中。'
@@ -675,7 +694,7 @@ class SessionManager:
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
             session = self.sessions.get(kwargs.get('session_id'))
-            names = session.record.get('tool_names', config.MODEL_TOOL_NAMES) if session else config.MODEL_TOOL_NAMES
+            names = self._effective_session_tools(session) if session else config.MODEL_TOOL_NAMES
             with self._concurrency_lock:
                 self._active_model_calls += 1
                 identifier = kwargs.get('session_id')
@@ -683,10 +702,16 @@ class SessionManager:
             self.notify()
             try:
                 profile = session.record.get('model_profile') if session else None
+                parent = self.sessions.get(session.record.get('delegated_from')) if session else None
+                effort = session.record.get('reasoning_effort') if session else None
+                mode = session.record.get('thinking_mode') if session else None
+                if parent:
+                    effort = effort if effort is not None else parent.record.get('reasoning_effort')
+                    mode = mode if mode is not None else parent.record.get('thinking_mode')
                 # 使用本轮准备上下文时绑定的连接快照，不能在请求前切到另一容量。
                 endpoint = (active_endpoint.get() if active_profile.get() == profile
                             else self.model_registry.resolve(profile))
-                with model_profile(profile, endpoint), model_tools(names), limits_scope(session.record if session else {}, endpoint=endpoint):
+                with model_profile(profile, endpoint), model_tools(names), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
                     with operation_span('model.request'):
                         return await self.model(history, **kwargs)
             finally:
@@ -699,10 +724,65 @@ class SessionManager:
                         self._active_model_sessions.pop(identifier)
                 self.notify()
 
+    def _effective_session_tools(self, session, *, include_current=True):
+        names = effective_tool_names(None)
+        active = set()
+        visited = set()
+        pending = [(session, False)]
+
+        def intersect(ceiling):
+            nonlocal names
+            if ceiling is None:
+                return
+            if not isinstance(ceiling, list) or any(not isinstance(name, str) for name in ceiling):
+                names = []
+                return
+            allowed = set(ceiling)
+            names = list(ceiling) if names is None else [name for name in names if name in allowed]
+
+        while pending:
+            current, leaving = pending.pop()
+            if leaving:
+                active.remove(current.id)
+                visited.add(current.id)
+                continue
+            if current.id in active:
+                return []
+            if current.id in visited:
+                continue
+            active.add(current.id)
+            if include_current or current is not session:
+                intersect(current.record.get('tool_names'))
+            if 'inherited_tool_names' in current.record:
+                intersect(current.record['inherited_tool_names'])
+            branch = current.record.get('branch') or {}
+            if not isinstance(branch, dict):
+                return []
+            identifiers = (current.record.get('delegated_from'), branch.get('parent_id'))
+            if any(identifier is not None and not isinstance(identifier, str) for identifier in identifiers):
+                return []
+            parent_ids = sorted({identifier for identifier in identifiers if identifier})
+            pending.append((current, True))
+            for parent_id in parent_ids:
+                parent = self.sessions.get(parent_id)
+                if parent is None:
+                    if 'inherited_tool_names' not in current.record:
+                        return []
+                else:
+                    pending.append((parent, False))
+        return names
+
     def set_tool_names(self, session, names: list[str] | None):
+        if getattr(self, '_tool_ceiling_archive', False):
+            raise ValueError('会话归档期间不能修改工具子集')
         if session.busy:
             raise ValueError('请等待当前任务结束再切换工具子集')
         schemas = filter_schemas(TOOL_SCHEMAS, names)
+        if names is not None and config.MODEL_TOOL_NAMES is not None and not set(names) <= set(config.MODEL_TOOL_NAMES):
+            raise ValueError('会话工具超出部署 MODEL_TOOL_NAMES 上限')
+        ceiling = self._effective_session_tools(session, include_current=False)
+        if names is not None and ceiling is not None and not set(names) <= set(ceiling):
+            raise ValueError('子会话工具超出父会话上限')
         session.record['tool_names'] = None if names is None else [row['function']['name'] for row in schemas]
         self.save(session)
 
@@ -777,12 +857,46 @@ class SessionManager:
             if any(child.id not in identifiers and child.record.get('delegated_from') == target.id
                    for child in self.sessions.values()) and include_descendants:
                 raise ValueError('子 Agent 列表已变化，请重新确认删除')
+        if getattr(self, '_tool_ceiling_archive', False):
+            raise ValueError('另一个会话归档正在进行')
+        self._tool_ceiling_archive = True
         for target in targets:
             target.deleting = True
         try:
+            forks = [task for task in self.fork_tasks if task is not asyncio.current_task() and not task.done()]
+            if forks:
+                await wait_for_io_completion(asyncio.gather(*forks, return_exceptions=True))
             await wait_for_io_completion(asyncio.create_task(self.flush()))
             for target in targets:
                 self.check_session_deletion(target, allow_deleting=True, deleting_ids=identifiers)
+            # 归档前持久化后代的当前上限，避免失去祖先后旧快照扩大工具集。
+            snapshots = []
+            for candidate in list(self.sessions.values()):
+                if candidate.id in identifiers:
+                    continue
+                pending = [candidate]
+                seen = set()
+                depends = False
+                while pending:
+                    current = pending.pop()
+                    if current.id in seen:
+                        continue
+                    seen.add(current.id)
+                    branch = current.record.get('branch') or {}
+                    if not isinstance(branch, dict):
+                        continue
+                    for parent_id in (current.record.get('delegated_from'), branch.get('parent_id')):
+                        if not isinstance(parent_id, str) or not parent_id:
+                            continue
+                        if parent_id in identifiers:
+                            depends = True
+                        elif parent_id in self.sessions:
+                            pending.append(self.sessions[parent_id])
+                if depends:
+                    snapshots.append((candidate, self._effective_session_tools(candidate)))
+            for candidate, ceiling in snapshots:
+                candidate.record['inherited_tool_names'] = copy.deepcopy(ceiling)
+                await wait_for_io_completion(self.save(candidate))
             worker = asyncio.get_running_loop().run_in_executor(
                 self.store.writer, self.store.delete_sessions, [target.id for target in reversed(targets)])
             moved = await wait_for_io_completion(worker)
@@ -796,6 +910,7 @@ class SessionManager:
             self.notify()
             return moved
         finally:
+            self._tool_ceiling_archive = False
             for target in targets:
                 target.deleting = False
 
@@ -808,7 +923,7 @@ class SessionManager:
 
     async def fork_session(self, session, through: int | None = None, *, attachment_refs=()) -> Session:
         from agent_core.core.branches import fork_record
-        if self.closing or session.busy:
+        if self.closing or session.busy or getattr(self, '_tool_ceiling_archive', False):
             raise ValueError('请等待原会话空闲后创建分支')
         session.forking = True
         task = asyncio.current_task()
@@ -816,7 +931,8 @@ class SessionManager:
         try:
             await self.flush()
             # Shield 后继续等待，避免取消 UI 时留下未登记的后台写线程。
-            worker = asyncio.create_task(asyncio.to_thread(fork_record, self.store, session.record, through, attachment_refs=attachment_refs, execution_environment=self.execution_environment(session)))
+            tool_ceiling = self._effective_session_tools(session)
+            worker = asyncio.create_task(asyncio.to_thread(fork_record, self.store, session.record, through, attachment_refs=attachment_refs, execution_environment=self.execution_environment(session), flow_workspace_scope=self.flow_workspace_scope(session), inherited_tool_names=tool_ceiling))
             try:
                 record = await asyncio.shield(worker)
             except asyncio.CancelledError:
@@ -961,6 +1077,12 @@ class SessionManager:
                         '可在项目内自行准备 JDK/Maven/依赖、启动服务与数据库、生成真实密码哈希，再实际编译和集成测试。'
                         '本机路径保持真实路径，不使用 /workspace。长期服务使用 start_command_job，检查可用的 inspect_command_job 或历史查询工具，完成后 cancel_command_job。'
                         '保持当前权限策略、取消、超时和审计；不要读取无关凭据或改动其它项目。')
+                    if self.flow_workspace_scope(session):
+                        budget_text += ('\n当前是项目 Flow：本机网络与资源语义保留，但命令使用文件系统写入保护，'
+                            '只有当前项目工作区可以持久写入，应用源码、状态和用户私有目录不可见。'
+                            'HOME 与 TMPDIR 为每条命令的私有临时目录；项目依赖、工具链及需要复用的缓存应放在项目内。'
+                            '空目录就是用户选择的新项目；按节点任务从零创建内容，不要在宿主上寻找其它仓库或切到应用源码。'
+                            '隔离能力不足时停止并报告，不能绕过工作区保护。')
                 else:
                     budget_text += '\n当前执行环境为隔离沙箱，工作区映射 /workspace；隔离失败时不能回退本机。'
                 if self.task_plans is not None:
@@ -980,7 +1102,7 @@ class SessionManager:
                     budget_text += work_progress_context(session.record)
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
-                schemas = bounded_schemas(TOOL_SCHEMAS, session.record.get('tool_names', config.MODEL_TOOL_NAMES))
+                schemas = bounded_schemas(TOOL_SCHEMAS, self._effective_session_tools(session))
                 budget_text += '\n' + delegation_guide([schema['function']['name'] for schema in schemas],
                                                        session.record.get('delegated_from'), concise=round_index > 0)
                 extra_chars = len(memory_text) - len(memory) + len(FILE_WORKFLOW_GUIDE) + 1 + len(budget_text)

@@ -1,11 +1,17 @@
 # 文档索引
 
+> 文档导航 · [项目首页](../README.md) · [快速上手](getting-started.md) · [阶段状态](project-status.md)
+
 文档分为现行使用指南、实现与设计边界、历史交付记录。历史报告保留当时测量和问题描述，不作为当前使用规范；使用命令与配置前请以现行指南和源码为准。新会话接手入口见[会话交接说明](session-handoff.md)。
 
-## 现行使用指南
+## 开始使用与现行指南
+
+- [快速上手](getting-started.md)：安装、模型连接、首个会话与 Flow 项目。
+- [项目阶段状态](project-status.md)：交付、验证类型与当前边界。
 
 - [原生桌面 GUI](desktop.md)：不依赖浏览器的窗口、模型设置与会话操作。
 - [Agent Flow](agent-flow.md)：原生及 Web 画布、项目继承、交接和运行状态。
+- [四 Agent 售后工单手动用例](agent-flow-support-manual.md)：完整节点配置、可选模板导入与待用户执行的操作步骤，未运行或测试。
 
 - [CLI 指南](cli.md)：多会话操作、命令、持久化与确认。
 - [CLI 命令与权限模式](cli-command-modes.md)：命令选择器、权限模式和会话回收。
@@ -33,8 +39,18 @@
 - [DEBUG 因果时间线设计](debug-timeline-design.md)：总览、通信、异常、游标和指标语义。
 - [平台能力设计](platform-design.md)：跨平台、headless、API/MCP 与容器后端的设计边界。
 - [Codex 多代理](codex-multiagent.md)：本地代理配置和协作约定；技术配置以当前 Codex 配置和官方 schema 为准。
+- [当前会话交接](session-handoff.md)：维护者接手时的状态、环境与 Git 边界；[历史会话交接](session-history.md)保留各阶段记录。
+
+## 历史 Flow 验证记录
+
+以下记录保留当时的执行和问题，不代表当前质量或性能。
 
 - [Agent Flow 验证记录](agent-flow-validation.md)：多流程测试、修复与验证边界。
+- [Web Flow 画布与三个 Agent 验证](agent-flow-canvas-validation-2026-10-31.md)：实时拖线、节点裁剪、测试计划、实际步骤与真实模型执行问题。
+- [五 Agent 设备借用业务验证](agent-flow-equipment-validation-2026-10-31.md)：可复用的真实应用场景、分工、完整验收与执行记录。
+- [客服反馈分流业务实测](agent-flow-customer-service-validation-2026-11-02.md)：五Agent分类、真实RAG、模拟运维/人工交接及未通过的质量项。
+- [Flow创作功能验证](agent-flow-authoring-validation-2026-11-02.md)：侧栏设计、节点工具/模型/推理、便携模板与实际界面验证边界。
+- [设计助手与客服Flow实测](agent-flow-designer-customer-validation-2026-11-03.md)：真实设计/节点配置/JSON往返、五节点执行、上下文兼容修复及人工反馈后的业务复验。
 
 ## 历史交付与诊断记录
 
@@ -61,5 +77,5 @@
 
 ## 仓库与本地资料
 
-源码分布于 `src/agent_core/`、`src/agent_test/` 和 `src/agent_frontend/`，测试在 `src/agent_test/tests/`，跟踪的 CI 和工程脚本在 `src/agent_test/scripts/`。项目级 Codex 默认配置 `.codex/` 和根 `AGENTS.md` 随仓库提供；本地开发资料 `docs/dev/` 不随 clone 分发。项目启动入口和当前功能简介见[根 README](../README.md)。
+源码分布于 `src/agent_core/`、`src/agent_test/` 和 `src/agent_frontend/`，测试在 `src/agent_test/tests/`，跟踪的 CI 和工程脚本在 `src/agent_test/scripts/`。根 `AGENTS.md` 和项目级 Codex 配置 `.codex/` 已纳入版本控制；本地开发资料 `docs/dev/` 不随 clone 分发。项目启动入口和当前功能简介见[根 README](../README.md)。
 `docs/opensource-docker-journey.md` 被 Git 忽略，是仅存在于部分 checkout 的本地记录，不属于可分发文档。

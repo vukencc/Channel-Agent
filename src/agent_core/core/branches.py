@@ -31,7 +31,10 @@ def validate_prefix(messages: list[dict]):
         raise ValueError('截断点位于工具配对中间；请选择结果返回后的消息')
 
 
-def fork_record(store, source: dict, through: int | None = None, *, attachment_refs=(), execution_environment=None) -> dict:
+_UNSET = object()
+
+
+def fork_record(store, source: dict, through: int | None = None, *, attachment_refs=(), execution_environment=None, flow_workspace_scope=False, inherited_tool_names=_UNSET) -> dict:
     from agent_core.core.storage import LazyRecord
     if not config.ENABLE_SESSION_BRANCHES:
         raise ValueError('请显式开启 ENABLE_SESSION_BRANCHES')
@@ -58,9 +61,14 @@ def fork_record(store, source: dict, through: int | None = None, *, attachment_r
     if environment not in {'sandbox', 'local'}:
         raise ValueError('分支来源执行环境无效')
     record['execution_environment'] = environment
-    for field in ('model_profile', 'tool_names', 'permission_policy', 'budget_overrides'):
+    if flow_workspace_scope or source.get('flow_id') or source.get('flow_workspace_scope'):
+        record['flow_workspace_scope'] = True
+    for field in ('model_profile', 'tool_names', 'reasoning_effort', 'thinking_mode', 'permission_policy', 'budget_overrides'):
         if field in source:
             record[field] = copy.deepcopy(source[field])
+    if inherited_tool_names is not _UNSET:
+        record['tool_names'] = copy.deepcopy(inherited_tool_names)
+        record['inherited_tool_names'] = copy.deepcopy(inherited_tool_names)
     if len(json.dumps(record, ensure_ascii=False).encode()) > config.SESSION_MAX_MB * 1024 ** 2:
         raise ValueError('分支超过 SESSION_MAX_MB，请选择更早的截断点')
     directory = store.directory(record['id'])

@@ -3,11 +3,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import os
+import re
 import stat
 import threading
 from pathlib import Path
 
 from agent_core import config
+from agent_core.core.files import opened_path
 
 from agent_core.tools.sandbox import SandboxError
 
@@ -148,6 +150,29 @@ class SessionWorkspaces:
     def selected_paths(self):
         """维护保护保留失效路径与回收区记录，不能依赖可成功打开的工作区。"""
         values = [binding.path for binding in self.bindings.values() if binding.path is not None]
+        projects = getattr(self, 'projects', None)
+        if projects is not None:
+            values.extend(record['workspace_path'] for record in projects.records.values()
+                          if record['workspace_path'] is not None)
+        project_dir = self.manager.store.root / 'projects'
+        if project_dir.is_symlink():
+            raise PermissionError('项目记录目录不能是符号链接')
+        if project_dir.exists():
+            if not project_dir.is_dir():
+                raise PermissionError('项目记录目录无效，拒绝清理')
+            for path in project_dir.glob('*.json'):
+                if path.is_symlink() or not re.fullmatch(r'[a-f0-9]{32}', path.stem):
+                    raise PermissionError('项目记录无效，拒绝清理')
+                try:
+                    with opened_path(project_dir, path) as fd:
+                        with os.fdopen(os.dup(fd), encoding='utf-8') as stream:
+                            record = json.load(stream)
+                    if not isinstance(record, dict) or record.get('id') != path.stem or 'workspace_path' not in record:
+                        raise ValueError('项目记录无效')
+                    if record['workspace_path'] is not None:
+                        values.append(record['workspace_path'])
+                except (ValueError, OSError, TypeError) as exc:
+                    raise PermissionError('项目记录无效，拒绝清理') from exc
         trash = self.manager.store.root / '.trash'
         if trash.is_symlink():
             raise PermissionError('工作区回收记录不能是符号链接')

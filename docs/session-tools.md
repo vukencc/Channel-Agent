@@ -1,6 +1,8 @@
 # 会话创建与 Agent 通信
 
-会话工具用于 CLI 用户和模型创建会话，以及让直接关联的父、子 Agent 交换持久消息。`create_session`、`send_session_message`、`read_session_messages` 和 `wait_agent_task` 默认注册，不受 `ENABLE_AGENT_TASKS` 控制。该开关只控制旧版 `delegate` 工具注册和启动时的任务队列预载；创建子任务时会按需初始化队列，因此 `/tasks` 不要求开启此开关。尚无已加载的子任务时，`/tasks` 会提示可让 Agent 用 `create_session` 创建独立任务。模型可通过 `/tools` 的会话工具子集设置隐藏或重新启用这些工具。
+> 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
+
+会话工具用于 CLI 用户和模型创建会话，以及让直接关联的父、子 Agent 交换持久消息。`create_session`、`send_session_message`、`read_session_messages` 和 `wait_agent_task` 默认注册，不受 `ENABLE_AGENT_TASKS` 控制。该开关只控制旧版 `delegate` 工具注册和启动时的任务队列预载；创建子任务时会按需初始化队列，因此 `/tasks` 不要求开启此开关。尚无已加载的子任务时，`/tasks` 会提示可让 Agent 用 `create_session` 创建独立任务。经典 CLI 不提供 `/tools` 选择命令；部署工具上限和旧会话能力限制仍生效，Flow 节点可在上限内选择工具，见 [Agent Flow](agent-flow.md)。
 
 ## 创建会话
 
@@ -8,7 +10,7 @@ CLI 启动时没有已恢复会话，或用户执行 `/new [名称]` 时，会�
 
 子 Agent 任务异步运行，受 `AGENT_TASK_CONCURRENCY`（默认 2）并发槽限制。父 Agent 保存创建结果中的 `task_id` 后，可调用 `wait_agent_task(task_id, timeout_seconds=10)` 有界等待；等待秒数范围为 0–30，默认 10，实际等待会为通用工具超时和审计留出余量。响应为 JSON，提供任务/子会话身份、状态、是否已排空、有限长度结果以及错误和截断标记。等待会检查子会话运行状态和在途工具是否均已结束；只读等待本身不占用读工具并发槽。等待超时不会取消子任务、启动新任务或重放操作。
 
-每个根会话有自己的项目工作区 `SANDBOX_DIR/<根会话 ID>/`（默认 `crud_tests/<根会话 ID>/`）。新建子 Agent 自动绑定直接父 Agent 的项目工作区，因此可共同读写项目文件；不再提供工作区模式选择。历史上已持久化的隔离子会话不会迁移文件。旧环境变量 `AGENT_WORKSPACE_MODE` 不再生效。子 Agent 不能指定其他项目根。
+每个根会话有自己的项目工作区，未选择外部目录时为 `SANDBOX_DIR/<根会话 ID>/`（默认 `crud_tests/<根会话 ID>/`）。新建子 Agent 自动绑定直接父 Agent 的项目工作区，因此可共同读写项目文件；不再提供工作区模式选择。历史上已持久化的隔离子会话不会迁移文件。旧环境变量 `AGENT_WORKSPACE_MODE` 不再生效。子 Agent 不能指定其他项目根。
 
 Linux 用户可通过 WebUI 创建/设置中的项目路径，或 CLI `/project /home/user/project`，将根会话绑定到系统已有项目目录；不要求项目位于 `crud_tests`。模型 `create_session` 的参数不提供宿主路径授权，子 Agent 仍继承父目录。选择随根会话保存，目录丢失、符号链接或目录身份变化时拒绝访问，由用户重新选择；共享组有排队/运行任务、工具或后台命令时不能切换。恢复默认和删除会话都保留外部项目文件。
 

@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, Signal
 from agent_core.api import LazyRecord, SessionManager, SessionStore, config, open_session
 from agent_core.core.headless import redact_result
 from agent_core.core.flows import FlowService
+from agent_core.core.projects import ProjectService
 from agent_core.core.llm import call_model, close_clients
 from agent_core.core.permissions import public_permission_policy
 from agent_core.tools.sandbox import ToolContext, audit, tool_context
@@ -41,6 +42,7 @@ class RuntimeBridge(QObject):
         self._selected: str | None = None
         self._selected_flow: str | None = None
         self._flows: FlowService | None = None
+        self._projects: ProjectService | None = None
         self._page_sizes: dict[str, int] = {}
         self._dirty = False
         self._last_payload = ''
@@ -49,6 +51,8 @@ class RuntimeBridge(QObject):
         self._stop: asyncio.Event | None = None
         self._mutations: asyncio.Lock | None = None
         self._commands: set[asyncio.Task] = set()
+        self._design_task: asyncio.Task | None = None
+        self._design_generation = 0
         self._secrets: set[str] = set()
 
     @property
@@ -101,6 +105,7 @@ class RuntimeBridge(QObject):
             self._manager = SessionManager(self._store, self._notify, self._model,
                                            cascade_deletions=True, observer=create_observer())
             self._flows = FlowService(self._manager)
+            self._projects = ProjectService(self._manager, self._flows)
             if not self._manager.sessions:
                 value = open_session(self._manager)
                 self._selected = value.id
@@ -124,6 +129,7 @@ class RuntimeBridge(QObject):
                     pass
         finally:
             self._closing = True
+            self._cancel_design()
             # 先让当前可信用户操作结束，再取消 Agent 并排空工具和 writer。
             if self._commands:
                 await asyncio.gather(*list(self._commands), return_exceptions=True)
@@ -151,9 +157,46 @@ class RuntimeBridge(QObject):
     def _schedule_command(self, action: str, arguments: dict) -> None:
         if self._closing:
             return
-        task = asyncio.create_task(self._command(action, arguments))
+        if action == 'flow_design_cancel':
+            self._cancel_design()
+            return
+        if action == 'flow_design':
+            self._cancel_design()
+            generation = self._design_generation
+            task = asyncio.create_task(self._design(arguments, generation))
+            self._design_task = task
+        else:
+            if action in ('select', 'flow_select', 'project_select', 'create'):
+                self._cancel_design()
+            task = asyncio.create_task(self._command(action, arguments))
         self._commands.add(task)
         task.add_done_callback(self._commands.discard)
+
+    def _cancel_design(self) -> None:
+        self._design_generation += 1
+        if self._design_task and not self._design_task.done():
+            self._design_task.cancel()
+        self._design_task = None
+
+    async def _design(self, arguments: dict, generation: int) -> None:
+        try:
+            from agent_core.core.flow_designer import design_flow
+            result = await design_flow(self._manager, arguments['messages'], model_profile=arguments.get('model_profile'), reasoning_effort=arguments.get('reasoning_effort'))
+            async with self._mutations:
+                if self._closing or generation != self._design_generation:
+                    return
+                if result.get('template') is not None:
+                    flow = self._flows.import_template(result['template'])
+                    self._selected_flow = flow['id']
+                    self._audit('flow_design_import', flow_id=flow['id'])
+                self.finished.emit('flow_design', json.dumps(self._clean({'reply': result.get('reply', ''), 'template': result.get('template'), 'request_id': arguments.get('request_id')}), ensure_ascii=False))
+                self._dirty = True
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            if generation == self._design_generation and not self._closing:
+                self.error.emit(self._clean(str(exc)) if isinstance(exc, ValueError) else f'设计未完成（{type(exc).__name__}）。')
+                self.finished.emit('flow_design', json.dumps({'error': True, 'request_id': arguments.get('request_id')}))
 
     async def _materialize(self, identifier: str | None) -> None:
         if identifier is None:
@@ -215,12 +258,23 @@ class RuntimeBridge(QObject):
                                 error='运行失败；请检查模型连接与任务设置。' if record.get('status') == 'error' else '')
         flow_records = self._flows.list() if self._flows is not None else []
         flows = [{'id': row['id'], 'title': row['title'], 'status': (row.get('run') or {}).get('status', 'idle'),
-                  'node_count': len(row['nodes'])} for row in flow_records]
+                  'node_count': len(row['nodes']), 'project_id': row.get('project_id')} for row in flow_records]
         selected_flow = next((row for row in flow_records if row['id'] == self._selected_flow), None)
+        project_records = self._projects.list() if self._projects is not None else []
+        projects = [{**{key: row.get(key) for key in (
+            'id', 'title', 'workspace_path', 'flow_id', 'source_flow_id',
+            'execution_environment', 'permission_policy', 'model_profile', 'revision')},
+            'status': next((flow['status'] for flow in flows if flow['id'] == row['flow_id']), 'idle')}
+            for row in project_records]
+        if selected_flow and selected_flow.get('project_id'):
+            selected_flow['project'] = self._projects.get(selected_flow['project_id'])
+        from agent_core.core.flow_templates import flow_tool_catalog
         payload = json.dumps(self._clean({'sessions': rows, 'selected': selected,
-                             'flows': flows, 'selected_flow': selected_flow,
+                             'flows': flows, 'projects': projects, 'selected_flow': selected_flow,
+                             'flow_tools': flow_tool_catalog(),
                              'models': manager.model_registry.list_public(), 'default_model': config.MODEL,
-                             'runtime': manager.concurrency_status(), 'load_errors': len(self._store.errors)}), ensure_ascii=False)
+                             'runtime': manager.concurrency_status(),
+                             'load_errors': len(self._store.errors) + (len(self._projects.errors) if self._projects else 0)}), ensure_ascii=False)
         if payload != self._last_payload:
             self._last_payload = payload
             self.state_changed.emit(payload)
@@ -264,8 +318,44 @@ class RuntimeBridge(QObject):
             if 'permission_policy' in arguments:
                 manager.set_permission_policy(value, arguments['permission_policy'])
             return {'session_id': value.id}
+        if action.startswith('project_'):
+            project_id = arguments.get('project_id')
+            if action == 'project_create':
+                allowed = {'title', 'workspace_path', 'flow_id', 'handoff', 'execution_environment',
+                           'permission_policy', 'model_profile'}
+                result = self._projects.create(**{key: val for key, val in arguments.items() if key in allowed})
+                self._selected_flow = result['flow_id']
+            elif action == 'project_select':
+                result = self._projects.get(project_id)
+                self._selected_flow = result['flow_id']
+            elif action == 'project_update':
+                changes = arguments.get('changes', {key: val for key, val in arguments.items() if key != 'project_id'})
+                allowed = {'revision', 'title', 'workspace_path', 'handoff', 'execution_environment',
+                           'permission_policy', 'model_profile'}
+                if set(changes) - allowed or 'revision' not in changes:
+                    raise ValueError('项目设置字段或版本无效。')
+                result = self._projects.update(project_id, **changes)
+            elif action == 'project_delete':
+                value = self._projects.get(project_id)
+                self._projects.delete(project_id)
+                if self._selected_flow == value['flow_id']:
+                    self._selected_flow = None
+                result = {'project_id': project_id, 'flow_id': value['flow_id']}
+            else:
+                raise ValueError('未知项目操作。')
+            await asyncio.to_thread(self._audit, action, project_id=result.get('id', project_id))
+            return result
         if action.startswith('flow_'):
             flow_id = arguments.get('flow_id', self._selected_flow)
+            if action == 'flow_export':
+                result = self._flows.export_template(arguments['definition'])
+                self._audit('flow_export', flow_id=arguments['definition'].get('id'))
+                return result
+            if action == 'flow_import':
+                result = self._flows.import_template(arguments['payload'], missing_models=arguments.get('missing_models', 'error'))
+                self._selected_flow = result['id']
+                self._audit('flow_import', flow_id=result['id'])
+                return result
             if action == 'flow_create':
                 flow = self._flows.create(**{key: val for key, val in arguments.items()
                     if key in {'title', 'workspace_path', 'handoff', 'execution_environment', 'permission_policy', 'model_profile'}})
@@ -291,6 +381,11 @@ class RuntimeBridge(QObject):
             else:
                 raise ValueError('未知 Flow 操作。')
             await asyncio.to_thread(self._audit, action, flow_id=result.get('id', flow_id))
+            if action in ('flow_run', 'flow_cancel'):
+                # 审计期间运行可能已推进；确认应反映后台最新快照。
+                result = self._flows.get(flow_id)
+            if result.get('project_id'):
+                result['project'] = self._projects.get(result['project_id'])
             return result
         if action.startswith('model_'):
             registry = manager.model_registry
@@ -299,6 +394,13 @@ class RuntimeBridge(QObject):
             model_id = arguments.pop('model_id', None)
             arguments.pop('session_id', None)
             if action in {'model_edit', 'model_delete'}:
+                for project in self._projects.list():
+                    if project.get('model_profile') == model_id:
+                        if action == 'model_delete':
+                            raise ValueError('项目仍在使用该模型，请先修改项目的模型设置。')
+                        task = self._flows.tasks.get(project['flow_id'])
+                        if task is not None and not task.done():
+                            raise ValueError('项目运行期间不能修改其模型连接。')
                 for flow in self._flows.list():
                     profiles = {flow.get('model_profile'), *(node.get('model_profile') for node in flow['nodes'])}
                     if model_id in profiles:

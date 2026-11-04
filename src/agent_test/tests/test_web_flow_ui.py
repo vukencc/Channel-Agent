@@ -27,14 +27,111 @@ assert.ok(source.includes('window.FlowUI = {'));
 source=source.replace('function render() {','function render() { if(window.renderFields) window.renderFields(); return;');
 source=source.replace('window.FlowUI = {', `window.flowStateHarness={
   setup(b,f){bridge=b;active=f.id;drafts.set(f.id,f)},
-  perform,snapshot,inputField,refreshRun,refreshList,select(id){selected=id},setPicker(fn){pickDirectory=fn},
-  draft:()=>drafts.get(active),rev:()=>revision,summary:()=>summaries
+  perform,snapshot,inputField,refreshRun,refreshList,setInteraction(fn){cancelNodeDrag=fn},select(id){selected=id},setPicker(fn){pickDirectory=fn},
+  draft:()=>drafts.get(active),rev:()=>revision,summary:()=>summaries,projects:()=>projects,markProject:()=>projectDirty.add(active),switchTo(f){active=f.id;drafts.set(f.id,f)}
 }; window.FlowUI = {`);
 global.window={};global.document={getElementById:()=>null};
 vm.runInThisContext(source);
 const harness=window.flowStateHarness;
-const flow={id:'a'.repeat(32),title:'受控流程',nodes:[],edges:[],run:null,revision:1};
+const flow={id:'a'.repeat(32),project_id:'project-1',title:'受控流程',nodes:[],edges:[],run:null,revision:1};
 ''' + body)
+
+
+def test_designer_dock_keeps_canvas_after_generation_and_ignores_late_reply(tmp_path):
+    # 受控 DOM 与异步接口，仅验证 UI 状态；不代表浏览器布局或模型执行。
+    run_flow_js(tmp_path, r'''
+const fs=require('node:fs'),vm=require('node:vm');
+let source=fs.readFileSync(process.argv[2],'utf8');
+source=source.replace('function render() {', 'function render() { window.rendered.push({active, designerVisible}); return;');
+source=source.replace('window.FlowUI = {', `window.harness={
+ setup(b,f){bridge=b;active=f.id;drafts.set(f.id,f);designerVisible=true},
+ drawDesigner,open,openCreated,hide,state:()=>({active,designerVisible,history:designerHistory}),
+}; window.FlowUI = {`);
+class Element {
+ constructor(tag){this.tag=tag;this.children=[];this.listeners={};this.classList={add(){},remove(){}};this.dataset={};this.value='';}
+ append(...items){for(const item of items){item.parent=this;this.children.push(item)}}
+ replaceWith(item){const i=this.parent.children.indexOf(this);this.parent.children[i]=item;item.parent=this.parent}
+ replaceChildren(...items){this.children=[];this.append(...items)}
+ addEventListener(name,fn){this.listeners[name]=fn}
+ setAttribute(){} click(){return this.listeners.click?.({})}
+ querySelector(selector){if(selector==='.flow-designer-panel')return this.children.find(x=>x.className==='flow-designer-panel')||null;return null}
+}
+const layout=new Element('div'),root=new Element('section');root.querySelector=s=>s==='.flow-layout'?layout:null;
+const list=new Element('div');const elements={'flow-view':root,'flow-list':list};
+global.document={createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),getElementById:id=>elements[id]||null,body:new Element('body')};
+global.window={rendered:[]};global.requestAnimationFrame=()=>{};
+vm.runInThisContext(source);
+const h=window.harness, original={id:'old',title:'旧草稿',nodes:[],edges:[]}, created={id:'new',title:'生成副本',nodes:[],edges:[]};
+let resolveChat, imports=0, chatId, cancelOptions;
+const bridge={enter(){},models:()=>[],toast(){},api(path,options){
+ if(path==='/api/flow-designer/chat'){chatId=options.body.request_id;return new Promise(resolve=>{resolveChat=resolve});}
+ if(path==='/api/flow-designer/cancel'){cancelOptions=options;return Promise.resolve({cancelled:true});}
+ if(path==='/api/flows/import'){imports++;return Promise.resolve(created)}
+ if(path==='/api/flows')return Promise.resolve({flows:[],flows_revision:0});
+ return Promise.resolve(original);
+}};
+function find(node,text){if(node.textContent===text)return node;for(const child of node.children||[]){const found=find(child,text);if(found)return found;}return null}
+function send(){h.drawDesigner();const panel=layout.querySelector('.flow-designer-panel'),input=panel.children.find(x=>x.tag==='textarea');input.value='设计';input.listeners.input();return find(panel,'发送').click()}
+(async()=>{
+ h.setup(bridge,original);
+ let pending=send();resolveChat({reply:'已设计',template:{format:'agent-flow'}});await pending;
+ assert.equal(imports,1);assert.equal(h.state().active,'new');assert.equal(h.state().designerVisible,true);
+ assert.equal(h.state().history.at(-1).display,'已设计');
+ pending=send();h.open('old');resolveChat({reply:'迟到',template:{format:'agent-flow'}});await pending;
+ assert.equal(imports,1,'切换后迟到的回复不得导入');assert.equal(h.state().active,'old');assert.equal(h.state().designerVisible,false);
+ assert.equal(cancelOptions.body.request_id,chatId);assert.equal(cancelOptions.keepalive,true);assert.equal(cancelOptions.signal,undefined,'取消请求不能使用已中止的 signal');
+})().catch(e=>{console.error(e);process.exitCode=1});
+''')
+
+
+def test_designer_context_prioritizes_latest_complete_template_and_warns_on_overflow(tmp_path):
+    run_flow_js(tmp_path, r'''
+const {flowDesignerReply, flowDesignerTrim} = api;
+const template={format:'agent-flow',nodes:[{prompt:'x'.repeat(9000)}]};
+const entry=flowDesignerReply('r'.repeat(9000),template);
+assert.deepEqual(JSON.parse(entry.content),template,'组合超限时完整模板优先');
+assert.equal(entry.display,'r'.repeat(9000));assert.equal(entry.warning,'');
+const oversized=flowDesignerReply('说明',{nodes:[{prompt:'x'.repeat(17000)}]});
+assert.ok(oversized.warning.includes('下一轮'));assert.equal(oversized.display,'说明');
+assert.ok(!flowDesignerTrim([entry,oversized,{role:'user',content:'继续'}]).includes(entry),
+  '最新模板过大时不能把旧图误当最新图送入下一轮');
+const history=[{role:'assistant',content:'older',template:true},entry,
+  ...Array.from({length:50},(_,i)=>({role:'user',content:'q'.repeat(1800)+i}))];
+const trimmed=flowDesignerTrim(history);
+assert.ok(trimmed.includes(entry),'保留最新完整模板');
+assert.equal(trimmed.at(-1),history.at(-1),'保留最新用户消息');
+assert.ok(trimmed.length<=40 && trimmed.reduce((sum,item)=>sum+item.content.length,0)<=64000);
+''')
+
+
+def test_flow_entered_during_connect_is_not_replaced_by_initial_session(tmp_path):
+    run_flow_js(tmp_path, r'''
+const fs=require('node:fs'),path=require('node:path');
+const source=fs.readFileSync(path.join(path.dirname(process.argv[2]),'app.js'),'utf8');
+const definition=source.match(/  async function connect\(\) \{[\s\S]*?\n  \}/)[0];
+let release, selected=0, welcome=0, active=false;
+const state={ready:false,connecting:false,retryCount:0,sessions:new Map([['session',{}]])};
+const window={FlowUI:{isActive:()=>active,refreshModels(){}}};
+const $=()=>({open:false});
+const connect=new Function('state','window','$','jsonApi','connectionStatus','renderArchiveLink','showError','applySnapshot','sessionStorage','selectSession','showWelcome','startEvents','refreshTasks','loadModels','fillSelect','renderConversationStatus','renderConnectionActions','clearTimeout','clearInterval','setInterval', 'return ('+definition+')')(
+ state,window,$,url=>url==='/api/meta'?new Promise(r=>{release=r}):Promise.resolve({sessions:[]}),()=>{},()=>{},()=>{},()=>{},
+ {getItem:()=>null},()=>selected++,()=>welcome++,()=>{},()=>{},()=>Promise.resolve(),()=>{},()=>{},()=>{},()=>{},()=>{},()=>0);
+(async()=>{const pending=connect();active=true;release({models:[]});await pending;assert.equal(selected+welcome,0,'启动响应不得关闭已打开的 Flow');})().catch(e=>{console.error(e);process.exitCode=1});
+''')
+
+
+def test_model_labels_refresh_in_place_preserving_selection_and_input(tmp_path):
+    run_flow_js(tmp_path, r'''
+const fs=require('node:fs'),vm=require('node:vm');let source=fs.readFileSync(process.argv[2],'utf8');
+source=source.replace('window.FlowUI = {','window.harness={setup(b){bridge=b},refreshModels}; window.FlowUI = {');
+const select={dataset:{flowModel:'designer'},value:'runtime-1',replaceChildren(...options){this.options=options}};
+const draft={value:'未发送内容'},root={querySelectorAll:()=>[select]};
+global.window={};global.document={getElementById:()=>root,createElement:()=>({})};vm.runInThisContext(source);
+window.harness.setup({models:()=>[{value:'runtime-1',label:'友好名称 · 模型'}]});
+window.harness.refreshModels();
+assert.equal(select.value,'runtime-1');assert.equal(select.options[1].textContent,'友好名称 · 模型');
+assert.equal(draft.value,'未发送内容','更新模型选项不能重绘输入框');
+''')
 
 
 def test_flow_graph_connections_allow_diamonds_and_reject_cycles(tmp_path, monkeypatch, sandbox_env):
@@ -214,6 +311,7 @@ class ElementDouble {
   constructor(){this.children=[];this.listeners={};this.dataset={};}
   append(...items){this.children.push(...items);}
   addEventListener(name,fn){this.listeners[name]=fn;}
+  setAttribute(name,value){this[name]=value;}
   click(){this.listeners.click();}
 }
 document.createElement=()=>new ElementDouble();
@@ -272,6 +370,7 @@ class FormElementDouble {
   constructor(tag='div'){this.tag=tag;this.children=[];this.listeners={};this.dataset={};this.isConnected=true;}
   append(...items){this.children.push(...items);}
   addEventListener(name,fn){this.listeners[name]=fn;}
+  setAttribute(name,value){this[name]=value;}
   closest(){return ['input','textarea','select'].includes(this.tag)?this:null;}
   replaceChildren(){
     const detach=element=>{element.isConnected=false;element.children.forEach(detach)};
@@ -348,13 +447,14 @@ const controls=new Map();
 const $=id=>{if(!controls.has(id))controls.set(id,{value:'',disabled:false,close(){}});return controls.get(id)};
 let sent;
 const create=new Function('$','jsonApi','state','selectSession','renderRuntime','focusInput','showError','window','return ('+definition+')')(
-  $,async(url,options)=>{sent={url,body:options.body};return {id:'created'}}, {sessions:new Map()},()=>{},()=>{},()=>{},
-  (id,error)=>{if(error)throw error},{FlowUI:{openCreated(){}}});
+  $,async(url,options)=>{sent={url,body:options.body};return {id:'created',flow_id:'instance'}}, {sessions:new Map()},()=>{},()=>{},()=>{},
+  (id,error)=>{if(error)throw error},{FlowUI:{open(){}}});
 (async()=>{
   for(const mode of ['agent','flow'])for(const policy of ['readonly','']){
-    $('new-mode').value=mode;$('new-flow-policy').value=policy;
+    $('new-mode').value=mode;$('new-flow-policy').value=policy;$('new-flow-template').value='template';
     await create({preventDefault(){}});
-    assert.equal(sent.url,mode==='agent'?'/api/sessions':'/api/flows');
+    assert.equal(sent.url,mode==='agent'?'/api/sessions':'/api/projects');
+    if(mode==='flow') assert.equal(sent.body.flow_id,'template');
     assert.equal(sent.body.permission_policy,policy||null,`${mode}必须提交用户所选权限或null默认`);
   }
 })().catch(error=>{console.error(error);process.exitCode=1});
@@ -405,3 +505,147 @@ for(const mode of ['flow','agent','flow']){
   assert.equal($('new-flow-policy').hidden,false);
 }
 ''')
+
+
+def test_template_cannot_run_from_flow_ui(tmp_path, monkeypatch, sandbox_env):
+    run_flow_state_js(tmp_path, """
+let calls=[];
+delete flow.project_id;
+harness.setup({api:async (...args)=>{calls.push(args);return flow},toast:()=>{}},flow);
+(async()=>{await harness.perform("run");assert.equal(calls.length,0);})().catch(e=>{console.error(e);process.exitCode=1});
+""")
+
+
+def test_project_configuration_is_saved_before_running(tmp_path, monkeypatch, sandbox_env):
+    run_flow_state_js(tmp_path, """
+let calls=[];
+flow.project={id:'project-1',revision:4,permission_policy:'readonly',execution_environment:'sandbox',model_profile:null,handoff:'背景'};
+harness.setup({api:async (path,options)=>{calls.push({path,options});if(path.startsWith('/api/projects/'))return {...flow.project,revision:5};if(options)return flow;return {flows:[],flows_revision:0}},toast:()=>{}},flow);
+harness.markProject();
+(async()=>{await harness.perform('run');assert.equal(calls[0].path,'/api/projects/project-1');assert.equal(calls[0].options.body.revision,4);assert.equal(calls[0].options.body.permission_policy,'readonly');assert.ok(calls[1].path.endsWith('/run'));assert.equal(Object.hasOwn(calls[1].options.body.definition,'project'),false)})().catch(e=>{console.error(e);process.exitCode=1});
+""")
+
+
+def test_old_snapshot_cannot_replace_projects(tmp_path, monkeypatch, sandbox_env):
+    run_flow_state_js(tmp_path, """
+harness.setup({api:async()=>{},toast:()=>{}},flow);
+harness.snapshot({flows:[],projects:[{id:'new'}],flows_revision:5,flows_epoch:'epoch'}, {authoritative:true});
+harness.snapshot({flows:[],projects:[{id:'old'}],flows_revision:4,flows_epoch:'epoch'});
+assert.equal(harness.projects()[0].id,'new');
+harness.snapshot({flows:[],projects:[{id:'foreign'}],flows_revision:8,flows_epoch:'other'});
+assert.equal(harness.projects()[0].id,'new');
+""")
+
+
+def test_created_instance_summary_is_not_a_template(tmp_path, monkeypatch, sandbox_env):
+    run_flow_js(tmp_path, """
+const fs=require('node:fs'),vm=require('node:vm');
+let source=fs.readFileSync(process.argv[2],'utf8');
+source=source.replace('open(f.id, { preserveDesigner }); refreshList();','');
+source=source.replace('window.FlowUI = {','window.harness={openCreated,summary:()=>summaries}; window.FlowUI = {');
+global.window={};global.document={getElementById:()=>null};vm.runInThisContext(source);
+window.harness.openCreated({id:'instance',title:'项目',project_id:'project'});
+assert.equal(window.harness.summary()[0].project_id,'project');
+""")
+
+
+def test_project_save_response_does_not_overwrite_switched_flow(tmp_path, monkeypatch, sandbox_env):
+    run_flow_state_js(tmp_path, """
+let release, calls=[];
+flow.project={id:'project-1',revision:4,permission_policy:'readonly',execution_environment:'sandbox',model_profile:null,handoff:'A'};
+harness.setup({api:(path,options)=>{calls.push({path,options});if(path.startsWith('/api/projects/'))return new Promise(resolve=>{release=resolve});if(options)return Promise.resolve({...flow});return Promise.resolve({flows:[],flows_revision:0})},toast:()=>{}},flow);
+harness.markProject();
+(async()=>{const pending=harness.perform('run');const other={id:'b',project_id:'project-2',project:{id:'project-2',revision:8},nodes:[],edges:[],revision:1};harness.switchTo(other);release({...flow.project,revision:5});await pending;assert.equal(harness.draft().project.id,'project-2');assert.equal(harness.draft().project.revision,8);assert.ok(calls.some(call=>call.path.endsWith('/run')&&call.path.includes(flow.id)))})().catch(e=>{console.error(e);process.exitCode=1});
+""")
+
+
+def test_directory_patch_preserves_unsaved_project_settings(tmp_path, monkeypatch, sandbox_env):
+    run_flow_js(tmp_path, """
+const draft={revision:3,handoff:'新背景',permission_policy:'readonly',model_profile:'new',execution_environment:'local'};
+const response={revision:4,workspace_path:'/new',handoff:'旧背景',permission_policy:'smart',model_profile:'old',execution_environment:'sandbox'};
+const merged=api.flowMergeProject(draft,response,true);
+assert.equal(merged.revision,4);assert.equal(merged.workspace_path,'/new');assert.equal(merged.handoff,'新背景');
+assert.equal(merged.permission_policy,'readonly');assert.equal(merged.model_profile,'new');assert.equal(merged.execution_environment,'local');
+assert.equal(api.flowMergeProject(draft,response,false).handoff,'旧背景');
+""")
+
+
+def test_flow_heading_identifies_the_project(tmp_path, monkeypatch, sandbox_env):
+    run_flow_js(tmp_path, """
+assert.equal(api.flowDisplayTitle({title:'模板',project_id:'p',project:{title:'项目 A'}}),'项目 A');
+assert.equal(api.flowDisplayTitle({title:'模板',project_id:null}),'模板');
+""")
+
+
+def test_flow_edges_fill_canvas_and_drag_preview_is_live():
+    static = Path(__file__).resolve().parents[2] / "agent_frontend" / "web" / "static"
+    css = (static / "flow.css").read_text(encoding="utf-8")
+    js = (static / "flow.js").read_text(encoding="utf-8")
+    assert "width: 100%; height: 100%" in css.split(".flow-edges {")[1].split("}")[0]
+    assert "flow-edge-preview" in js
+    assert "closest(\".input-port\")" in js
+    assert "pointercancel" in js
+
+
+def test_flow_drag_expands_stage_at_scaled_coordinates(tmp_path, monkeypatch, sandbox_env):
+    run_flow_js(tmp_path, """
+const stage={style:{}}, canvas={style:{}};
+api.flowExpandDragCanvas(stage,canvas,{minX:-80,minY:-20,width:600,height:400},{x:900,y:700},0.5);
+assert.equal(stage.style.width, \"620px\");
+assert.equal(stage.style.height, \"440px\");
+assert.equal(canvas.style.width, \"1240px\");
+assert.equal(canvas.style.height, \"880px\");
+""")
+
+
+def test_flow_single_node_positive_movement_keeps_origin(tmp_path, monkeypatch, sandbox_env):
+    run_flow_js(tmp_path, """
+const start=api.flowCanvasBounds([{x:80,y:80}]);
+const moved=api.flowCanvasBounds([{x:820,y:420}]);
+assert.equal(start.minX,0); assert.equal(moved.minX,0);
+assert.equal(start.minY,0); assert.equal(moved.minY,0);
+const saved=JSON.parse(JSON.stringify({nodes:[{x:820,y:420}]}));
+assert.deepEqual(api.flowCanvasBounds(saved.nodes),moved);
+""")
+
+
+def test_flow_escape_cancels_connection_before_pointerup(tmp_path, monkeypatch, sandbox_env):
+    run_flow_js(tmp_path, """
+let pending=true, prevented=false, edges=0;
+const cancel=()=>{pending=false};
+assert.equal(api.flowCancelConnectionOnEscape({key:\"Escape\",preventDefault(){prevented=true}},cancel),true);
+if(pending) edges++;
+assert.equal(prevented,true); assert.equal(edges,0);
+assert.equal(api.flowCancelConnectionOnEscape({key:\"Enter\"},cancel),false);
+""")
+
+
+def test_flow_refresh_preserves_inflight_node_drag(tmp_path, monkeypatch, sandbox_env):
+    run_flow_state_js(tmp_path, """
+let release, renders=0; window.renderFields=()=>renders++;
+harness.setup({api:()=>new Promise(resolve=>release=resolve),toast:()=>{}},flow);
+(async()=>{const pending=harness.refreshRun(flow.id);harness.setInteraction(()=>{});release({...flow,title:\"server\",run:null});await pending;assert.equal(harness.draft(),flow);assert.equal(renders,0)})().catch(e=>{console.error(e);process.exitCode=1});
+""")
+
+
+def test_node_drag_cancel_redraws_connected_edges(tmp_path, monkeypatch, sandbox_env):
+    run_flow_js(tmp_path, r"""
+const fs=require("node:fs"); const src=fs.readFileSync(process.argv[2],"utf8");
+const start=src.indexOf("      card.addEventListener(\"pointerdown\", (event) => {"+String.fromCharCode(10)+"        if (locked()");
+const end=src.indexOf(String.fromCharCode(10)+"      });",start); assert.ok(start>=0 && end>start);
+const handler=src.slice(start,end)+String.fromCharCode(10)+"      });";
+const setup=new Function("ctx","with(ctx){"+handler+"}");
+for (const kind of ["pointercancel","blur"]) {
+ const events={},node={id:"a",x:0,y:0},flow={id:"flow",nodes:[node],edges:[{source:"a",target:"b"}]};
+ let onDown,renders=0; const card={style:{},addEventListener(name,fn){onDown=fn}};
+ const ctx={card,portOut:{},window:{addEventListener(n,fn){events[n]=fn},removeEventListener(n){delete events[n]}},
+  locked:()=>false,cancelConnection:null,cancelNodeDrag:null,viewport:{scrollLeft:0,scrollTop:0},
+  node,f:flow,active:flow.id,drafts:new Map([[flow.id,flow]]),scale:1,bounds:{minX:0,minY:0,width:600,height:400},
+  stage:{style:{}},canvas:{style:{}},flowExpandDragCanvas:api.flowExpandDragCanvas,mark(){},render(){renders++},
+  selected:null,selectedEdge:null,inspectorModes:new Map(),selectionVersion:0};
+ setup(ctx); onDown({button:0,target:card,clientX:0,clientY:0,pointerId:1,preventDefault(){}});
+ events.pointermove({pointerId:1,clientX:50,clientY:0}); assert.equal(node.x,50);
+ events[kind](kind==="blur"?{}:{pointerId:1});
+ assert.equal(renders,1); assert.equal(events.pointerup,undefined);
+}
+""")

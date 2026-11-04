@@ -1,17 +1,23 @@
 # Hybrid RAG
 
+> 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
+
 `rag_search` 执行独立向量召回和 BM25 召回，再经 RRF 融合、真实本地 CrossEncoder 重排。
 返回父段落正文、来源偏移和各阶段分数。注册工具参数不变；Python 接口额外支持 `top_k`、`index`、`trace`。
 
+## 使用前准备
+
+将需要检索的资料放入 `DOC_DIR`（默认 `data/raw`），或在 `.env` 的 `RAG_SOURCES` 中配置命名知识库；`rag_search` 的 `source` 留空使用默认库，指定名称使用对应知识库。导入 Flow 模板不会复制资料或注册知识库，运行前需自行准备。模型需能从配置的下载端点获取，或配置本地 embedding 和 reranker 路径；离线环境请提前准备模型。支持的文件类型与可选解析器见下文。空库时先检查目录和资料，模型加载失败时检查路径和网络。
+
 ## 工程测试
 
-当前范围是功能及真实链路验证，不评价或校准搜索阈值。安装环境使用 `uv sync --locked`。
+工程测试覆盖功能及真实链路，不校准搜索阈值；质量校准另见 [RAG 质量校准](rag-quality.md)。先在根目录安装 `uv sync --locked --extra web --extra desktop`，以下均使用已同步环境。
 
 ```bash
-uv run pytest -m 'not integration'
+QT_QPA_PLATFORM=offscreen COMMAND_EXECUTION_ENVIRONMENT=sandbox uv run --no-sync pytest -m 'not integration' -q
+# 完成下节模型与语料准备后，才执行真实本地模型集成：
 RUN_RAG_INTEGRATION=1 OPENBLAS_NUM_THREADS=1 \
-  EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
-  uv run pytest -q -k 'not strictness'
+  EMBEDDING_MODEL_SOURCE=LOCAL uv run --no-sync pytest src/agent_test/tests/test_rag_integration.py -m integration -q
 ```
 
 集成测试显式启用后使用真实本地模型，模型加载或推理失败直接报错。
@@ -25,10 +31,10 @@ RUN_RAG_INTEGRATION=1 OPENBLAS_NUM_THREADS=1 \
 首次准备需要下载公开语料及模型（已有资源会复用）：
 
 ```bash
-uv run python -m agent_test.scripts.rag.prepare_assets --only corpus
-uv run python -m agent_test.scripts.rag.prepare_assets --only embedding
-uv run python -m agent_test.scripts.rag.prepare_assets --only reranker
-uv run python -m agent_test.scripts.rag.prepare_engineering
+uv run --no-sync python -m agent_test.scripts.rag.prepare_assets --only corpus
+uv run --no-sync python -m agent_test.scripts.rag.prepare_assets --only embedding
+uv run --no-sync python -m agent_test.scripts.rag.prepare_assets --only reranker
+uv run --no-sync python -m agent_test.scripts.rag.prepare_engineering
 # 可选 INT8 加速：需使用保留在本地 `docs/dev/` 目录中的量化工具，输入应为原始 FP32 模型。
 ```
 
@@ -38,8 +44,7 @@ uv run python -m agent_test.scripts.rag.prepare_engineering
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 RAG_THREADS=4 \
-  EMBEDDING_MODEL_SOURCE=LOCAL EMBEDDING_LOCAL_PATH=.cache/rag/embedding-int8 \
-  uv run python -m agent_test.scripts.rag.run_engineering
+  EMBEDDING_MODEL_SOURCE=LOCAL uv run --no-sync python -m agent_test.scripts.rag.run_engineering
 ```
 
 `prepare_engineering` 支持 `--source/--manifest/--output`；`run_engineering` 支持
@@ -65,7 +70,7 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=4 RAG_THREADS=4 \
 `RERANK_LOCAL_PATH` 指定 CrossEncoder 目录；下载脚本生成的 `.cache/rag/reranker` 可自动复用。
 API embeddings 继续支持，不附加本地 BGE 专用查询指令。
 内容/模型指纹控制 SQLite 向量缓存和 mmap 矩阵复用；目录、文本、模型变化会失效重建。
-当前为 NumPy 精确向量检索，文件锁依赖 POSIX，未验证 Windows。
+默认使用 NumPy 精确向量检索；可选 `ann` extra 与 `RAG_VECTOR_BACKEND=ann` 提供近似索引，配置以 `.env.example` 为准。文件锁依赖 POSIX，未验证 Windows 原生运行。
 
 `strictness` 控制重排后的 logit 门槛，`breadth` 对应 2/4/8 条。
 余弦、BM25、RRF 与 logit 尺度不同；logit 不是概率，默认阈值尚未校准。
@@ -73,8 +78,7 @@ API embeddings 继续支持，不附加本地 BGE 专用查询指令。
 
 ## 暂停的全量评测
 
-全量 118,605 文档、50 校准查询、100 评测查询的流程归档至
-[本地 archive/full_corpus](dev/rag/archive/full_corpus/README.md)。
+全量 118,605 文档、50 校准查询、100 评测查询的流程归档至本地 `docs/dev/rag/archive/full_corpus/README.md`。
 该归档仅在已有本地 `docs/dev/` 目录的工作区可用，不随 clone 分发；它不属于默认 pytest，不参与工程测试，只有显式执行归档命令才运行。
 原始基线源码和固定查询完整保留；全量产物仍仅留本地，不代表已完成质量验收。
 

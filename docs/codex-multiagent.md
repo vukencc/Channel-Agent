@@ -1,5 +1,7 @@
 # Codex 多代理协作
 
+> 文档类型：开发与设计参考 · [文档导航](README.md) · [三模块架构](architecture.md)
+
 本文记录本机 Codex 配置和仓库内的代理分工。Codex 子代理通过 `spawn_agent` 创建，使用 `followup_task` 追加工作、`wait_agent` 等待结果，并可通过 `send_message` 交换信息。本仓库要求子代理向父代理报告，不继续派生代理。应用本身的 Agent/子 Agent 是另一套运行时功能，不能与 Codex 子代理混为一谈；应用委派边界见[会话工具](session-tools.md)。
 
 ## 本地配置
@@ -59,7 +61,7 @@ python3 -c 'import pathlib,tomllib; [(lambda d: print(d["name"], d.get("model"),
 python -c "import tomllib,glob; [tomllib.load(open(p,'rb')) for p in glob.glob('.codex/**/*.toml', recursive=True)]"
 ```
 
-Codex CLI 当前支持的严格配置检查命令为：
+此前本机 CLI 提供的严格配置检查命令如下；其他版本先检查 `codex --help`：
 
 ```bash
 codex --strict-config doctor --json
@@ -67,7 +69,11 @@ codex --strict-config doctor --json
 
 这会验证 CLI 配置并输出诊断 JSON；它不单独证明每个自定义角色已成功启动。继续验证角色时，应在 Codex 会话中按角色明确请求一项小型、只读的探查，并检查交回的结果和共享工作区状态。
 
-本轮 WSL Codex CLI 为 `0.160.0`，满足官方文档中 Terra 的 CLI 最低版本 `0.159`；严格诊断返回 `overallStatus=ok`。十个角色 TOML 已解析并检查模型、推理强度及权限覆盖。`codex debug models --bundled` 的离线目录列出 Astra、Sol 6.1 和 Luna，但该旧快照未收录 Terra，不能据此判断服务不可用，也不能将 doctor 结果当作模型授权证明。本轮 `docs_writer` 作为 Terra/medium 子代理实际完成文档工作；三个新增角色尚未逐一真实派生。这些是 Codex 协作验证，不是应用内 Agent 的真实模型测试、保存轨迹回放或受控 fixture 验收。
+### 历史诊断记录
+
+以下版本、最低版本说明和诊断结果为此前验证事实，不表示本次重新检查了宿主或模型授权。
+
+当时 WSL Codex CLI 为 `0.160.0`，满足官方文档中 Terra 的 CLI 最低版本 `0.159`；严格诊断返回 `overallStatus=ok`。十个角色 TOML 已解析并检查模型、推理强度及权限覆盖。`codex debug models --bundled` 的离线目录列出 Astra、Sol 6.1 和 Luna，但该旧快照未收录 Terra，不能据此判断服务不可用，也不能将 doctor 结果当作模型授权证明。本轮 `docs_writer` 作为 Terra/medium 子代理实际完成文档工作；三个新增角色尚未逐一真实派生。这些是 Codex 协作验证，不是应用内 Agent 的真实模型测试、保存轨迹回放或受控 fixture 验收。
 
 Windows npm CLI 本轮实测仍为 `0.154.0`，低于 Terra 所需版本；本仓库的 CLI 检查使用 WSL，未升级全局 CLI 或修改桌面应用。
 

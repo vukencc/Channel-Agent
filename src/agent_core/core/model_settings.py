@@ -32,6 +32,19 @@ class ModelProfile(BaseModel):
 
 active_profile = ContextVar('active_model_profile', default=None)
 active_endpoint = ContextVar('active_model_endpoint', default=None)
+active_reasoning_effort = ContextVar('active_reasoning_effort', default=None)
+active_thinking_mode = ContextVar('active_thinking_mode', default=None)
+
+
+@contextmanager
+def model_thinking(reasoning_effort=None, thinking_mode=None):
+    effort_token = active_reasoning_effort.set(reasoning_effort)
+    mode_token = active_thinking_mode.set(thinking_mode)
+    try:
+        yield
+    finally:
+        active_thinking_mode.reset(mode_token)
+        active_reasoning_effort.reset(effort_token)
 
 
 @contextmanager

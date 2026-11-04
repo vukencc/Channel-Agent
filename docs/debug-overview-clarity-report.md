@@ -1,6 +1,6 @@
-> 历史报告，不作为当前使用规范；保留当时的问题描述和实测结果。当前说明见[当前调试与上下文指南](debug-runtime.md)。
-
 # DEBUG 总览清晰度交付报告
+
+> 文档类型：历史报告 · [当前阶段状态](project-status.md) · [文档导航](README.md)。保留当时的结果与失败；旧路径和本地产物不作为当前使用要求。 相关现行指南：[当前调试与上下文指南](debug-runtime.md)。
 
 ## 根因与修复
 
@@ -12,4 +12,4 @@
 
 另以 8 个 child 的受控 UI fixture 检查布局：8 条独立行、0 个母线穿越工作区；4 个已完成 child 显示 join，4 个活跃 child 保持开放。移动端 450 px viewport 的文档宽度为 435 px，无外溢；时间线可横向滚动并缩放至 2460 px，局部通信详情无外溢。此 fixture 不是模型执行。
 
-6 个新增红测先复现问题，修复后 48 项 focused tests 通过。完整非集成测试为 `uv run pytest -m 'not integration' -q`：1235 passed、2 skipped、5 deselected，用时 32.59 秒；在 WSL Linux PATH 下以 `UV_NO_SYNC=1` 执行。最终 review 无发现，未改依赖或配置。截图与结果数据：[总览](../.cache/reports/debug-clarity-20261016-b84e14/overview.png)、[通信详情](../.cache/reports/debug-clarity-20261016-b84e14/messages.png)、[8 个 Agent 受控 fixture](../.cache/reports/debug-clarity-20261016-b84e14/eight-agents-controlled.png)、[移动视口](../.cache/reports/debug-clarity-20261016-b84e14/mobile.png)、[验证 JSON](../.cache/reports/debug-clarity-20261016-b84e14/validation.json)。此前真实模型实验记录未删除，本轮也未重做。
+6 个新增红测先复现问题，修复后 48 项 focused tests 通过。完整非集成测试为 `uv run pytest -m 'not integration' -q`：1235 passed、2 skipped、5 deselected，用时 32.59 秒；在 WSL Linux PATH 下以 `UV_NO_SYNC=1` 执行。最终 review 无发现，未改依赖或配置。截图与结果数据：总览（历史本地产物：`.cache/reports/debug-clarity-20261016-b84e14/overview.png`，不随仓库分发）、通信详情（历史本地产物：`.cache/reports/debug-clarity-20261016-b84e14/messages.png`，不随仓库分发）、8 个 Agent 受控 fixture（历史本地产物：`.cache/reports/debug-clarity-20261016-b84e14/eight-agents-controlled.png`，不随仓库分发）、移动视口（历史本地产物：`.cache/reports/debug-clarity-20261016-b84e14/mobile.png`，不随仓库分发）、验证 JSON（历史本地产物：`.cache/reports/debug-clarity-20261016-b84e14/validation.json`，不随仓库分发）。此前真实模型实验记录未删除，本轮也未重做。

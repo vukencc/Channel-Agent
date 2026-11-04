@@ -1,66 +1,63 @@
-# 平台能力设计与本轮边界
+# 平台能力与扩展边界
 
-## BUG-18：取消与进程隔离
+> 文档类型：开发与设计参考 · [文档导航](README.md) · [三模块架构](architecture.md)
 
-本轮实现低风险的协作取消：检索阶段、嵌入批次与重排批次前检查取消，工具超时使用独立标志，CLI 显示等待当前批次退出。
-Web 搜索由 WEB_SEARCH_TIMEOUT 限制网络等待；评估池与前台分开。写操作仍等待旧线程结束，避免停止后迟到写入。
-原生模型加载/单个推理批次、在途 DNS/网络等待不能由 Python 安全强杀，因此不承诺所有路径立即停止或绝对截止。
+本文区分当前实现和后续设计。使用入口见 [快速上手](getting-started.md)，模块依赖见 [架构](architecture.md)，已做过的验证见 [阶段状态](project-status.md)。旧交付报告中的“仅设计”以其记录日期为准。
 
-后续方案是独立常驻模型进程（有界请求队列、请求 ID、进程级 deadline），超时终止并重建只读推理 worker。
-内存预算需覆盖多进程模型副本；命令仍由 Bubblewrap 隔离，写工具不迁入可随意杀死的后台线程。
-验收应注入卡死 native worker，验证回收进程、释放槽位、请求不串轮、已完成工具不重放；本轮不实现该架构。
+## 当前入口与平台
 
-## BUG-19：Headless 契约（单次入口已由 FREE-09 实现）
+| 环境 | 会话、界面与文件工具 | 命令执行 | 支持边界 |
+| --- | --- | --- | --- |
+| Linux | CLI/headless、WebUI、原生 Qt GUI | sandbox 使用 Bubblewrap/prlimit；可显式选择 local | 当前开发和验证环境，仍需实际隔离探针及 GUI 系统库 |
+| WSL2 Linux | 同 Linux；Qt 需 WSLg，建议项目置于 Linux 文件系统 | 同 Linux，能力不足则拒绝 | Windows 终端通过 WSL 调用 Linux uv/Python/Node；不等于 Windows 原生后端 |
+| macOS 原生 | 有基础平台适配，完整依赖、交互和文件边界未验收 | 当前命令入口拒绝，建议 Linux 环境 | 不作为已验收部署目标 |
+| Windows 原生 | 有锁适配等契约测试，依赖、终端和文件边界未完整验收 | 当前命令入口拒绝，建议 WSL2 | 不因存在 Windows 锁适配就宣称原生功能完成 |
 
-计划入口 `--prompt TEXT --json --state-dir PATH`：复用 SessionStore/SessionManager，一次输入执行至 idle/checkpoint/error，等待已授权工具收尾，刷新保存队列后退出。
-不启用 TUI、不读取键盘。Headless 默认使用 `readonly`；待确认操作立即拒绝，并作为对应 tool_call_id 的工具结果反馈。当前公开策略仅为 `readonly`、`smart`、`full_access`；只有显式选择 `full_access` 才自动批准工具确认，仍受工具开关、沙箱和路径边界约束。禁止提供默认自动批准的 `--yes-all`。
-需要自动化批准时，未来独立审批通道应校验 session_id、turn_id、tool_call_id、请求内容哈希与有效期，审批不能串会话。
+`/platform` 或 `uv run --no-sync ai-agent-startup --platform` 只报告静态能力，不创建会话或调用模型。找到可执行文件不等于命名空间、资源限制和网络实际可用；用 `python -m agent_test.scripts.ci_sandbox_probe` 验证。状态目录由单个进程独占；多个界面进程须分别使用 `--state-dir`，不能同时写同一目录。
 
-标准输出仅一个 JSON 对象：`version/session_id/turn_id/status/messages/metrics/error`，stderr 为诊断日志，不输出密钥；状态码 0=正常完成、2=配置或参数错误、3=检查点未完成、4=执行失败、130=取消。
-流式版本另设 `--jsonl`，事件含递增 seq、session/turn、type、payload，最终 done 事件；重连不重放工具副作用。
-现有 `main.py` 和 `--list` 保持兼容。最小验收包括 fake model 的纯文本结束、拒绝真实写入、配对结果、超时检查点、SIGINT 后持久化、无 stdout 日志污染。
+经典会话 local 使用宿主工具链、网络和真实路径；Flow local 为防止越出所选项目，另通过 Bubblewrap 限制持久写入范围。不能把两者安全语义混用；完整规则见 [沙箱](sandbox.md)。网络文件系统的锁与目录身份行为还需部署环境验证。
 
-FREE-09 当前入口：`--prompt/--json/--session/--policy` 已提供。Headless 默认 `readonly`；可通过 `--policy` 指定 `readonly`、`smart` 或 `full_access`，待人工确认时拒绝，`full_access` 自动批准工具确认。JSON messages 为本轮消息，完整历史保留磁盘；参数错误 stderr/退出 2。
-`--jsonl`、审批服务和 HTTP/SSE 仍为下述设计，不宣称已提供。详见 `docs/optimization-progress.md`。
+## Headless 单次任务
 
-## HTTP API + SSE（仅设计）
+已提供 `--prompt`、`--json`、`--state-dir`、`--session`、`--policy`，不会启动 TUI 或读取交互键盘。默认 `readonly`，需要人工确认时拒绝；显式 `full_access` 可自动批准工具确认，但路径、能力上限和环境边界仍有效。
 
-单独服务进程拥有状态目录锁，CLI 未来作为客户端；不能让服务与现有 CLI 同时写同一目录。
-建议端点 POST /sessions、POST /sessions/{id}/turns、GET /turns/{id}/events、POST /confirmations/{id}、POST /turns/{id}/cancel。
-认证和工作区所有权在路由入口验证；SSE 用 seq 游标恢复展示，不重放调用；幂等键绑定请求摘要。审批 token 单次使用、有时限、绑定调用原文。
-先做契约和隔离测试，再独立 PR 实现。尚未开放监听端口。
+```bash
+uv run --no-sync ai-agent-startup --prompt "说明项目结构" --json --policy readonly
+```
 
-## MCP 工具生态（仅设计）
+`--json` 输出一个版本化对象，含会话、轮次、状态、消息、指标和错误；诊断走 stderr。退出码 0 表示正常结束，2 为参数/配置错误，3 为检查点未完成，4 为执行失败，130 为取消。完整选项以 `--help` 和 [CLI 指南](cli.md) 为准。尚未提供 `--jsonl` 和独立远程审批通道。
 
-动态工具目录必须声明参数 schema、只读/写/出网能力、确认策略、时限与服务来源；不可信 MCP 服务不能自行声明免确认。
-服务注册与会话启用由用户显式选择，工具名带命名空间并限制 schema 总预算。所有结果继续校验 call/result 配对并写审计。
-结果适配层将结构化数据与渲染分离；保留现有 Pydantic + register_tool 兼容路径。不直接把 MCP 输出当系统指令。
+## 已实现的本机 HTTP API 与 SSE
 
-## 多模态与网页输入（图片最小入口已实现，其余仅设计）
+WebUI 已提供本机 FastAPI 服务，默认 `127.0.0.1:8765`；不是尚未监听的设计稿。原生 GUI 直接组合 Core，不经 HTTP。当前服务主要端点如下，实际参数模型和状态码以 `src/agent_frontend/web/app.py` 为准：
 
-文本加载器扩展不等于多模态。图片/PDF 图像需先确定模型能力、上传确认、大小/页数限制和敏感内容处理；OCR 结果标记来源与置信度。
-网页抓取/浏览器必须沿用出网审批，并限制重定向、目标地址和下载大小；浏览器放入独立进程沙箱，不暴露宿主凭据。
-分别提交输入格式、能力探测、失败降级和端到端隔离测试。FREE-12 已增加显式开启的图片确认、附件引用和模型请求适配，详见 optimization-progress.md；尚无已验证视觉服务，不能将协议测试当作真实识图验收。音频/视频、HTTP 服务、MCP 客户端与浏览器仍未开放。
+| 用途 | 当前端点 |
+| --- | --- |
+| 状态、会话与消息 | `GET /api/sessions`、`POST /api/sessions`、`POST /api/sessions/{id}/messages` |
+| 状态流、停止与确认 | `GET /api/events`、`POST /api/sessions/{id}/stop`、`POST /api/sessions/{id}/confirmation` |
+| 项目与目录选择 | `/api/projects`、`GET /api/workspaces/directories` |
+| Flow 定义与运行 | `/api/flows`、`POST /api/flows/{id}/run`、`POST /api/flows/{id}/cancel` |
+| 创作与便携模板 | `/api/flow-designer/chat`、`/api/flow-designer/cancel`、`/api/flows/import`、`/api/flows/export` |
+| 模型与只读计划 | `/api/models`、`GET /api/sessions/{id}/plan` |
+| Debug（显式开启） | `/debug`、`/api/debug` 及 AgentTest 诊断路由 |
 
-## BUG-20：持续集成
+服务包含本机 Host/来源检查和请求大小边界。SSE 推送状态概要，详情按需读取；重连不重放工具副作用。现有 API 是本机单用户界面的组成部分，不是已经验证的公网多租户服务；默认地址和部署边界见 [WebUI](web-ui.md)。未来若增加远程审批，需要绑定 session/turn/tool_call、原文摘要、有效期和单次使用，不能仅增加默认批准参数。
 
-`.github/workflows/tests.yml` 在 PR/main push 上运行 uv sync --locked 和离线 pytest；使用 Ubuntu 22.04，安装 Bubblewrap/util-linux。
-先执行 `src/agent_test/scripts/ci_sandbox_probe.py` 的真实命名空间与资源限制探测，不支持时非零失败并说明环境限制，不静默跳过命令测试。
-workflow_dispatch 可显式开启真实模型集成任务；缓存公开模型和语料，以准备脚本及固定清单哈希更新缓存键。
-默认 PR 不下载模型、不调用付费 API；手动集成包含原有完整链路、strictness 配对过滤和固定公开 qrels 回归。
-本轮只在本机验证脚本及工作流静态契约，未触发远端 GitHub Actions，不把配置完成当成远端运行成功。
+## 取消与进程生命周期
 
-工作流在运行器步骤中写 GITHUB_ENV，避免在 job.env 中使用不可用的 runner 上下文；依据 [GitHub 上下文可用性规则](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability)。
+运行时在检索、嵌入与重排批次之间协作取消，工具有独立超时；写操作须等待真实执行结束，避免停止后迟到写入。命令取消回收进程组并等待收尾，Flow 还要确认子任务、工具和后台命令排空，才释放项目并决定下游状态。
 
-## FREE-15：平台能力与容器后端边界
+原生模型加载、单次推理批次和在途网络操作不能都由 Python 安全强杀，不承诺所有路径瞬时停止。常驻独立推理 worker、进程级 deadline 和可重建的只读推理队列仍是后续设计，需先验证超时回收、请求不串轮和内存预算；不能把工具取消实现当成该架构已完成。
 
-| 环境 | 状态/索引锁 | 交互与文件工具 | 隔离命令 | 本轮验证 |
-|---|---|---|---|---|
-| Linux | flock | TUI、headless、文件工具 | bwrap + prlimit，能力不足拒绝 | 本机真实多进程锁与隔离探针通过 |
-| WSL2 Linux | flock | 同 Linux，建议 Linux 文件系统工作区 | 仍须真实隔离探针通过 | 不把其他 WSL 安装视为本机已验证 |
-| macOS | flock | 原则上支持文本/headless/基础文件；原子 move 拒绝 | 拒绝，建议 Linux VM | 无原生环境，未验收 |
-| Windows 原生 | msvcrt 单字节锁适配 | 去除直接 fcntl 导入障碍；依赖/终端/文件边界需原生验证 | 拒绝，建议 WSL2 | 仅锁适配契约单测，未原生验收 |
+## 尚未实现的扩展
 
-`/platform` 或 `uv run ai-agent-startup --platform` 只显示静态能力，不创建会话目录、不调用模型，不把找到二进制当成隔离验证通过。所有命令在非 Linux 入口即拒绝；不会静默切换 subprocess 宿主执行。文件系统（如网络盘）是否可靠支持锁也需部署环境验证。
+- **MCP 客户端与动态工具市场**：当前工具仍由 Pydantic 参数和 `register_tool` 注册。未来接入须声明来源、只读/写/出网能力、确认、时限及 schema 预算，不可信服务不能自行免确认。
+- **通用浏览器与音视频工作流**：已有可选图片附件与模型请求适配，但协议测试不等于所有视觉服务通过；暂无已验收的通用浏览器、音频或视频工具。网页工具仍须遵守出网审批、地址和大小边界。
+- **Docker/Podman 命令后端**：仓库提供应用镜像和 Compose，并不等于用容器替代 Bubblewrap 的工具执行后端。后者需固定镜像、非特权、工作区唯一可写、无宿主 socket/凭据、资源限额与完整取消/越界测试，目前未实现。
+- **Flow 并行及条件调度**：当前拓扑串行；分支节点通过指令处理输入数据，没有框架级条件表达式或并行执行。提示词职责也不是逐节点文件访问隔离。
 
-Docker/Podman 后端后续实现契约：固定镜像摘要、非特权非 root、只读 rootfs、仅当前工作区可写、网络默认 none、无宿主 socket/密钥/额外根、CPU/内存/PID/文件限制；取消必须终止容器及所有子进程，镜像拉取与联网需明确授权/审计。Windows/macOS 的 bind mount、用户映射、路径大小写/符号链接须真实越界测试。任一探测不支持即拒绝，不启用降级执行；本轮不提供该后端。
+## CI 与验证
+
+`.github/workflows/tests.yml` 在 PR、main 及列出的开发分支 push 上运行锁定依赖、真实隔离探针和离线回归。使用 Ubuntu 22.04、Python 3.12，安装 Web/desktop extras、Bubblewrap/util-linux 和 Qt 系统库；隔离探测失败须非零退出。
+
+默认 PR 不下载 RAG 模型或调用付费 API。`workflow_dispatch` 可显式启用公开模型/语料的 integration 任务，准备配置见 [RAG 指南](rag.md)。具体 PR 是否通过以 GitHub 当前检查为准，配置文件或历史 CI 成功都不是新提交的通过证明。发布工作流另验证注解 tag、版本和 main 祖先关系，详见 [发布说明](release.md)。

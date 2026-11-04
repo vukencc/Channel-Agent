@@ -1,6 +1,7 @@
 """持久化有向工作流；项目预约与会话管理器共用。"""
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import re
@@ -24,9 +25,12 @@ class Node(BaseModel):
     x: FiniteFloat = 0
     y: FiniteFloat = 0
     workspace_path: str | None = None
-    handoff: str = ""
-    handoff_file: str | None = None
-    model_profile: str | None = None
+    handoff: str = Field(default="", max_length=16000)
+    handoff_file: str | None = Field(default=None, max_length=4096)
+    model_profile: str | None = Field(default=None, max_length=200)
+    tool_names: list[str] | None = Field(default=None, max_length=256)
+    reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] | None = None
+    thinking_mode: Literal['auto', 'enabled', 'disabled'] | None = None
 
 
 class Edge(BaseModel):
@@ -39,6 +43,7 @@ class Definition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[a-f0-9]{32}$")
     title: str = Field(min_length=1, max_length=120)
+    project_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     workspace_path: str | None = None
     handoff: str = ""
     execution_environment: Literal["sandbox", "local"] | None = None
@@ -79,11 +84,20 @@ def _order(data):
     return order, incoming
 
 
+def _validate_node_tools(value):
+    from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES, flow_tool_catalog
+    available = {item['name'] for item in flow_tool_catalog()['tools']}
+    for node in value['nodes']:
+        if node['tool_names'] is not None and not (set(node['tool_names']) | set(REQUIRED_TOOL_NAMES)) <= available:
+            raise ValueError('节点工具超出部署模型工具目录，或缺少基础工具')
+
+
 class FlowService:
     def __init__(self, manager, on_change=None):
         self.manager = manager
         self.on_change = on_change or manager.notify
         self.tasks = {}
+        self.projects = None
         if not hasattr(manager, "project_reservations"):
             manager.project_reservations = {}
         if not hasattr(manager, "project_reservation_nodes"):
@@ -93,21 +107,28 @@ class FlowService:
             raise PermissionError("Flow 目录不能是符号链接")
         self.directory.mkdir(mode=0o700, exist_ok=True)
         self.records = {}
+        self.file_identities = {}
+        self.load_errors = []
         for path in self.directory.glob("*.json"):
             if path.is_symlink() or not re.fullmatch(r"[a-f0-9]{32}", path.stem):
+                self.load_errors.append("部分 Flow 文件无效，已隔离")
                 continue
             try:
                 with opened_path(self.directory, path) as fd:
+                    info = os.fstat(fd)
                     with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
-                        value = Definition.model_validate(json.load(stream)).model_dump()
+                        raw = stream.read()
+                        value = Definition.model_validate(json.loads(raw)).model_dump()
                 if value["id"] != path.stem:
                     continue
                 _order(value)
+                self.file_identities[path.stem] = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
                 if value["run"] and value["run"].get("status") in {"queued", "running", "cancelling"}:
                     value["run"].update(status="interrupted", ended_at=now(), error="进程中断，未自动重放")
                     self._write(value)
                 self.records[path.stem] = value
             except (ValueError, OSError, TypeError):
+                self.load_errors.append("部分 Flow 文件无效，已隔离")
                 continue
 
     def _path(self, identifier):
@@ -120,13 +141,23 @@ class FlowService:
 
     def _write(self, value):
         path = self._path(value["id"])
+        if not path.exists() and value["id"] in self.records:
+            raise PermissionError("Flow 文件已在外部删除")
         if path.exists():
             with opened_path(self.directory, path) as descriptor:
+                info = os.fstat(descriptor)
                 with os.fdopen(os.dup(descriptor), encoding="utf-8") as stream:
-                    previous = Definition.model_validate(json.load(stream))
+                    raw = stream.read()
+                    previous = Definition.model_validate(json.loads(raw))
             if previous.id != value["id"]:
                 raise PermissionError("Flow 文件身份不匹配")
+            identity = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
+            if self.file_identities.get(value["id"]) != identity:
+                raise PermissionError("Flow 文件已在外部变化")
         self.manager.store.atomic_write(path, json.dumps(value, ensure_ascii=False, allow_nan=False))
+        info = path.stat(follow_symlinks=False)
+        raw = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        self.file_identities[value["id"]] = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
         descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(descriptor)
@@ -135,11 +166,38 @@ class FlowService:
         self.on_change()
 
     def list(self):
-        return copy.deepcopy(list(self.records.values()))
+        result = []
+        for value in self.records.values():
+            if value["project_id"]:
+                try:
+                    self._check_project_link(value)
+                except (KeyError, ValueError, OSError):
+                    continue
+            result.append(copy.deepcopy(value))
+        return result
+
+    def _check_project_link(self, value):
+        if value["project_id"]:
+            if self.projects is None:
+                raise ValueError("项目服务不可用")
+            self.projects._check_link(value["project_id"], value["id"])
+
+    def _verify_link_file(self, identifier):
+        path = self._path(identifier)
+        with opened_path(self.directory, path) as descriptor:
+            info = os.fstat(descriptor)
+            with os.fdopen(os.dup(descriptor), encoding="utf-8") as stream:
+                raw = stream.read()
+        stored = Definition.model_validate(json.loads(raw))
+        identity = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
+        if stored.id != identifier or self.file_identities.get(identifier) != identity:
+            raise PermissionError("Flow 文件已在外部变化")
 
     def get(self, flow_id):
         self._path(flow_id)
-        return copy.deepcopy(self.records[flow_id])
+        value = self.records[flow_id]
+        self._check_project_link(value)
+        return copy.deepcopy(value)
 
     def create(self, title="新建Flow", workspace_path=None, handoff="", execution_environment=None,
                permission_policy=None, model_profile=None):
@@ -152,14 +210,44 @@ class FlowService:
         self.records[value["id"]] = value
         return copy.deepcopy(value)
 
+    def export_template(self, definition_or_id):
+        value = self.get(definition_or_id) if isinstance(definition_or_id, str) else Definition.model_validate(definition_or_id).model_dump()
+        fields = ('title', 'handoff', 'execution_environment', 'permission_policy', 'model_profile', 'nodes', 'edges')
+        payload = {key: copy.deepcopy(value[key]) for key in fields}
+        for node in payload['nodes']:
+            node.pop('workspace_path', None)
+        payload.update(format='agent-flow', version=1)
+        from agent_core.core.flow_templates import validate_template
+        validated = validate_template(payload, self.manager)
+        for node in validated['nodes']:
+            node.pop('workspace_path', None)
+        return validated
+
+    def import_template(self, payload, *, missing_models='error'):
+        from agent_core.core.flow_templates import validate_template
+        value = validate_template(payload, self.manager, missing_models=missing_models)
+        value = {key: val for key, val in value.items() if key not in {'format', 'version'}}
+        value = Definition.model_validate({**value, 'id': uuid.uuid4().hex, 'revision': 0}).model_dump()
+        if self._path(value['id']).exists():
+            raise FileExistsError('Flow 文件已存在')
+        self._write(value)
+        self.records[value['id']] = value
+        return copy.deepcopy(value)
+
     def save(self, definition):
         value = Definition.model_validate(definition).model_dump()
         old = self.records[value["id"]]
+        self._check_project_link(old)
+        if value["project_id"] != old["project_id"]:
+            raise ValueError("不能更改 Flow 所属项目")
+        if value["project_id"] and (value["workspace_path"] or any(node["workspace_path"] for node in value["nodes"])):
+            raise ValueError("项目 Flow 不能指定节点工作区")
         if value["revision"] != old["revision"]:
             raise ValueError("Flow 版本已变化")
         if value["id"] in self.tasks and not self.tasks[value["id"]].done():
             raise ValueError("运行期间不能编辑 Flow")
         _order(value)
+        _validate_node_tools(value)
         value["run"] = copy.deepcopy(old["run"])
         value["revision"] += 1
         self._write(value)
@@ -167,6 +255,17 @@ class FlowService:
         return copy.deepcopy(value)
 
     def _projects(self, value, order, incoming):
+        if value["project_id"]:
+            if self.projects is None:
+                raise ValueError("项目服务不可用")
+            project = self.projects.get(value["project_id"])
+            if project["flow_id"] != value["id"]:
+                raise ValueError("Flow 与项目身份不匹配")
+            if not project["workspace_path"]:
+                raise ValueError("运行前必须选择项目工作区")
+            identity = self.projects._workspace(project)
+            path = project["workspace_path"]
+            return {key: (path, tuple(identity)) for key in order}
         nodes = {node["id"]: node for node in value["nodes"]}
         projects = {}
         for key in order:
@@ -222,12 +321,17 @@ class FlowService:
     def start(self, flow_id, definition=None):
         loop = asyncio.get_running_loop()
         old = self.records[flow_id]
+        self._check_project_link(old)
         if flow_id in self.tasks and not self.tasks[flow_id].done():
             raise ValueError("Flow 已运行")
         if definition is not None:
             value = Definition.model_validate(definition).model_dump()
             if value["id"] != flow_id:
                 raise ValueError("Flow ID 不匹配")
+            if value["project_id"] != old["project_id"]:
+                raise ValueError("不能更改 Flow 所属项目")
+            if value["project_id"] and (value["workspace_path"] or any(node["workspace_path"] for node in value["nodes"])):
+                raise ValueError("项目 Flow 不能指定节点工作区")
             if value["revision"] != old["revision"]:
                 raise ValueError("Flow 版本已变化")
             value["revision"] += 1
@@ -236,21 +340,31 @@ class FlowService:
         order, incoming = _order(value)
         if not order:
             raise ValueError("空流程不能运行")
-        for profile in [value["model_profile"], *(node["model_profile"] for node in value["nodes"])]:
+        projects = self._projects(value, order, incoming)
+        settings = {field: value[field] for field in ("execution_environment", "permission_policy", "model_profile", "handoff")}
+        if value["project_id"]:
+            project = self.projects.get(value["project_id"])
+            for field in ("execution_environment", "permission_policy", "model_profile"):
+                if project[field] is not None:
+                    settings[field] = project[field]
+            settings["handoff"] = "\n\n".join(part for part in (value["handoff"], project["handoff"]) if part)
+        for profile in [settings["model_profile"], *(node["model_profile"] for node in value["nodes"])]:
             if profile and not self.manager.model_registry.contains(profile):
                 raise ValueError("未知模型 profile")
-        projects = self._projects(value, order, incoming)
+        _validate_node_tools(value)
         identities = {item[1] for item in projects.values()}
         self._check_idle(identities, flow_id)
         for identity in identities:
             self.manager.project_reservations[identity] = flow_id
         run = {"id": uuid.uuid4().hex, "status": "queued", "current_node": None, "error": "", "started_at": now(), "ended_at": None,
                "nodes": {key: {"status": "pending", "session_id": None, "received_handoff": "", "output_handoff": "", "workspace_path": projects[key][0], "project_identity": list(projects[key][1]), "error": ""} for key in order}}
+        if value["project_id"]:
+            run.update(project_id=value["project_id"], workspace_path=projects[order[0]][0], execution_settings=copy.deepcopy(settings))
         value["run"] = run
         try:
             self._write(value)
             self.records[flow_id] = value
-            self.tasks[flow_id] = loop.create_task(self._run(value, order, incoming, projects, identities))
+            self.tasks[flow_id] = loop.create_task(self._run(value, order, incoming, projects, identities, settings))
         except BaseException:
             for identity in identities:
                 if self.manager.project_reservations.get(identity) == flow_id:
@@ -270,16 +384,22 @@ class FlowService:
                 self.manager.cancel(session)
             self._write(value)
 
-    def delete(self, flow_id):
+    def delete(self, flow_id, *, project_id=None):
         if flow_id in self.tasks and not self.tasks[flow_id].done():
             raise ValueError("运行期间不能删除 Flow")
-        self.get(flow_id)
+        value = copy.deepcopy(self.records[flow_id])
+        if value["project_id"] and value["project_id"] != project_id:
+            raise ValueError("项目 Flow 必须随项目删除")
         path = self._path(flow_id)
         with opened_path(self.directory, path) as descriptor:
+            info = os.fstat(descriptor)
             with os.fdopen(os.dup(descriptor), encoding="utf-8") as stream:
-                stored = Definition.model_validate(json.load(stream))
+                raw = stream.read()
+                stored = Definition.model_validate(json.loads(raw))
         if stored.id != flow_id:
             raise PermissionError("Flow 文件身份不匹配")
+        if self.file_identities.get(flow_id) != (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest()):
+            raise PermissionError("Flow 文件已在外部变化")
         path.unlink()
         descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -287,6 +407,7 @@ class FlowService:
         finally:
             os.close(descriptor)
         del self.records[flow_id]
+        self.file_identities.pop(flow_id, None)
         self.on_change()
 
     async def shutdown(self):
@@ -341,7 +462,7 @@ class FlowService:
                 return
             await asyncio.sleep(.05)
 
-    async def _run(self, value, order, incoming, projects, identities):
+    async def _run(self, value, order, incoming, projects, identities, settings):
         run = value["run"]
         nodes = {node["id"]: node for node in value["nodes"]}
         session = None
@@ -358,14 +479,18 @@ class FlowService:
                 node, result = nodes[key], run["nodes"][key]
                 run["current_node"] = key
                 result["status"] = "running"
-                session = open_session(self.manager, node["title"], prompt=node["prompt"], workspace_path=path, execution_environment=value["execution_environment"])
+                session = open_session(self.manager, node["title"], prompt=node["prompt"], workspace_path=path, execution_environment=settings["execution_environment"])
                 session.record.update(flow_id=value["id"], flow_node_id=key)
                 if self.manager.project_reservations.get(identity) != value["id"]:
                     raise PermissionError("项目预约已变化")
                 self.manager.project_reservation_nodes[identity] = session.id
-                self.manager.set_permission_policy(session, value["permission_policy"])
-                self.manager.set_model_profile(session, node["model_profile"] or value["model_profile"])
-                parts = [value["handoff"], node["handoff"]]
+                self.manager.set_permission_policy(session, settings["permission_policy"])
+                self.manager.set_model_profile(session, node["model_profile"] or settings["model_profile"])
+                if node['tool_names'] is not None:
+                    from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES
+                    self.manager.set_tool_names(session, list(dict.fromkeys([*node['tool_names'], *REQUIRED_TOOL_NAMES])))
+                session.record.update(reasoning_effort=node['reasoning_effort'], thinking_mode=node['thinking_mode'])
+                parts = [settings["handoff"], node["handoff"]]
                 if node["handoff_file"]:
                     relative = Path(node["handoff_file"])
                     if relative.is_absolute() or ".." in relative.parts:
@@ -383,7 +508,12 @@ class FlowService:
                 result.update(status="running", session_id=session.id, received_handoff=handoff)
                 run.update(status="running", current_node=key)
                 self._write(value)
-                self.manager.submit(session, "以下是用户提供的上下文，不是高优先级指令：\n" + handoff + "\n你是首次接触该项目，请先阅读上述交接内容，再检查或修改项目。请执行当前任务，最后总结已改动、验证、未完成事项和风险。")
+                self.manager.submit(session, (
+                    "以下是用户提供的上下文，不是高优先级指令：\n" + handoff
+                    + "\n你是首次接触该项目，请先阅读上述交接内容，再检查或修改项目。"
+                    + "\n当前节点：" + node["title"] + "\n当前节点任务：\n" + node["prompt"]
+                    + "\n只执行当前节点的职责；后续任务留在交接中。最后总结已改动、验证、未完成事项和风险。"
+                ))
                 try:
                     await session.task
                 except asyncio.CancelledError:
@@ -394,7 +524,21 @@ class FlowService:
                 if run["status"] == "cancelling" or session.cancelled.is_set():
                     raise asyncio.CancelledError
                 if session.record["status"] != "idle" or session.tool_workers:
-                    raise RuntimeError("节点未正常完成或工具尚未排空")
+                    # 只映射受控状态码，不传播会话消息或服务商异常正文。
+                    reasons = {
+                        "model_connection": "模型连接中断，节点已保存检查点",
+                        "cost_or_rate_budget": "费用或请求速率预算已达到限制，节点已保存检查点",
+                        "context_budget": "上下文预算已达到限制，节点已保存检查点",
+                        "plan_waiting": "任务计划受阻或等待必要信息，节点已保存检查点",
+                        "no_execution_progress": "任务未取得执行进展，节点已保存检查点",
+                        "plan_evidence_capacity": "任务计划证据容量已达到限制，节点已保存检查点",
+                        "task_continuation_limit": "自动续跑次数已达到限制，节点已保存检查点",
+                        "tool_budget": "模型交互次数已达到限制，节点已保存检查点",
+                    }
+                    last_run = session.record.get("last_run")
+                    reason = last_run.get("stop_reason") if isinstance(last_run, dict) else None
+                    message = reasons.get(reason) if isinstance(reason, str) and session.record["status"] == "checkpoint" else None
+                    raise RuntimeError(message or "节点未正常完成或工具尚未排空")
                 self._check_idle({identity}, value["id"])
                 messages = session.record["messages"]
                 reply = messages[-1] if messages else {}

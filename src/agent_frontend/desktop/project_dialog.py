@@ -11,7 +11,7 @@ from .project_picker import ProjectPicker
 
 
 class ProjectDialog(QDialog):
-    def __init__(self, parent=None, *, mode='agent'):
+    def __init__(self, parent=None, *, mode='agent', templates=None):
         super().__init__(parent)
         self.setWindowTitle('新建项目')
         self.setMinimumWidth(420)
@@ -36,6 +36,9 @@ class ProjectDialog(QDialog):
         self.mode.setCurrentIndex(max(0, self.mode.findData(mode)))
         self.title = QLineEdit('新项目')
         self.title.setMaxLength(120)
+        self.template = ChoiceBox()
+        for row in templates or []:
+            self.template.addItem(row['title'], row['id'])
         self.project_picker = ProjectPicker(self)
         self.workspace = self.project_picker.path_edit
         self.workspace.setPlaceholderText('已有 Linux 项目目录；可稍后在设置中选择')
@@ -46,6 +49,8 @@ class ProjectDialog(QDialog):
         for label, value in [('使用默认权限', None), ('智能申请', 'smart'), ('只读', 'readonly'), ('完全访问', 'full_access')]:
             self.policy.addItem(label, value)
         form.addRow('模式', self.mode)
+        self.template_label = QLabel('导入 Flow 模板')
+        form.addRow(self.template_label, self.template)
         form.addRow('名称', self.title)
         form.addRow('项目目录', self.project_picker)
         form.addRow('执行环境', self.environment)
@@ -90,9 +95,11 @@ class ProjectDialog(QDialog):
 
     def _mode_changed(self, *_):
         flow = self.mode.currentData() == 'flow'
+        self.template.setVisible(flow)
+        self.template_label.setVisible(flow)
         self.context_toggle.setVisible(flow)
         self._context_changed(self.context_toggle.isChecked())
-        self.description.setText('上游完成后会自动把结果和待办交给下游，无需手填。运行前选择已有项目。'
+        self.description.setText('选择已有 Flow 模板，项目会获得独立副本。'
                                  if flow else '使用经典对话完成任务，项目目录可留空以使用默认工作区。')
 
     def _context_changed(self, checked):
@@ -108,11 +115,16 @@ class ProjectDialog(QDialog):
             self.error.setText('请填写项目名称。')
             self.error.show()
             return
+        if self.mode.currentData() == 'flow' and not self.template.currentData():
+            self.error.setText('请先创建并选择 Flow 模板。')
+            self.error.show()
+            return
         self.result_payload = {
             'mode': self.mode.currentData(), 'title': self.title.text().strip(),
             'workspace_path': self.workspace.text().strip() or None,
             'execution_environment': self.environment.currentData(),
             'permission_policy': self.policy.currentData(),
             'handoff': self.handoff.toPlainText() if self.mode.currentData() == 'flow' else '',
+            'flow_id': self.template.currentData() if self.mode.currentData() == 'flow' else None,
         }
         super().accept()
