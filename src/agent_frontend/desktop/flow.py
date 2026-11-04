@@ -926,23 +926,24 @@ class FlowPanel(QWidget):
             return
         if action == 'flow_run' and not self._flow.get('project_id'):
             return
+        input_text = self.run_input.toPlainText() if action == 'flow_run' else ''
         if self._project_dirty and self._flow.get('project_id'):
             project = self._flow.get('project') or {}
             changes = {key: project.get(key) for key in ('revision', 'handoff', 'execution_environment', 'permission_policy', 'model_profile')}
-            self._pending_project_action = (action, self._flow['id'], self._flow['project_id'], self.draft(), changes)
+            self._pending_project_action = (action, self._flow['id'], self._flow['project_id'], self.draft(), changes, input_text)
             self._refresh_state()
             self.command.emit('project_update', {'project_id': self._flow['project_id'], 'changes': changes})
             return
-        self._submit_definition(action, self.draft())
+        self._submit_definition(action, self.draft(), input_text=input_text)
 
-    def _submit_definition(self, action: str, definition: dict) -> None:
+    def _submit_definition(self, action: str, definition: dict, *, input_text: str) -> None:
         definition.pop('project', None)
         self._submitted = (action, copy.deepcopy(definition))
         payload = {'definition': definition}
         if action == 'flow_run':
             payload['flow_id'] = definition.get('id')
-            payload['input_text'] = self.run_input.toPlainText()
-            self._run_input_submitted = (definition.get('id'), payload['input_text'])
+            payload['input_text'] = input_text
+            self._run_input_submitted = (definition.get('id'), input_text)
         self.command.emit(action, payload)
 
     def _queue_run(self) -> None:
@@ -1013,7 +1014,7 @@ class FlowPanel(QWidget):
                     elif flow_id:
                         self._project_dirty_cache[flow_id] = changed
                 if pending:
-                    self._submit_definition(pending[0], pending[3])
+                    self._submit_definition(pending[0], pending[3], input_text=pending[5])
             self._refresh_state()
             return
         if action in ('flow_delete', 'project_delete') and not result.get('error'):
