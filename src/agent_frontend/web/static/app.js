@@ -336,7 +336,7 @@
     else connect();
   }
   function renderConnectionActions() {
-    ["new-session", "new-session-footer", "welcome-new", "activity-maintenance"].forEach((id) => { $(id).disabled = !state.ready; });
+    ["new-session", "welcome-new", "activity-maintenance"].forEach((id) => { $(id).disabled = !state.ready; });
     $("reconnect-service").hidden = state.connectionState !== "offline";
   }
   function connectionStatus(kind) {
@@ -463,7 +463,7 @@
       $("session-list").replaceChildren(fragment);
     }
     $("sessions-empty").hidden = sessions.length > 0;
-    $("sessions-empty").textContent = query ? "没有匹配的会话。" : "还没有会话。点击 + 开始第一次对话。";
+    $("sessions-empty").textContent = query ? "没有匹配的会话。" : "还没有会话。";
     setText("session-count", `${state.sessions.size} 个会话`);
   }
   function renderTabs() {
@@ -1426,7 +1426,7 @@
     state.monitorTab = tab; document.querySelectorAll("[data-monitor]").forEach((button) => { button.classList.toggle("active", button.dataset.monitor === tab); button.setAttribute("aria-selected", String(button.dataset.monitor === tab)); }); renderMonitor();
   }
 
-  ["new-session", "new-session-footer", "welcome-new"].forEach((id) => $(id).addEventListener("click", openNew));
+  ["new-session", "welcome-new"].forEach((id) => $(id).addEventListener("click", openNew));
   $("reconnect-service").addEventListener("click", reconnect);
   $("activity-maintenance").addEventListener("click", openMaintenance);
   $("maintenance-form").addEventListener("submit", cleanupData);

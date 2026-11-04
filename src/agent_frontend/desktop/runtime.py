@@ -368,8 +368,8 @@ class RuntimeBridge(QObject):
                 return flow
             if action == 'flow_save':
                 result = self._flows.save(arguments['definition'])
-            elif action == 'flow_run':
-                result = self._flows.start(flow_id, arguments.get('definition'))
+            elif action in ('flow_run', 'flow_queue'):
+                result = self._flows.start(flow_id, arguments.get('definition'), input_text=arguments.get('input_text', ''), queue_only=action == 'flow_queue')
             elif action == 'flow_cancel':
                 self._flows.cancel(flow_id)
                 result = self._flows.get(flow_id)
@@ -381,7 +381,7 @@ class RuntimeBridge(QObject):
             else:
                 raise ValueError('未知 Flow 操作。')
             await asyncio.to_thread(self._audit, action, flow_id=result.get('id', flow_id))
-            if action in ('flow_run', 'flow_cancel'):
+            if action in ('flow_run', 'flow_queue', 'flow_cancel'):
                 # 审计期间运行可能已推进；确认应反映后台最新快照。
                 result = self._flows.get(flow_id)
             if result.get('project_id'):

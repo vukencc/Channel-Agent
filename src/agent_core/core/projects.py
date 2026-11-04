@@ -162,7 +162,8 @@ class ProjectService:
                 raise ValueError("只能导入 Flow 模板")
         else:
             instance = Definition(id=instance_id, title=title, revision=0).model_dump()
-        instance.update(id=instance_id, project_id=identifier, workspace_path=None, run=None, revision=0)
+        instance.update(id=instance_id, project_id=identifier, workspace_path=None, run=None, revision=0,
+                        session_bindings={}, pending_runs=[])
         for node in instance["nodes"]:
             node["workspace_path"] = None
         instance = Definition.model_validate(instance).model_dump()

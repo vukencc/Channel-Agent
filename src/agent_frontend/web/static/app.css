@@ -89,10 +89,18 @@ svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.5;stroke
 .small-status-dot.busy{background:var(--green);box-shadow:none}
 .small-status-dot.waiting{background:var(--yellow)}
 .small-status-dot.error{background:var(--red)}
-.new-session-footer{text-align:left;min-height:38px;margin:14px 12px 16px;padding:8px 12px;font-size:12px;border:1px solid #3a4350;border-radius:8px;color:var(--subtle);background:#ffffff03}
-.new-session-footer span{font-size:14px;margin:0 6px}
-.new-session-footer:hover{color:var(--text);background:#ffffff07;border-color:#667789}
-.sidebar-empty{padding:24px 20px;color:var(--muted);font-size:12px;line-height:1.8}
+#sessions-view{gap:10px;padding:10px;overflow-y:auto;overscroll-behavior:contain}
+.sidebar-create{flex:none;justify-content:flex-start;padding:8px 10px;color:var(--accent);background:#a5c4f412;border-color:#a5c4f446}
+.sidebar-create:hover{background:#a5c4f420}
+.sidebar-section{flex:none;min-width:0;border:1px solid var(--border);border-radius:8px;background:#ffffff02}
+.sidebar-section .sidebar-heading{height:36px;padding:0 8px 0 10px;border-bottom:1px solid var(--border);border-radius:7px 7px 0 0;background:#ffffff04}
+.sidebar-section .sidebar-heading h2{margin:0;font:inherit}
+.sidebar-section .icon-button{width:26px;height:26px;font-size:16px}
+.sidebar-section .sidebar-search{margin:6px}
+.sidebar-section .sidebar-search input{height:30px}
+.sidebar-section .session-list{flex:none;overflow:visible;padding:0 6px 6px}
+.sidebar-section .session-list:empty{display:none}
+.sidebar-empty{margin:0;padding:5px 10px 10px;color:var(--muted);font-size:12px}
 .sidebar-bottom{display:flex;align-items:center;gap:7px;color:var(--muted);border-top:1px solid var(--border);flex-shrink:0;padding:12px 14px;font-size:11px;border-color:#2d343e}
 .sidebar-bottom>span:last-child{margin-left:auto}
 .main-workspace{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;min-width:0}

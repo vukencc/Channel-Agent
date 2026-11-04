@@ -1,14 +1,19 @@
-.flow-list { max-height: 28vh; overflow: auto; padding: 0 8px 8px; }
+.flow-list { padding: 4px 6px; }
 .flow-active #inspector, .flow-active #inspector-resizer { display: none; }
-.flow-list-item { width: 100%; text-align: left; }
-.flow-sidebar-actions { display: flex; gap: 6px; padding: 0 8px 8px; }
-.flow-sidebar-actions .button { min-width: 0; }
-.flow-empty { padding: 0 8px; }
+.flow-list-item { display: block; padding: 7px 8px; margin: 0; overflow-wrap: anywhere; }
+.flow-sidebar-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 6px 6px 0; }
+.flow-sidebar-actions .button { min-height: 30px; padding: 4px; font-size: 12px; }
+.flow-empty { margin: 0; padding: 3px 4px; }
 .flow-view { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .flow-view[hidden] { display: none; }
 .flow-header, .flow-controls { display: flex; align-items: center; gap: 12px; flex: none; padding: 7px 12px; border-bottom: 1px solid var(--border, #353a44); }
-.flow-header h1 { flex: 1; min-width: 0; margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-header { flex-wrap: wrap; }
+.flow-header h1 { flex: 1 1 64px; min-width: 0; margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flow-actions { display: flex; gap: 6px; }
+.flow-run-input { display: flex; flex: 2 1 260px; min-width: 0; align-items: center; gap: 8px; }
+.flow-run-input:empty { display: none; }
+.flow-run-input textarea { min-width: 0; flex: 1; resize: vertical; max-height: 140px; }
+.flow-run-input .field-hint { white-space: nowrap; }
 /* 项目和画布工具共用第二行；窄窗口只滚动此行，不挤占画布高度。 */
 .flow-controls { overflow-x: auto; }
 .flow-project-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 280px; }

@@ -271,6 +271,9 @@ class FlowPanel(QWidget):
         self._flow, self._models, self._cache = {}, [], {}
         self._dirty, self._loading, self._selected = False, False, None
         self._submitted = None
+        self._queued_input = None
+        self._run_input_submitted = None
+        self._run_inputs = {}
         self._project_dirty = False
         self._project_dirty_cache = {}
         self._pending_project_action = None
@@ -310,6 +313,18 @@ class FlowPanel(QWidget):
         for button in (self.add_button, self.save_button, self.run_button, self.fit_button, self.inspector_button):
             controls.addWidget(button)
         root.addLayout(controls)
+        run_input_row = QHBoxLayout()
+        self.run_input = QTextEdit()
+        self.run_input.setAcceptRichText(False)
+        self.run_input.setFixedHeight(42)
+        self.run_input.setPlaceholderText('本次运行补充信息（可选）')
+        self.queue_button = QPushButton('排队')
+        self.queue_count = _label('排队：0')
+        run_input_row.addWidget(self.run_input, 1)
+        run_input_row.addWidget(self.queue_button)
+        run_input_row.addWidget(self.queue_count)
+        root.addLayout(run_input_row)
+        self.queue_button.clicked.connect(self._queue_run)
         body = QHBoxLayout()
         root.addLayout(body, 1)
         self.canvas = FlowCanvas(self)
@@ -330,7 +345,7 @@ class FlowPanel(QWidget):
             ('项目背景（可选）', 'handoff', 'text'), ('执行环境', 'execution_environment', 'environment'),
             ('权限模式', 'permission_policy', 'policy'), ('模型', 'model_profile', 'model')])
         self.node_fields = self._make_form([
-            ('名称', 'title', 'line'), ('节点指令', 'prompt', 'text'),
+            ('名称', 'title', 'line'), ('节点指令', 'prompt', 'text'), ('复用会话', 'reuse_session', 'checkbox'),
             ('项目目录', 'workspace_path', 'line'), ('补充背景（可选）', 'handoff', 'text'),
             ('已有交接文件（可选）', 'handoff_file', 'line'), ('模型', 'model_profile', 'model'),
             ('思考模式', 'thinking_mode', 'thinking'), ('推理强度', 'reasoning_effort', 'effort')])
@@ -418,7 +433,10 @@ class FlowPanel(QWidget):
         else:
             self.flow_context_toggle = toggle
         for caption, key, kind in rows:
-            if kind == 'text':
+            if kind == 'checkbox':
+                field = QCheckBox()
+                field.toggled.connect(lambda value, k=key, n=is_node: self._field_changed(k, value, n))
+            elif kind == 'text':
                 field = QTextEdit()
                 field.setAcceptRichText(False)
                 field.setMinimumHeight(90)
@@ -490,7 +508,10 @@ class FlowPanel(QWidget):
         return (self._flow.get('run') or {}).get('status') in ('running', 'queued', 'cancelling')
 
     def draft(self) -> dict:
-        return copy.deepcopy(self._flow)
+        definition = copy.deepcopy(self._flow)
+        definition.pop('pending_runs', None)
+        definition.pop('session_bindings', None)
+        return definition
 
     def pending_drafts(self) -> list[dict]:
         """返回尚未保存的所有 Flow 草稿，不暴露内部对象。"""
@@ -500,7 +521,11 @@ class FlowPanel(QWidget):
             drafts.pop(current_id, None)
             if self._dirty:
                 drafts[current_id] = self._flow
-        return copy.deepcopy(list(drafts.values()))
+        result = copy.deepcopy(list(drafts.values()))
+        for draft in result:
+            draft.pop('pending_runs', None)
+            draft.pop('session_bindings', None)
+        return result
 
     def project_is_dirty(self, flow_id: str) -> bool:
         return self._project_dirty if self._flow.get('id') == flow_id else self._project_dirty_cache.get(flow_id, False)
@@ -612,7 +637,9 @@ class FlowPanel(QWidget):
     def _fill_fields(self, fields, data) -> None:
         for key, field in fields.items():
             value = data.get(key)
-            if isinstance(field, QComboBox):
+            if isinstance(field, QCheckBox):
+                field.setChecked(bool(value))
+            elif isinstance(field, QComboBox):
                 index = field.findData(value)
                 field.setCurrentIndex(max(0, index))
             elif isinstance(field, QTextEdit):
@@ -710,6 +737,9 @@ class FlowPanel(QWidget):
             return
         if old_id != new_id:
             if old_id:
+                self._run_inputs[old_id] = self.run_input.toPlainText()
+            self.run_input.setPlainText(self._run_inputs.get(new_id, ''))
+            if old_id:
                 self._project_dirty_cache[old_id] = self._project_dirty
             self._project_dirty = self._project_dirty_cache.get(new_id, False)
             if old_id:
@@ -718,6 +748,7 @@ class FlowPanel(QWidget):
             if cached and cached[1]:
                 self._flow, self._dirty = copy.deepcopy(cached[0]), True
                 self._flow['run'] = incoming.get('run')
+                self._flow['pending_runs'] = incoming.get('pending_runs', [])
             else:
                 self._flow, self._dirty = incoming, False
             self._rebuild()
@@ -727,6 +758,7 @@ class FlowPanel(QWidget):
             self._rebuild(preserve_selection=True)
         else:
             self._flow['run'] = incoming.get('run')
+            self._flow['pending_runs'] = incoming.get('pending_runs', [])
         self._refresh_state()
 
     def _rebuild(self, preserve_selection: bool = False) -> None:
@@ -781,6 +813,13 @@ class FlowPanel(QWidget):
             form.setRowVisible(field, bool(self._flow.get('project_id')))
         self.run_button.setEnabled((bool(self._flow.get('project_id')) and not updating_project) or running)
         self.run_button.setText('停止' if running else '运行')
+        has_project = bool(self._flow.get('project_id'))
+        self.run_input.setVisible(has_project)
+        self.queue_count.setVisible(has_project)
+        self.queue_count.setText(f"排队：{len(self._flow.get('pending_runs') or [])}")
+        can_queue = (self._flow.get('run') or {}).get('status') in ('queued', 'running')
+        self.queue_button.setVisible(has_project and can_queue and any(node.get('reuse_session') for node in self._flow.get('nodes', [])))
+        self.queue_button.setEnabled(self._queued_input is None)
         self.project_button.setEnabled(bool(self._flow) and not running and not updating_project)
         self.flow_project_picker.browse_button.setEnabled(bool(self._flow) and not running)
         self.node_project_picker.browse_button.setEnabled(bool(self._flow) and not running and bool(self._selected))
@@ -817,6 +856,8 @@ class FlowPanel(QWidget):
         run = self._flow.get('run') or {}
         result = run.get('nodes', {}).get(self._selected, {})
         parts = []
+        if run.get('input_text'):
+            parts.append(f"本次补充信息：\n{run['input_text']}")
         for title, key in [('状态', 'status'), ('项目目录', 'workspace_path'), ('输入交接', 'received_handoff'), ('输出交接', 'output_handoff'), ('错误', 'error')]:
             if result.get(key):
                 value = _status_text(result[key]) if key == 'status' else result[key]
@@ -900,7 +941,16 @@ class FlowPanel(QWidget):
         payload = {'definition': definition}
         if action == 'flow_run':
             payload['flow_id'] = definition.get('id')
+            payload['input_text'] = self.run_input.toPlainText()
+            self._run_input_submitted = (definition.get('id'), payload['input_text'])
         self.command.emit(action, payload)
+
+    def _queue_run(self) -> None:
+        if ((self._flow.get('run') or {}).get('status') in ('queued', 'running')
+                and self._queued_input is None and any(node.get('reuse_session') for node in self._flow.get('nodes', []))):
+            self._queued_input = (self._flow.get('id'), self.run_input.toPlainText())
+            self._refresh_state()
+            self.command.emit('flow_queue', {'flow_id': self._queued_input[0], 'input_text': self._queued_input[1]})
 
     def _run_or_stop(self) -> None:
         if self.running:
@@ -909,6 +959,16 @@ class FlowPanel(QWidget):
             self._submit('flow_run')
 
     def accept_result(self, action: str, result: dict) -> None:
+        if action == 'flow_queue':
+            queued, self._queued_input = self._queued_input, None
+            if queued and not result.get('error') and result.get('ok') is not False:
+                if self._flow.get('id') == queued[0]:
+                    if self.run_input.toPlainText() == queued[1]:
+                        self.run_input.clear()
+                elif self._run_inputs.get(queued[0]) == queued[1]:
+                    self._run_inputs.pop(queued[0], None)
+            self._refresh_state()
+            return
         if action == 'flow_design':
             self.designer.accept_result(result)
             return
@@ -969,10 +1029,19 @@ class FlowPanel(QWidget):
         if action not in ('flow_save', 'flow_run'):
             return
         if result.get('error') or result.get('ok') is False:
+            if action == 'flow_run':
+                self._run_input_submitted = None
             if self._submitted and self._submitted[0] == action:
                 self._submitted = None
             return
         returned = result.get('flow', result)
+        if action == 'flow_run' and self._run_input_submitted:
+            flow_id, input_text = self._run_input_submitted
+            self._run_input_submitted = None
+            if self._flow.get('id') == flow_id and self.run_input.toPlainText() == input_text:
+                self.run_input.clear()
+            elif self._flow.get('id') != flow_id and self._run_inputs.get(flow_id) == input_text:
+                self._run_inputs.pop(flow_id, None)
         submitted = None
         own_submission = False
         if (self._submitted and self._submitted[0] == action
@@ -1006,12 +1075,14 @@ class FlowPanel(QWidget):
         if revision is not None:
             target['revision'] = revision
         current = copy.deepcopy(target)
-        for key in ('run', 'revision', 'project'):
+        for key in ('run', 'revision', 'project', 'pending_runs', 'session_bindings'):
             current.pop(key, None)
             submitted.pop(key, None)
         dirty = current != submitted or (self._project_dirty if active else self._project_dirty_cache.get(submitted['id'], False))
         if 'run' in returned:
             target['run'] = copy.deepcopy(returned['run'])
+        if 'pending_runs' in returned:
+            target['pending_runs'] = copy.deepcopy(returned['pending_runs'])
         if active:
             self._dirty = dirty
             self._refresh_state()
