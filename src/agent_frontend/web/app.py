@@ -54,6 +54,8 @@ class NewFlow(Arguments):
 
 class FlowRun(Arguments):
     definition: Definition | None = None
+    input_text: str = Field(default='', max_length=16000)
+    queue_only: bool = False
 
 
 class FlowImport(Arguments):
@@ -658,7 +660,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         flow(identifier)
         if arguments.definition is not None and arguments.definition.id != identifier:
             raise HTTPException(422, 'Flow ID 不匹配')
-        result = app.state.flows.start(identifier, arguments.definition.model_dump() if arguments.definition else None)
+        result = app.state.flows.start(identifier, arguments.definition.model_dump() if arguments.definition else None, input_text=arguments.input_text, queue_only=arguments.queue_only)
         await flow_audit('flow_run', identifier)
         return public_flow(result)
 

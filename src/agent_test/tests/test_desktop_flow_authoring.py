@@ -262,3 +262,26 @@ def test_narrow_designer_keeps_canvas_visible():
     panel._toggle_inspector()
     assert panel.designer.isVisible()
     panel.close()
+
+
+def test_deferred_project_update_preserves_submitted_flow_input():
+    app = QApplication.instance() or QApplication([])
+    panel = FlowPanel()
+    requests = []
+    panel.command.connect(lambda action, args: requests.append((action, args)))
+    project = {'id': 'project', 'revision': 1, 'handoff': ''}
+    panel.set_flow({'id': 'flow', 'project_id': project['id'], 'project': project,
+                    'revision': 1, 'nodes': [], 'edges': []}, [])
+    panel.flow_fields['handoff'].setPlainText('新项目背景')
+    panel.run_input.setPlainText('本次已提交\n第一批反馈')
+    panel._submit('flow_run')
+    assert [action for action, _ in requests] == ['project_update']
+
+    panel.run_input.setPlainText('下次待提交\n第二批反馈')
+    panel.accept_result('project_update', {**project, **requests[0][1]['changes'], 'revision': 2})
+    action, payload = requests[1]
+    assert action == 'flow_run'
+    assert payload['input_text'] == '本次已提交\n第一批反馈'
+    panel.accept_result('flow_run', {**payload['definition'], 'revision': 2})
+    assert panel.run_input.toPlainText() == '下次待提交\n第二批反馈'
+    panel.deleteLater()

@@ -36,6 +36,7 @@ class PortableNode(BaseModel):
     tool_names: list[str] | None = Field(default=None, max_length=256)
     reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] | None = None
     thinking_mode: Literal['auto', 'enabled', 'disabled'] | None = None
+    reuse_session: bool = Field(default=False, strict=True)
 
 
 class PortableTemplate(BaseModel):

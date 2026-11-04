@@ -172,6 +172,8 @@ class SessionManager:
             session.record['delegated_from'] = parent.id
             if self.flow_workspace_scope(parent):
                 session.record['flow_workspace_scope'] = True
+                if parent.record.get('flow_run_id'):
+                    session.record['flow_run_id'] = parent.record['flow_run_id']
         self.sessions[session.id] = session
         self.workspaces.register(session)
         self.save(session)
@@ -183,15 +185,26 @@ class SessionManager:
 
     def set_workspace_path(self, session: Session, path: str | None):
         """可信用户入口切换目录；不迁移、创建或删除项目文件。"""
-        _, target_identity = self.workspaces.validate_path(path)
-        if (self.workspaces.identity(session) in self.project_reservations
-                or target_identity in self.project_reservations):
+        target_path, target_identity = self.workspaces.validate_path(path)
+        binding = self.workspaces.owner_binding(session)
+        if binding.identity in self.project_reservations or target_identity in self.project_reservations:
             raise ValueError('项目正在由 Flow 使用，请等待结束后修改工作区。')
         self.workspaces.set_path(session, path)
+        if (binding.path, binding.identity) != (target_path, target_identity):
+            # 工作区变更后，旧历史和旧委派不能重新加入 Flow。
+            session.record.pop('flow_project_id', None)
+            session.record.pop('flow_run_id', None)
         self.save(session)
 
-    def assert_project_available(self, session: Session, *, submitting: bool = False) -> None:
+    def assert_project_available(self, session: Session, *, submitting: bool = False,
+                                 flow_id: str | None = None) -> None:
         """Flow 节点及其真实委派后代可用项目，其余提交不能抢占预约。"""
+        parent_id = session.record.get('delegated_from')
+        run_id = session.record.get('flow_run_id')
+        if parent_id and run_id:
+            parent = self.sessions.get(parent_id)
+            if parent is None or parent.record.get('flow_run_id') != run_id:
+                raise ValueError('旧轮次的子 Agent 不能继续使用 Flow 工作区。')
         if not self.project_reservations:
             return
         identity = self.workspaces.identity(session)
@@ -202,7 +215,10 @@ class SessionManager:
         while current is not None and current.id not in seen:
             seen.add(current.id)
             if current.id == self.project_reservation_nodes.get(identity):
-                if submitting and current.id == session.id and session.task is not None:
+                run_id = current.record.get('flow_run_id')
+                if run_id and session.record.get('flow_run_id') != run_id:
+                    raise ValueError('旧轮次的子 Agent 不能使用当前 Flow 的项目预约。')
+                if submitting and current.id == session.id and session.task is not None and flow_id != owner:
                     raise ValueError('Flow 节点正在交接或排空，不能单独追加任务。')
                 return
             current = self.sessions.get(current.record.get('delegated_from'))
@@ -319,14 +335,14 @@ class SessionManager:
             # 完成回调可追加后继保存；让它们运行后再检查，避免漏等或忙等。
             await asyncio.sleep(0)
 
-    def submit(self, session: Session, text: str, *, attachments=None):
+    def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None):
         if self.sessions.get(session.id) is not session:
             raise ValueError('会话已删除，不能继续执行')
         if self.closing or self.maintenance:
             raise ValueError('管理器正在关闭，不能启动新任务')
         if session.busy:
             raise ValueError('此会话正在运行，请等待、停止，或切换到其他会话')
-        self.assert_project_available(session, submitting=True)
+        self.assert_project_available(session, submitting=True, flow_id=flow_id)
         if not text.strip():
             raise ValueError('消息不能为空')
         if self.store.session_bytes(session.id) + len(text.encode('utf-8')) > config.SESSION_MAX_MB * 1024 * 1024:

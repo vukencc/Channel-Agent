@@ -95,7 +95,7 @@ if (typeof window !== "undefined") (() => {
   let catalog = { tools: [], required_tool_names: [], reasoning_efforts: [], thinking_modes: [] };
   let designerController = null, designerRequestId = null, designerGeneration = 0, designerHistory = [], designerVisible = false, designerModel = "", designerEffort = "", designerDraft = "", inspectorVisible = true;
   let scale = 1, pickerGeneration = 0, selectionVersion = 0, summaries = [], projects = [], pending = false, lastError = "", fitReset = false;
-  const drafts = new Map(), dirty = new Set(), projectDirty = new Set(), requestVersions = new Map(), inspectorModes = new Map(), refreshDeferred = new Set();
+  const runInputs = new Map(), drafts = new Map(), dirty = new Set(), projectDirty = new Set(), requestVersions = new Map(), inspectorModes = new Map(), refreshDeferred = new Set();
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls = "", text = "") => {
     const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
@@ -124,7 +124,11 @@ if (typeof window !== "undefined") (() => {
     });
     if (!summaries.some((item) => !item.project_id)) root.append(el("p", "field-hint flow-empty", "还没有 Flow 模板。"));
     const projectRoot = $("project-list");
-    if (projectRoot) { projectRoot.replaceChildren(); projects.forEach((project) => projectRoot.append(button(project.title, () => open(project.flow_id), "session-item flow-list-item" + (active === project.flow_id ? " selected" : "")))); }
+    if (projectRoot) {
+      projectRoot.replaceChildren();
+      projects.forEach((project) => projectRoot.append(button(project.title, () => open(project.flow_id), "session-item flow-list-item" + (active === project.flow_id ? " selected" : ""))));
+      if (!projects.length) projectRoot.append(el("p", "field-hint flow-empty", "还没有 Flow 项目。"));
+    }
   }
   function snapshot(data, { authoritative = false } = {}) {
     if (!Array.isArray(data.flows) || !Number.isFinite(data.flows_revision)) return;
@@ -156,7 +160,7 @@ if (typeof window !== "undefined") (() => {
       const draft = drafts.get(id), wasRunning = running(draft);
       const editing = active === id && Boolean(document.activeElement?.closest(".flow-inspector-body input, .flow-inspector-body textarea, .flow-inspector-body select"));
       const interacting = active === id && Boolean(cancelConnection || cancelNodeDrag);
-      draft.run = f.run;
+      draft.run = f.run; draft.pending_runs = f.pending_runs;
       if (!dirty.has(id) && !editing && !interacting) drafts.set(id, f);
       if (active === id && (wasRunning || running(f) || (!dirty.has(id) && !editing && !interacting))) render();
     } catch (e) { if (active === id) error(e.message); }
@@ -192,7 +196,8 @@ if (typeof window !== "undefined") (() => {
   function openCreated(f, { preserveDesigner = false } = {}) { drafts.set(f.id, f); summaries = [...summaries.filter((x) => x.id !== f.id), { id: f.id, title: f.title, project_id: f.project_id }]; open(f.id, { preserveDesigner }); refreshList(); }
   async function perform(kind) {
     const id = active, f = current(); if (!f || pending) return;
-    if (kind === "run" && !f.project_id) return;
+    if ((kind === "run" || kind === "queue") && !f.project_id) return;
+    const inputText = runInputs.get(id) || "";
     if (kind === "delete" && !window.confirm("删除此 Flow？项目文件与节点会话会保留。")) return;
     const requestedEpoch = epoch;
     requestVersions.set(id, (requestVersions.get(id) || 0) + 1);
@@ -206,7 +211,8 @@ if (typeof window !== "undefined") (() => {
         projectDirty.delete(id);
       }
       if (kind === "save") result = await bridge.api(path(id), { method: "PUT", body: flowDefinition(f) });
-      if (kind === "run") result = await bridge.api(path(id, "/run"), { method: "POST", body: { definition: flowDefinition(f) } });
+      if (kind === "run") result = await bridge.api(path(id, "/run"), { method: "POST", body: { definition: flowDefinition(f), input_text: inputText } });
+      if (kind === "queue") result = await bridge.api(path(id, "/run"), { method: "POST", body: { input_text: inputText, queue_only: true } });
       if (kind === "cancel") result = await bridge.api(path(id, "/cancel"), { method: "POST", body: {} });
       if (kind === "delete") {
         await bridge.api(f.project_id ? `/api/projects/${encodeURIComponent(f.project_id)}` : path(id), { method: "DELETE", body: { confirm: true } });
@@ -215,7 +221,9 @@ if (typeof window !== "undefined") (() => {
         if (active === id) { hide(); $("welcome").hidden = false; }
       } else {
         if (requestedEpoch !== epoch) throw new Error("服务已重启，请核对草稿后重试。");
-        drafts.set(id, result);
+        if (kind === "queue") { f.run = result.run; f.pending_runs = result.pending_runs; }
+        else drafts.set(id, result);
+        if (kind === "run" || kind === "queue") runInputs.delete(id);
         if (kind === "save" || kind === "run") dirty.delete(id);
       }
       refreshList();
@@ -272,6 +280,7 @@ if (typeof window !== "undefined") (() => {
       if (mode === "run") {
         const result = node && f.run?.nodes?.[node.id];
         body.append(el("h3", "", node ? node.title : "最近运行"), el("p", "field-hint", `流程状态：${f.run?.status || "尚未运行"}`));
+        if (f.run?.input_text) body.append(el("h4", "", "本次补充信息"), el("pre", "flow-result", f.run.input_text));
         if (result) {
           [["状态", "status"], ["项目目录", "workspace_path"], ["输入交接", "received_handoff"], ["输出交接", "output_handoff"], ["错误", "error"]].forEach(([label, key]) => { body.append(el("h4", "", label), el("pre", "flow-result", String(result[key] || "—"))); });
           if (result.session_id) body.append(button("打开节点会话", () => bridge.selectSession(result.session_id)));
@@ -291,6 +300,8 @@ if (typeof window !== "undefined") (() => {
       }
       inputField(body, "模型", mode === "flow" && f.project_id ? f.project : target, "model_profile", { project: mode === "flow" && Boolean(f.project_id), nullable: true, select: models });
       if (mode === "node") {
+        const reuseLabel = el("label", "flow-tool-choice"), reuse = document.createElement("input"); reuse.type = "checkbox"; reuse.checked = Boolean(node.reuse_session); reuse.disabled = locked(); reuseLabel.append(reuse, document.createTextNode("复用会话")); body.append(reuseLabel);
+        reuse.addEventListener("change", () => { node.reuse_session = reuse.checked; mark(); });
         inputField(body, "思考模式", node, "thinking_mode", { node: true, nullable: true, select: [["", "继承默认"], ...catalog.thinking_modes.map((v) => [v, v])] });
         inputField(body, "推理强度", node, "reasoning_effort", { node: true, nullable: true, select: [["", "继承默认"], ...catalog.reasoning_efforts.map((v) => [v, v])] });
         const tools = el("details", "flow-context flow-tool-options"), summary = el("summary", "", "节点工具"); tools.append(summary);
@@ -331,6 +342,12 @@ if (typeof window !== "undefined") (() => {
     const actions = el("div", "flow-actions");
     [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : "运行", () => perform(running(f) ? "cancel" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = label === "运行" || label === "停止"; const b = button(label, fn, isRun ? "button primary" : "button subtle"); b.disabled = pending || (running(f) && !isRun); actions.append(b); });
     header.append(title, actions);
+    const runInputRow = el("div", "flow-run-input");
+    if (f.project_id) {
+      const input = document.createElement("textarea"); input.rows = 1; input.maxLength = 16000; input.placeholder = "本次运行补充信息（可选）"; input.setAttribute("aria-label", "本次运行补充信息（可选）"); input.dataset.flowField = "run_input"; input.dataset.flowScope = "run"; input.value = runInputs.get(active) || ""; input.disabled = pending; input.addEventListener("input", () => runInputs.set(active, input.value)); runInputRow.append(input);
+      if (["queued", "running"].includes(f.run?.status) && f.nodes.some((node) => node.reuse_session)) { const queue = button("排队", () => perform("queue"), "button subtle"); queue.disabled = pending; runInputRow.append(queue); }
+      runInputRow.append(el("span", "field-hint", `排队：${(f.pending_runs || []).length}`));
+    }
     const project = el("div", "flow-project-bar"), projectLabel = el("span"); projectLabel.id = "flow-project";
     const choose = button("选择项目", () => {
       const input = document.createElement("input"); input.value = f.project?.workspace_path || ""; const id = active, flowVersion = generation;
@@ -425,7 +442,7 @@ if (typeof window !== "undefined") (() => {
       canvas.append(card);
     });
     const controls = el("div", "flow-controls"); toolbar.append(button(designerVisible ? "显示检查器" : inspectorVisible ? "隐藏检查器" : "显示检查器", () => { if (designerVisible) { stopDesigner(); designerVisible = false; inspectorVisible = true; } else inspectorVisible = !inspectorVisible; render(); })); controls.append(project, toolbar);
-    stage.append(canvas); viewport.append(stage); const panel = el("aside", "flow-inspector"); panel.hidden = !inspectorVisible || designerVisible; inspector(panel); layout.append(viewport, panel); root.append(header, controls, err, layout); if (designerVisible) drawDesigner(); updateHeader();
+    stage.append(canvas); viewport.append(stage); const panel = el("aside", "flow-inspector"); panel.hidden = !inspectorVisible || designerVisible; inspector(panel); layout.append(viewport, panel); header.append(runInputRow); root.append(header, controls, err, layout); if (designerVisible) drawDesigner(); updateHeader();
     controls.scrollLeft = controlsScroll;
     if (scroll && !fitReset) { viewport.scrollLeft = ((scroll.x / scroll.scale) + scroll.minX - bounds.minX) * scale; viewport.scrollTop = ((scroll.y / scroll.scale) + scroll.minY - bounds.minY) * scale; }
     fitReset = false;
