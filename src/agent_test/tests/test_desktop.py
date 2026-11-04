@@ -33,7 +33,8 @@ def wait_until(qt_app, predicate, timeout=6000):
         qt_app.processEvents()
         if predicate():
             return
-        QTest.qWait(10)
+        # 处理 Qt 事件后让出 Python 线程，给后台运行时推进状态。
+        time.sleep(0.01)
     assert predicate(), '等待原生界面状态超时'
 
 

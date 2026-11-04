@@ -43,7 +43,9 @@ PR 首轮 CI `41658238961` 出现 8 failed、1810 passed、7 skipped、5 deselec
 - [设备借用验证](agent-flow-equipment-validation-2026-10-31.md)与 [画布验证](agent-flow-canvas-validation-2026-10-31.md)：保存多节点任务、业务断言及浏览器检查边界。早期 [客服实测](agent-flow-customer-service-validation-2026-11-02.md) 的业务缺陷仍保留。
 - 2026-11-04，本机便携客服模板已单独保存到 `/home/elaine_vuken/projects/customer-feedback-flow.template.json`，供导入复用。应用里也保留原五节点客服反馈分流模板。导入后需选择项目和模型，准备反馈文件及 `support` 知识库。历史报告中的缓存路径记录产物的生成位置，复用模板时使用单独保存的 JSON。
 
-用户未要求自动重复昂贵真实模型任务。本次文档与 Git 交付使用工程回归，不能冒称重新验证了模型业务质量。
+2026-11-04 的交接更新触发了 [CI 41751535114](https://github.com/vukencc/Channel-Agent/actions/runs/41751535114)。桌面确认绑定回归在等待终态时超时，其余 1829 项通过。桌面会话与 Flow 生命周期测试的轮询改用已验证的 Qt 事件处理加 Python 线程让出方式，原期限、绑定校验与拒绝后文件状态断言均保留。后续检查见 PR。
+
+本次交付使用离线工程回归，真实模型业务验证沿用上述历史记录。
 
 ## 本机开发环境
 

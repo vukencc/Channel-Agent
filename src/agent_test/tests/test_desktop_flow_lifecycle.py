@@ -23,7 +23,8 @@ def wait(app, predicate, seconds=8):
         app.processEvents()
         if predicate():
             return
-        QTest.qWait(10)
+        # 处理 Qt 事件后让出 Python 线程，给后台运行时推进状态。
+        time.sleep(0.01)
     assert predicate(), '等待真实 Flow 生命周期状态超时'
 
 
