@@ -9,7 +9,7 @@
 - 旧 PR #29 已合并。其后本地积累的 Flow 项目隔离、画布、创作与上下文修复均属于本次提交范围；排除凭据、用户状态和生成产物。
 - 已将旧分支安全快进到 `origin/main` 的 `032c062`，只更新上游 `uv.lock`，完整保留未提交改动；本次分支为 `codex/flow-milestone-docs`。
 - 文档整理新增入门与阶段总结，并将旧交接移到 [历史会话交接](session-history.md)。历史报告保留失败和验证边界，当前指南优先。
-- 功能代码、用例和回归提交为 `f2f5419`，阶段文档为 `32014ac`；已推送 `origin/codex/flow-milestone-docs`。PR #35 目标 `main`，创建后检查无合并冲突；本交接提交同步 PR 位置，不合并 PR。CI 的当前结果请读取 PR 检查，不能把本地通过当成远端通过。
+- 功能代码、用例和回归提交为 `f2f5419`，阶段文档为 `32014ac`。PR #35 目标为 `main`，交付代码 `027dc15` 的 [CI 回归](https://github.com/vukencc/Channel-Agent/actions/runs/41663576826) 为 1830 passed、7 skipped、5 deselected。当前提交的检查与合并状态以 PR 页面为准。
 
 ## 实现边界
 
@@ -31,7 +31,7 @@
 
 PR 首轮 CI `41658238961` 出现 8 failed、1810 passed、7 skipped、5 deselected（177.22 秒）。6 项为冻结客服夹具的 CRLF/LF 原始哈希差异：现在仅归一 CRLF 后以 Git LF blob 指纹校验，原始报告哈希保留，数据和业务标准不改；7 项新增回归验证等价换行通过、其他字节变更失败。取消回归的固定 0.1 秒等待在受控慢保存下复现失败，现用有界事件同步，补普通/受阻保存两分支及真实排空断言。桌面 8 秒超时在隔离环境连续 10 次未复现，根因仍未知，只加终态与节点诊断和 1 项回归，不改期限或成功断言。三项修订均经只读复核。
 
-首次 CI 修订后禁用 `.env`、隔离全部测试路径的全量回归 **1833 passed、2 skipped、5 deselected（121.01 秒）**；真实隔离探针再通过。客服验收器 40 项、Core Flow 19 项、桌面 Flow 12 项聚焦通过，取消同步另 20 次独立运行合计 80 passed。首轮失败记录保留在本次本地报告。
+首次 CI 修订后禁用 `.env`、隔离全部测试路径的全量回归 **1833 passed、2 skipped、5 deselected（121.01 秒）**；真实隔离探针再通过。客服验收器 40 项、Core Flow 19 项、桌面 Flow 12 项聚焦通过，取消同步另 20 次独立运行合计 80 passed。首轮失败见对应 GitHub Actions 运行。
 
 
 第二轮 CI `41661036459` 为 1 failed、1827 passed、7 skipped、5 deselected（134.61 秒），仅余桌面 8 秒超时；新增诊断显示 first completed、next running 且两次模型回调已到。受控单核/线程切换实验复现测试等待泵阻碍后台线程推进，改为 `processEvents` 后主动 `time.sleep(.01)`，保留 8 秒期限和原断言；新真实线程回归覆盖，临时线程配置均恢复。该实验不证明 CI 使用了相同线程参数。
@@ -41,7 +41,7 @@ PR 首轮 CI `41658238961` 出现 8 failed、1810 passed、7 skipped、5 deselec
 - [设计助手与客服实测](agent-flow-designer-customer-validation-2026-11-03.md)：五轮真实 Flow 中第 05 轮全部节点 completed，但原业务静态验收 562 通过、1 失败，语义另发现人工尝试增造。后续服务→人工定向执行和人工反馈修订后，14 服务/6 人工语义通过；没有新版五节点全量鲜跑，不能将旧失败追认为通过。
 - [创作功能验证](agent-flow-authoring-validation-2026-11-02.md)：区分真实 provider 设计、受控模型界面与实际 Chromium/WSLg 检查。
 - [设备借用验证](agent-flow-equipment-validation-2026-10-31.md)与 [画布验证](agent-flow-canvas-validation-2026-10-31.md)：保存多节点任务、业务断言及浏览器检查边界。早期 [客服实测](agent-flow-customer-service-validation-2026-11-02.md) 的业务缺陷仍保留。
-- 最新客服脱敏本地证据在 `.cache/reports/customer-flow-designer-20261102-vdusr3n8/`；其中 `customer-feedback-flow.template.json` 可导入，但用户仍须自行选项目/模型并准备反馈文件及 `support` 知识库。缓存不随 clone 分发，历史清理过的证据路径可能已失效。
+- 2026-11-04，本机便携客服模板已单独保存到 `/home/elaine_vuken/projects/customer-feedback-flow.template.json`，供导入复用。应用里也保留原五节点客服反馈分流模板。导入后需选择项目和模型，准备反馈文件及 `support` 知识库。历史报告中的缓存路径记录产物的生成位置，复用模板时使用单独保存的 JSON。
 
 用户未要求自动重复昂贵真实模型任务。本次文档与 Git 交付使用工程回归，不能冒称重新验证了模型业务质量。
 
@@ -57,6 +57,6 @@ PR 首轮 CI `41658238961` 出现 8 failed、1810 passed、7 skipped、5 deselec
 
 ## 数据与协作约束
 
-`.agent/`、`crud_tests/`、`data/raw/`、`logs/`、现有 `.cache/` 和本机凭据保持不动。新验证产物只放唯一 `.cache/reports/` 子目录；本次为 `documentation-milestone-20261103-sj1cyetq/`，已保存开始时差异和 2419 个用户文件哈希。不要清理旧证据、重放用户任务或停止用户服务。
+新验证产物放在唯一的 `.cache/reports/` 子目录。2026-11-04 用户授权交付后清理多余的测试报告、截图、缓存和临时项目。根据验收记录识别生成目录，区分用户的 `.agent/` 会话、`crud_tests/` 工作区、原始数据、应用日志和本机凭据。源码、回归用例、历史 Markdown 说明与 GitHub CI 记录继续作为维护依据。
 
 根 `AGENTS.md` 和 `.codex/` 的默认配置是已跟踪文件，随 clone 分发；`docs/dev/` 和被忽略的本地日志/缓存不分发。模型及推理配置仅在 `.codex/agents/*.toml` 维护；仓库开发子代理与应用内子 Agent 是不同系统。协作约定见 [Codex 多代理](codex-multiagent.md)，历史状态参见 [历史交接](session-history.md)。
