@@ -2,10 +2,11 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-07，正在交付 `0.3.0`：统一桌面、Web 和 Debug 视觉，并提供 Windows 与 Linux 成品及发布流水线。原生开发副本为 `D:\AI\AgentSrcCode\ChannelAgent`，分支 `codex/windows-support`；源码同步至原 WSL 仓库。发布与 CI 状态以以下最新记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
+截至 2026-11-07，`0.3.0` 已发布，代码通过两端 CI 并经 PR #37 合并：统一桌面、Web 和 Debug 视觉，并提供 Windows 与 Linux 成品及发布流水线。原生开发副本为 `D:\AI\AgentSrcCode\ChannelAgent`，分支 `codex/windows-support`；源码同步至原 WSL 仓库。发布与 CI 状态以以下最新记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
 
+- [PR #37](https://github.com/vukencc/Channel-Agent/pull/37) 已合并；注解标签 `v0.3.0` 指向稳定分支提交 `8624443a90572b0ae64aca5a99ae652bce3cf675`。正式标签的 Windows 回归 **396 passed、6 skipped**，Linux **1887 passed、40 skipped、5 deselected**，真实隔离探针通过。[发布流水线](https://github.com/vukencc/Channel-Agent/actions/runs/42373873157) 六个任务全部成功，镜像 `ghcr.io/vukencc/channel-agent:0.3.0` 与 [正式 Release](https://github.com/vukencc/Channel-Agent/releases/tag/v0.3.0) 已发布。Windows ZIP（`20261107-125252`）和 Linux tar.gz（`20261107-125053`）均附 SHA256，线上校验文件与 GitHub 服务端资产摘要一致；两端构建均通过源码一致性和成品自检，不能用旧本地预览包替代这些资产。
 - 原生与原 WSL 副本已同步至同一源码提交；同步前 91 项未提交源码完整保存在 WSL 的命名 Git stash `preserved source before v0.3.0 cross-platform synchronization 2026-11-07`，其内容已纳入本轮交付或被当前指南更新。两端 `.env`、会话、项目、缓存和凭据未搬迁或清理。
 - [PR #37](https://github.com/vukencc/Channel-Agent/pull/37) 已提交本轮全部源码与指南。Linux 全量 **1892 passed、34 skipped、5 deselected（106.72 秒）**，真实 Bubblewrap/prlimit 探针通过；首轮远端 Linux CI 通过。Windows CI 首轮为 **8 failed、387 passed、6 skipped**：管理员令牌创建的模型文件所有者可能为 Administrators，随后被严格私有文件检查拒绝。现将新建私有目录及临时模型文件的所有者显式设为当前用户，临时文件在写入内容前保护；继续拒绝非私有所有者/ACL，没有放宽检查。新增回归先失败后通过，原生专项 **26 passed、1 skipped**；修复后远端 Windows CI **396 passed、6 skipped（51.74 秒）**，管理员环境下真实所有者断言和增删改/重载全部通过。
 - 两端本地 0.3.0 预览包均已验收：Windows **15/15** 自检（从 System32、仅系统 PATH，含真实 WSL）、120 模块一致及 SHA256；Linux 解压后 **15/15**、真实中继/npm 辅助路径通过。未带入用户状态，未调用模型。预览包对应修复前提交 `c304a208`，**不得作为后续修复提交的最终发布包**；最终资产由合并后的注解标签重新构建并验收。
