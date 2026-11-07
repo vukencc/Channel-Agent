@@ -6,7 +6,8 @@
 
 ## 当前工作与 Git
 
-- [PR #37](https://github.com/vukencc/Channel-Agent/pull/37) 已提交本轮全部源码与指南。Linux 全量 **1892 passed、34 skipped、5 deselected（106.72 秒）**，真实 Bubblewrap/prlimit 探针通过；首轮远端 Linux CI 通过。Windows CI 首轮为 **8 failed、387 passed、6 skipped**：管理员令牌创建的模型文件所有者可能为 Administrators，随后被严格私有文件检查拒绝。现将新建私有目录及临时模型文件的所有者显式设为当前用户，临时文件在写入内容前保护；继续拒绝非私有所有者/ACL，没有放宽检查。新增回归先失败后通过，原生专项 **26 passed、1 skipped**，管理员环境结果以重跑 CI 为准。
+- 原生与原 WSL 副本已同步至同一源码提交；同步前 91 项未提交源码完整保存在 WSL 的命名 Git stash `preserved source before v0.3.0 cross-platform synchronization 2026-11-07`，其内容已纳入本轮交付或被当前指南更新。两端 `.env`、会话、项目、缓存和凭据未搬迁或清理。
+- [PR #37](https://github.com/vukencc/Channel-Agent/pull/37) 已提交本轮全部源码与指南。Linux 全量 **1892 passed、34 skipped、5 deselected（106.72 秒）**，真实 Bubblewrap/prlimit 探针通过；首轮远端 Linux CI 通过。Windows CI 首轮为 **8 failed、387 passed、6 skipped**：管理员令牌创建的模型文件所有者可能为 Administrators，随后被严格私有文件检查拒绝。现将新建私有目录及临时模型文件的所有者显式设为当前用户，临时文件在写入内容前保护；继续拒绝非私有所有者/ACL，没有放宽检查。新增回归先失败后通过，原生专项 **26 passed、1 skipped**；修复后远端 Windows CI **396 passed、6 skipped（51.74 秒）**，管理员环境下真实所有者断言和增删改/重载全部通过。
 - 两端本地 0.3.0 预览包均已验收：Windows **15/15** 自检（从 System32、仅系统 PATH，含真实 WSL）、120 模块一致及 SHA256；Linux 解压后 **15/15**、真实中继/npm 辅助路径通过。未带入用户状态，未调用模型。预览包对应修复前提交 `c304a208`，**不得作为后续修复提交的最终发布包**；最终资产由合并后的注解标签重新构建并验收。
 - 2026-11-07，用户要求减少全部 UI 的圆角并提交、合并、发布。桌面、Web、Flow 与 Debug 已统一平面工作台色阶和小圆角；原 Debug 因果图结构保持。另修复自动适配把单节点放大到 2.9396 倍的问题，上限为原尺寸，手动放大仍可用；两项 Qt 回归先失败后通过。Web 窄窗设置长路径溢出也已修复。
 - `0.3.0` 根及三个包的版本、精确依赖、Core `__version__`、锁文件和更新日志一致，元数据校验通过。构建依赖组覆盖 Windows/Linux。Windows 原生 CI 选择集为 **385 passed、17 skipped（184.84 秒）**；Linux 首轮 **1890 passed、2 failed、34 skipped、5 deselected**，两项失败为旧 Windows 路径用例未明确平台，现显式验证 Windows 分支、原断言不变；专项 11 passed，随后完整回归通过，结果见上方最新记录。
