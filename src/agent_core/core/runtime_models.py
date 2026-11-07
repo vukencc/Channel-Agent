@@ -218,6 +218,9 @@ class RuntimeModelRegistry:
             file_fd = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600,
                               **({'dir_fd': descriptor} if descriptor is not None else {}))
             created = True
+            if os.name == 'nt':
+                from agent_core.core.windows_security import protect_private_path
+                protect_private_path(temporary_path)
             with os.fdopen(file_fd, 'wb') as handle:
                 file_fd = None
                 handle.write(content)

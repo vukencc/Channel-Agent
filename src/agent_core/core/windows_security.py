@@ -95,11 +95,11 @@ def protect_private_path(path: Path) -> None:
         if not security.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)):
             raise ctypes.WinError(ctypes.get_last_error())
         inheritable = 'OICI' if path.is_dir() else ''
-        acl = f'D:P(A;{inheritable};FA;;;SY)(A;{inheritable};FA;;;{sid_text.value})'
+        acl = f'O:{sid_text.value}D:P(A;{inheritable};FA;;;SY)(A;{inheritable};FA;;;{sid_text.value})'
         if not security.ConvertStringSecurityDescriptorToSecurityDescriptorW(acl, 1, ctypes.byref(descriptor), None):
             raise ctypes.WinError(ctypes.get_last_error())
         with opened_path(path.parent, path, directory=path.is_dir()):
-            if not security.SetFileSecurityW(str(path), 0x4 | 0x80000000, descriptor):
+            if not security.SetFileSecurityW(str(path), 0x1 | 0x4 | 0x80000000, descriptor):
                 raise ctypes.WinError(ctypes.get_last_error())
     finally:
         if descriptor:

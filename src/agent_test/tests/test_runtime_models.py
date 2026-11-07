@@ -37,16 +37,36 @@ $entries = @($acl.Access | ForEach-Object {
     @{sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;
       type=$_.AccessControlType.ToString(); rights=$_.FileSystemRights.ToString()}
 })
-@{protected=$acl.AreAccessRulesProtected; user=$user; entries=$entries} | ConvertTo-Json -Depth 4 -Compress
+@{protected=$acl.AreAccessRulesProtected; user=$user; owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; entries=$entries} | ConvertTo-Json -Depth 4 -Compress
 '''
     result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
                             env={**os.environ, 'TEST_PRIVATE_ACL_PATH': str(path)},
                             capture_output=True, text=True, check=True, timeout=15)
     acl = json.loads(result.stdout)
+    assert acl['owner'] == acl['user']
     if protected:
         assert acl['protected'] is True
     assert {entry['sid'] for entry in acl['entries']} == {acl['user'], 'S-1-5-18'}
     assert all(entry['type'] == 'Allow' and entry['rights'] == 'FullControl' for entry in acl['entries'])
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows ACL')
+def test_registry_protects_empty_temporary_file_before_writing(tmp_path, monkeypatch):
+    from agent_core.core import windows_security
+
+    original = windows_security.protect_private_path
+    protected = []
+
+    def inspect(path):
+        if path.suffix == '.tmp':
+            assert path.read_bytes() == b''
+            protected.append(path)
+        original(path)
+
+    monkeypatch.setattr(windows_security, 'protect_private_path', inspect)
+    settings = registry(tmp_path)
+    settings.add(name='test', model='test', base_url='https://example.test', api_key='test')
+    assert len(protected) == 1
 
 
 def test_runtime_requests_without_session_have_private_routing_id(monkeypatch):
