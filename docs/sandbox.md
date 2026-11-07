@@ -4,6 +4,8 @@
 
 ## 命令执行环境
 
+Windows 原生应用的 `sandbox` 通过 WSL2 执行本节的 Linux 隔离逻辑，工作区映射、用户确认、审计确认和取消回收由桥接协议协调。Windows `local` 与托管后台命令当前不可用。文件工具在本机工作区执行。安装与验证方式见 [Windows 指南](windows.md)。
+
 命令执行环境可在应用配置 `COMMAND_EXECUTION_ENVIRONMENT=sandbox|local` 中设置全局默认值（默认 `sandbox`），也可按根会话在新建会话/会话设置中选择；CLI 使用 `/environment`、`/environment sandbox`、`/environment local` 或 `/environment default`。`default` 恢复应用默认值。根会话所属项目的 Agent、工具与后台任务全部空闲后才能切换；子 Agent 始终跟随根会话选择，手动分支继承分支创建时来源的有效环境。模型工具不能自行选择或提升到 `local`，失败也不会自动改用另一环境。
 
 经典 Agent 的 `local` 仅支持 Linux，命令由 Linux 宿主直接执行，可访问宿主文件、已安装工具、网络和 localhost 服务。它不使用 Bubblewrap、网络 allowlist、prlimit 或工作区配额，也不受 `ENABLE_ENVIRONMENT_PREPARE` 和 `ENABLE_COMMAND_JOBS` 开关约束；本机模式下后台命令工具会注册，但仍须在会话工具子集中可用。因此不能获得沙箱提供的隔离保证。安装 JDK/Maven 等操作仍须 Agent 实际执行，选择本机模式不会自动安装工具。

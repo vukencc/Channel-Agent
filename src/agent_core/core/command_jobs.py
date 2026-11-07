@@ -61,6 +61,8 @@ class CommandJobs:
         self.store.atomic_write(self.directory / (identifier + '.json'), json.dumps(self.records[identifier], ensure_ascii=False))
 
     def start(self, command, reason='', network=False, timeout=None, runtime_profile='system'):
+        if os.name == 'nt':
+            raise PermissionError('Windows 隔离后台命令尚不可用，请使用 run_command 或在 Linux/WSL 运行应用')
         context = _context.get()
         mode = execution_environment()
         local = mode == 'local'

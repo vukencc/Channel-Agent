@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import html
 import json
-from pathlib import PurePosixPath
+import sys
+from pathlib import PurePath
 from typing import Any
 
 from PySide6.QtCore import QByteArray, QSize, Qt, Signal
@@ -225,8 +226,9 @@ class SessionDialog(QDialog):
         self.policy.setCurrentIndex(max(0, self.policy.findData(session.get('permission_label', session['permission_policy']))))
         self._original_policy_index = self.policy.currentIndex()
         self.environment = ChoiceBox()
-        self.environment.addItem('隔离沙箱', 'sandbox')
-        self.environment.addItem('Linux 本机', 'local')
+        self.environment.addItem('WSL 隔离沙箱' if sys.platform == 'win32' else '隔离沙箱', 'sandbox')
+        if sys.platform == 'linux':
+            self.environment.addItem('Linux 本机', 'local')
         self.environment.setCurrentIndex(max(0, self.environment.findData(session['execution_environment'])))
         self.workspace = QLineEdit(session.get('workspace_path', '') if session.get('workspace_custom') else '')
         self.workspace.setPlaceholderText('留空使用默认工作区；或选择已有项目目录')
@@ -244,7 +246,7 @@ class SessionDialog(QDialog):
         for label, widget in [('名称', self.title), ('模型', self.model), ('权限', self.policy), ('命令环境', self.environment), ('项目工作区', workspace_row)]:
             form.addRow(_label(label), widget)
         fields.addLayout(form)
-        fields.addWidget(_label('Linux 本机命令使用宿主环境。子 Agent 沿用所选项目和命令环境；切换前先结束关联任务。', 'muted', wrap=True))
+        fields.addWidget(_label('子 Agent 沿用所选项目和命令环境；切换前先结束关联任务。', 'muted', wrap=True))
         fields.addStretch()
         layout.addWidget(_save_buttons(self))
 
@@ -1021,7 +1023,7 @@ class MainWindow(QMainWindow):
         self.bridge.request('files', session_id=self.current_session['id'], path=path)
 
     def _files_up(self) -> None:
-        self._files(str(PurePosixPath(self._preview_path).parent))
+        self._files(str(PurePath(self._preview_path).parent))
 
     def _preview_item(self, item: QListWidgetItem) -> None:
         if not self.current_session:

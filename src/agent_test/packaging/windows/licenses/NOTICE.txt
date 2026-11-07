@@ -1,0 +1,17 @@
+ChannelAgent Windows 桌面使用 Qt for Python (PySide6-Essentials)、Shiboken6 和 Qt。
+这些库的开源授权包含 LGPL v3，许可原文随本目录提供。
+Qt 官方许可说明：https://doc.qt.io/qtforpython-6/licenses.html
+许可原文来源：https://github.com/qt/qtbase/tree/dev/LICENSES
+
+Qt / PySide / Shiboken 项目及对应版本源码：
+https://code.qt.io/cgit/qt/qtbase.git/
+https://code.qt.io/cgit/qt/qtdeclarative.git/
+https://code.qt.io/cgit/pyside/pyside-setup.git/
+具体版本见成品 THIRD_PARTY_LICENSES/index.json。
+
+Qt 与 Shiboken 使用可替换的独立 DLL，而不是静态链接。
+允许替换这些库，以及为调试所做库修改进行必要的逆向工程；
+本应用不增加限制这些权利的条款。
+其他依赖的许可证与声明见 THIRD_PARTY_LICENSES 各目录。
+ChannelAgent 自身源码及构建说明：https://github.com/vukencc/Channel-Agent
+本地构建若包含未提交改动，以 manifest.json 的 working_tree_modified 为准。

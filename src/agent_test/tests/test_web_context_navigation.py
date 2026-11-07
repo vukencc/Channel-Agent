@@ -23,7 +23,7 @@ def run_js(source):
     node = shutil.which("node") or shutil.which("nodejs") or shutil.which("node.exe")
     if not node:
         pytest.skip("Node is required for frontend behavior checks")
-    result = subprocess.run([node, "-e", source], capture_output=True, text=True, encoding="utf-8", check=False)
+    result = subprocess.run([node], input=source, capture_output=True, text=True, encoding="utf-8", check=False)
     assert result.returncode == 0, result.stderr
 
 

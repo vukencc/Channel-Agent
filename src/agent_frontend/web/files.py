@@ -3,6 +3,7 @@ import itertools
 import os
 from pathlib import Path
 import stat
+import sys
 
 from agent_core.core.files import opened_path
 
@@ -10,13 +11,15 @@ from agent_core.core.files import opened_path
 def directory_entries(root: Path, target: Path, *, expected_identity=None):
     entries = []
     with opened_path(root, target, directory=True, expected_identity=expected_identity) as descriptor:
-        with os.scandir(descriptor) as scan:
+        with os.scandir(target if sys.platform == 'win32' else descriptor) as scan:
             for item in itertools.islice(scan, 500):
                 if item.is_symlink():
                     continue
                 try:
                     info = item.stat(follow_symlinks=False)
                 except FileNotFoundError:
+                    continue
+                if getattr(info, 'st_file_attributes', 0) & 0x400:
                     continue
                 entries.append({'name': item.name, 'path': str((target / item.name).relative_to(root)),
                                 'is_dir': stat.S_ISDIR(info.st_mode), 'size': info.st_size})

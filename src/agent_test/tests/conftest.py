@@ -44,3 +44,28 @@ def sandbox_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "TOOL_PERMISSION_POLICY", "standard")
     monkeypatch.setattr(sandbox, "confirmer", lambda prompt, timeout: True)
     return sandbox_dir
+
+
+@pytest.fixture
+def symlink_capable(tmp_path):
+    """只在宿主明确缺少创建符号链接权限时跳过相关安全用例。"""
+    target = tmp_path / 'symlink-capability-target'
+    target.write_text('probe', encoding='utf-8')
+    link = tmp_path / 'symlink-capability-link'
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == 'nt' and exc.winerror == 1314:
+            pytest.skip('Windows requires Developer Mode or symlink privilege (WinError 1314)')
+        raise
+    link.unlink()
+
+
+@pytest.fixture
+def headless_cli_session():
+    """patch_stdout 与 Application 共用受控输出，不请求 Windows 控制台。"""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.output import DummyOutput
+
+    with create_app_session(output=DummyOutput()):
+        yield

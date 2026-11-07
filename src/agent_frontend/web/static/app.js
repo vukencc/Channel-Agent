@@ -308,7 +308,13 @@
     try {
       const meta = await jsonApi("/api/meta");
       const snapshot = await jsonApi("/api/sessions");
-      state.meta = meta; state.ready = true; state.retryCount = 0;
+      state.meta = meta;
+      for (const id of ["new-execution-environment", "settings-execution-environment"]) {
+        const select = $(id), local = select.querySelector('option[value="local"]'), sandbox = select.querySelector('option[value="sandbox"]');
+        local.hidden = meta.platform !== "linux"; local.disabled = meta.platform !== "linux";
+        sandbox.textContent = meta.platform === "win32" ? "WSL 隔离沙箱" : "隔离沙箱";
+      }
+      state.ready = true; state.retryCount = 0;
       window.FlowUI?.refreshModels?.();
       renderArchiveLink();
       showError("connection-error", null); applySnapshot(snapshot);
@@ -1050,7 +1056,7 @@
     ["settings-project-path", "browse-workspace", "reset-workspace"].forEach((id) => { $(id).disabled = workspaceLocked; });
     $("settings-execution-environment").disabled = workspaceLocked;
     $("workspace-picker").hidden = true; state.workspaceBrowseGeneration = (state.workspaceBrowseGeneration || 0) + 1;
-    setText("settings-project-path-hint", session.workspace_error || (session.parent_id ? "工作区由父 Agent 的会话设置管理。" : workspaceLocked ? "请先停止此项目的 Agent 和后台任务，再切换目录。" : `当前目录：${session.workspace_path || "默认会话目录"}。可输入已有 Linux 绝对路径或浏览选择。`));
+    setText("settings-project-path-hint", session.workspace_error || (session.parent_id ? "工作区由父 Agent 的会话设置管理。" : workspaceLocked ? "请先停止此项目的 Agent 和后台任务，再切换目录。" : `当前目录：${session.workspace_path || "默认会话目录"}。可输入已有绝对路径或浏览选择。`));
     policyDescription();
     setText("settings-busy-hint", session.busy ? "运行中的设置修改可能被服务拒绝。" : "");
     $("settings-dialog").showModal();
@@ -1438,7 +1444,7 @@
   $("flow-create").addEventListener("click", async () => { const title = window.prompt("Flow 模板名称", "新建 Flow"); if (!title?.trim()) return; try { const flow = await jsonApi("/api/flows", {method: "POST", body: {title: title.trim()}}); window.FlowUI.openCreated(flow); } catch (error) { toast(errorText(error), "error"); } });
   $("new-mode").addEventListener("change", updateNewMode);
   $("new-browse").addEventListener("click", () => window.FlowUI.pickDirectory({ input: $("new-project-path"), valid: () => $("new-dialog").open }));
-  window.FlowUI.init({ api: jsonApi, models: () => normalizeOptions(state.meta.models, "model"), selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
+  window.FlowUI.init({ api: jsonApi, platform: () => state.meta.platform || "linux", models: () => normalizeOptions(state.meta.models, "model"), selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
   $("refresh-sessions").addEventListener("click", refreshSessions); $("session-search").addEventListener("input", renderSessions);
   $("composer-form").addEventListener("submit", sendMessage); $("stop-agent").addEventListener("click", () => stopSession());
   $("message-input").addEventListener("input", () => { saveDraft(); resizeInput(); renderComposer(); state.slashIndex = 0; renderSlash(); });

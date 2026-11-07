@@ -73,7 +73,11 @@ def _identity(path):
 
 
 def _rename_no_replace(source, destination):
-    # Linux 原子且不覆盖的重命名；其他平台拒绝，绝不退化为覆盖式 rename。
+    # 原子且不覆盖的重命名；不支持的平台拒绝。
+    if sys.platform == 'win32':
+        from agent_core.core.windows_files import rename_noreplace
+        rename_noreplace(source, destination)
+        return
     if sys.platform != 'linux':
         raise SandboxError('原子 move 目前需要 Linux；可确认 copy 后单独删除源文件')
     library = ctypes.CDLL(None, use_errno=True)

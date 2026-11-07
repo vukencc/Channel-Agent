@@ -211,7 +211,10 @@ def test_tampered_digest_and_owner_never_reveal_raw_history(debug_archive_client
     path.write_text(_json(original), encoding="utf-8")
 
 
-def test_symlink_and_hardlink_archive_files_are_rejected(debug_archive_client, tmp_path):
+@pytest.mark.parametrize('link_kind', ['symbolic', 'hard'])
+def test_symlink_and_hardlink_archive_files_are_rejected(debug_archive_client, tmp_path, request, link_kind):
+    if link_kind == 'symbolic':
+        request.getfixturevalue('symlink_capable')
     client, store = debug_archive_client
     session_id = client.post("/api/sessions", json={"title": "links"}).json()["id"]
     folder, chunks = _archive(store, session_id, count=1)
@@ -220,12 +223,10 @@ def test_symlink_and_hardlink_archive_files_are_rejected(debug_archive_client, t
     outside = tmp_path / "outside.json"
     outside.write_text(chunk_path.read_text(encoding="utf-8"), encoding="utf-8")
     chunk_path.unlink()
-    chunk_path.symlink_to(outside)
-    response = client.get(url)
-    assert response.status_code >= 400
-    assert "private history" not in response.text
-    chunk_path.unlink()
-    os.link(outside, chunk_path)
+    if link_kind == 'symbolic':
+        chunk_path.symlink_to(outside)
+    else:
+        os.link(outside, chunk_path)
     response = client.get(url)
     assert response.status_code >= 400
     assert "private history" not in response.text
@@ -256,7 +257,7 @@ def test_credentials_are_redacted_before_chunk_paging(debug_archive_client, monk
     assert secret not in "".join(pages)
     assert secret in (folder / "chunks" / f"{chunks[0]['ID']}.json").read_text(encoding="utf-8")
 
-def test_manifest_owner_and_link_boundaries_are_enforced(debug_archive_client, tmp_path):
+def test_manifest_owner_boundary_is_enforced(debug_archive_client):
     client, store = debug_archive_client
     session_id = client.post("/api/sessions", json={"title": "manifest"}).json()["id"]
     folder, _ = _archive(store, session_id, count=1)
@@ -267,15 +268,23 @@ def test_manifest_owner_and_link_boundaries_are_enforced(debug_archive_client, t
     assert response.status_code >= 400
     assert "private history" not in response.text
 
+
+@pytest.mark.parametrize('link_kind', ['symbolic', 'hard'])
+def test_manifest_link_boundaries_are_enforced(debug_archive_client, tmp_path, request, link_kind):
+    if link_kind == 'symbolic':
+        request.getfixturevalue('symlink_capable')
+    client, store = debug_archive_client
+    session_id = client.post("/api/sessions", json={"title": "manifest"}).json()["id"]
+    folder, _ = _archive(store, session_id, count=1)
+    manifest_path = folder / "manifest.json"
+    original = json.loads(manifest_path.read_text(encoding="utf-8"))
     outside = tmp_path / "outside-manifest.json"
     outside.write_text(_json(original), encoding="utf-8")
     manifest_path.unlink()
-    manifest_path.symlink_to(outside)
-    response = client.get(f"/api/debug/sessions/{session_id}/context")
-    assert response.status_code >= 400
-
-    manifest_path.unlink()
-    os.link(outside, manifest_path)
+    if link_kind == 'symbolic':
+        manifest_path.symlink_to(outside)
+    else:
+        os.link(outside, manifest_path)
     response = client.get(f"/api/debug/sessions/{session_id}/context")
     assert response.status_code >= 400
 

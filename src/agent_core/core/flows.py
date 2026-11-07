@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
-from agent_core.core.files import opened_path
+from agent_core.core.files import opened_path, fsync_directory
 from agent_core.core.session_service import open_session
 from agent_core.core.storage import now, wait_for_io_completion
 from agent_core.tools.sandbox import ToolContext, audit, tool_context
@@ -172,11 +172,7 @@ class FlowService:
         info = path.stat(follow_symlinks=False)
         raw = json.dumps(value, ensure_ascii=False, allow_nan=False)
         self.file_identities[value["id"]] = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
-        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(self.directory)
         self.on_change()
 
     def list(self):
@@ -449,11 +445,7 @@ class FlowService:
         if self.file_identities.get(flow_id) != (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest()):
             raise PermissionError("Flow 文件已在外部变化")
         path.unlink()
-        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(self.directory)
         del self.records[flow_id]
         self.file_identities.pop(flow_id, None)
         self.on_change()

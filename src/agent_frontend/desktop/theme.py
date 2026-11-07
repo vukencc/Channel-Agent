@@ -9,10 +9,10 @@ from PySide6.QtWidgets import QComboBox, QLabel, QStyle, QStyledItemDelegate
 
 
 STYLE = '''
-QWidget { background: #1d2026; color: #e0e6ef; font-size: 13px; }
+QWidget { background: #171b20; color: #e5ebf4; font-size: 13px; }
 QFrame { border: none; }
-QMainWindow, QWidget#conversation { background: #1d2026; }
-QWidget#sidebar { background: #15181d; border-right: 1px solid #2b3039; }
+QMainWindow, QWidget#conversation { background: #171b20; }
+QWidget#sidebar { background: #14181d; border-right: 1px solid #313a46; }
 QWidget#header { border-bottom: 1px solid #303640; }
 QWidget#header QWidget, QWidget#welcome, QWidget#welcome QWidget { background: transparent; }
 QLabel { background: transparent; }
@@ -24,12 +24,12 @@ QLabel#section { color: #778599; font-size: 11px; padding: 8px 4px 1px; }
 QLabel#welcomeTitle { color: #edf2fa; font-size: 26px; font-weight: 600; }
 QLabel#welcomeSubtitle { color: #8f9db1; font-size: 13px; }
 QLabel#dialogTitle { color: #f0f4fa; font-size: 21px; font-weight: 600; }
-QLabel#statusChip { color: #8ed4bb; background: #23342f; border: 1px solid #365148; border-radius: 8px; padding: 3px 9px; font-size: 10px; }
+QLabel#statusChip { color: #8ed4bb; background: #23342f; border: 1px solid #365148; border-radius: 3px; padding: 3px 9px; font-size: 10px; }
 QLabel#statusChip[tone="running"] { color: #aac8ff; background: #263448; border-color: #3d567a; }
 QLabel#statusChip[tone="warning"] { color: #e8c382; background: #3d3324; border-color: #655239; }
 QLabel#statusChip[tone="error"] { color: #e8a5ad; background: #3b282e; border-color: #63414c; }
-QLabel#error { color: #efb2bb; padding: 10px 13px; background: #35272f; border: 1px solid #603d4a; border-radius: 9px; }
-QLineEdit, QComboBox, QTextEdit { background: #242932; border: 1px solid #3a424e; border-radius: 8px; padding: 9px 11px; selection-background-color: #3b577b; selection-color: #f5f8ff; }
+QLabel#error { color: #efb2bb; padding: 10px 13px; background: #35272f; border: 1px solid #603d4a; border-radius: 3px; }
+QLineEdit, QComboBox, QTextEdit { background: #242932; border: 1px solid #3a424e; border-radius: 3px; padding: 9px 11px; selection-background-color: #3b577b; selection-color: #f5f8ff; }
 QLineEdit:focus, QTextEdit:focus, QComboBox:focus { border-color: #7d9fc9; }
 QLineEdit:disabled, QComboBox:disabled { color: #657184; background: #20242b; border-color: #303640; }
 QLineEdit#search { background: #1b1f26; border-color: #2b323d; padding: 8px; }
@@ -39,11 +39,11 @@ QComboBox::down-arrow { image: none; width: 0; height: 0; }
 QComboBox QAbstractItemView { background: #252c37; border: 1px solid #47566b; selection-background-color: #354b68; padding: 5px; }
 QTextBrowser { background: transparent; border: none; padding: 0; selection-background-color: #3b577b; selection-color: #f5f8ff; }
 QTextEdit#composer { background: transparent; border: none; border-radius: 0; padding: 3px; font-size: 14px; }
-QWidget#composerPanel { background: #252b34; border: 1px solid #414b5a; border-radius: 14px; }
+QWidget#composerPanel { background: #252c35; border: 1px solid #414b5a; border-radius: 3px; }
 QWidget#composerPanel[focused="true"] { border-color: #769bc6; }
 QWidget#composerPanel QLabel { background: transparent; border: none; }
-QWidget#composerPanel QPushButton { border-radius: 8px; }
-QPushButton { color: #c8d3e2; border: 1px solid #3b4451; background: #2b323d; border-radius: 8px; padding: 8px 12px; }
+QWidget#composerPanel QPushButton { border-radius: 3px; }
+QPushButton { color: #c8d3e2; border: 1px solid #3b4451; background: #2b323d; border-radius: 3px; padding: 8px 12px; }
 QPushButton:hover { color: #f3f6fc; background: #343e4c; border-color: #56677d; }
 QPushButton:pressed { background: #232e3e; }
 QPushButton:focus { border-color: #7d9fc9; }
@@ -57,13 +57,18 @@ QPushButton#iconButton { border: none; background: transparent; padding: 7px; }
 QPushButton#iconButton:hover { background: #303944; }
 QPushButton#quiet { color: #8f9db1; border: none; background: transparent; text-align: left; padding: 9px 10px; }
 QPushButton#quiet:hover { background: #242c37; color: #d3deed; }
-QPushButton#suggestion { text-align: left; color: #c3d1e2; background: #222832; border-color: #353e4c; padding: 13px 17px; font-size: 12px; }
+QPushButton#suggestion { text-align: left; color: #c3d1e2; background: transparent; border: none; border-bottom: 1px solid #313a46; padding: 13px 17px; font-size: 12px; }
 QPushButton#suggestion:hover { background: #293443; border-color: #637e9f; }
 QPushButton#history { color: #8fa4be; background: transparent; border: none; padding: 4px 8px; font-size: 11px; }
 QPushButton#history:hover { color: #c8e0ff; background: #293544; }
 QPushButton#stop { color: #eab4bf; background: #422e37; border-color: #65414e; }
+QToolButton { color: #aebdd0; background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 5px 8px; }
+QToolButton:hover { color: #e5ebf4; background: #293340; }
+QToolButton:checked { color: #c9ddfa; background: #253448; }
+QToolButton:focus { border-color: #7d9fc9; }
+QToolButton:disabled { color: #657184; background: transparent; border-color: transparent; }
 QListWidget { background: transparent; border: none; outline: none; padding: 0; }
-QListWidget::item { padding: 10px; margin: 2px 0; border-radius: 8px; }
+QListWidget::item { padding: 10px; margin: 2px 0; border-radius: 3px; }
 QListWidget::item:selected { background: #2b3d54; color: #eaf2ff; }
 QListWidget::item:hover { background: #252e3b; }
 QTreeView { background: #20252d; border: 1px solid #303a48; outline: none; }
@@ -228,9 +233,9 @@ class SessionDelegate(QStyledItemDelegate):
         box = QRectF(option.rect).adjusted(2 + depth * 10, 3, -3, -3)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor('#405776' if selected else '#252c37' if hovered else '#15181d'), 1))
-        painter.setBrush(QColor('#25354b' if selected else '#202833' if hovered else '#15181d'))
-        painter.drawRoundedRect(box, 9, 9)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#25354b' if selected else '#202833' if hovered else '#14181d'))
+        painter.drawRoundedRect(box, 3, 3)
         x, y = box.x() + 11, box.y() + 11
         icon('branch' if depth else 'chat', '#8db6ec' if selected else '#74859d', 17).paint(painter, int(x), int(y + 1), 17, 17)
         title_box = QRectF(x + 27, y - 1, box.width() - 50, 21)

@@ -8,18 +8,23 @@ import sys
 
 
 def configure_fonts(app) -> None:
-    """WSLg 未安装 CJK 字体时使用本机已有字体，不下载或复制字体。"""
+    """平台缺少 CJK 字体映射时加载系统已有字体。"""
     from PySide6.QtGui import QFont, QFontDatabase
     if QFontDatabase.families(QFontDatabase.WritingSystem.SimplifiedChinese):
         return
-    if sys.platform == 'linux' and os.environ.get('WSL_DISTRO_NAME'):
-        for path in (Path('/mnt/c/Windows/Fonts/msyh.ttc'), Path('/mnt/c/Windows/Fonts/simhei.ttf')):
-            if path.is_file():
-                identifier = QFontDatabase.addApplicationFont(str(path))
-                families = QFontDatabase.applicationFontFamilies(identifier)
-                if families:
-                    app.setFont(QFont(families[0], 10))
-                    return
+    candidates = []
+    if sys.platform == 'win32':
+        directory = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'Fonts'
+        candidates = [directory / 'msyh.ttc', directory / 'simhei.ttf']
+    elif sys.platform == 'linux' and os.environ.get('WSL_DISTRO_NAME'):
+        candidates = [Path('/mnt/c/Windows/Fonts/msyh.ttc'), Path('/mnt/c/Windows/Fonts/simhei.ttf')]
+    for path in candidates:
+        if path.is_file():
+            identifier = QFontDatabase.addApplicationFont(str(path))
+            families = QFontDatabase.applicationFontFamilies(identifier)
+            if families:
+                app.setFont(QFont(families[0], 10))
+                return
 
 
 def main() -> None:
@@ -35,6 +40,8 @@ def main() -> None:
     from .window import MainWindow
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    from PySide6.QtGui import QIcon
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / 'assets' / 'channel-agent.svg')))
     app.setApplicationName('Agent Desktop')
     app.setOrganizationName('ai-agent-startup')
     configure_fonts(app)

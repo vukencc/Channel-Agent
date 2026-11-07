@@ -1,5 +1,7 @@
 # 原生桌面 GUI
 
+Windows 原生运行与 WSL 隔离命令的安装步骤见 [Windows 指南](windows.md)。
+
 > 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
 
 桌面客户端使用 Qt Widgets，直接调用 AgentCore，不启动 HTTP 服务，不嵌入 WebView，也不需要浏览器。WebUI 也提供 Agent 与 Flow 入口；CLI 提供会话入口。
@@ -13,7 +15,7 @@ uv sync --locked --extra desktop --extra web
 uv run --no-sync ai-agent-gui
 ```
 
-`--extra web` 用于保留现有 WebUI 的可选依赖；只使用桌面时可以仅安装 `--extra desktop`。桌面依赖为 `PySide6-Essentials`，包含原生控件，不安装 Qt WebEngine。Linux 需要可用的图形会话和中文字体；WSLg 可复用宿主已有的微软雅黑字体，普通 Linux 可安装 `fonts-noto-cjk`。Windows 宿主使用 WSL checkout 时，在 WSL 内用 Linux `uv` 启动 Qt，由 WSLg 显示窗口；不要对该 `.venv` 使用 Windows `uv`。这里描述的是 Linux / WSLg 后端，不代表原生 Windows 后端已经验证。
+`--extra web` 用于保留现有 WebUI 的可选依赖；只使用桌面时可以仅安装 `--extra desktop`。桌面依赖为 `PySide6-Essentials`，包含原生控件，不安装 Qt WebEngine。Linux 需要可用的图形会话和中文字体；WSLg 可复用宿主已有的微软雅黑字体，普通 Linux 可安装 `fonts-noto-cjk`。Windows 宿主使用 WSL checkout 时，在 WSL 内用 Linux `uv` 启动 Qt，由 WSLg 显示窗口；不要对该 `.venv` 使用 Windows `uv`。Windows 原生和 Linux 成品另见 [Windows](windows.md)与 [Linux](linux.md)指南，使用各自独立的运行环境。
 
 默认继续使用根 `.env` 和既有会话目录。独立测试或需要单独的会话库时：
 
@@ -25,7 +27,7 @@ uv run --no-sync ai-agent-gui --state-dir /绝对路径/独立状态目录
 
 ## 使用
 
-界面使用统一的炭灰与浅蓝主题、原生矢量图标和分层消息样式。左栏提供新建、搜索和切换会话；中央保留对话、任务状态和自适应输入框。设置、模型管理和活动详情按需打开，避免常驻多块监控面板。
+界面使用统一的深色工作台和浅蓝强调色，以背景层级、细分隔线和留白区分区域。主面板采用直边，按钮、输入和列表项保留 3–4px 小圆角，状态点和 Flow 端口保留圆形。欢迎建议、消息/代码/工具内容、模型管理、项目选择、设计助手和检查器沿用同一层次。左栏提供新建、搜索和切换会话；中央保留对话、任务状态和自适应输入框。设置、模型管理和活动详情按需打开。
 
 - `Enter` 发送，`Shift+Enter` 换行；停止按钮或 `Esc` 取消当前运行。
 - 欢迎页的任务卡片只填入草稿，不自动发送；窄窗口自动收起会话栏，仍可手动展开。
@@ -43,7 +45,7 @@ uv run --no-sync ai-agent-gui --state-dir /绝对路径/独立状态目录
 
 右侧设计助手支持多轮设计；节点检查器可设置工具、模型和推理，画布支持便携模板导入导出，具体边界见上述指南。
 
-运行状态与操作确认采用后台当前快照；完成后的面板状态在延迟操作确认返回后保持一致。
+运行状态与操作确认采用后台当前快照；完成后的面板状态在延迟操作确认返回后保持一致。画布「适配」只会缩小过大的图，不会将少量节点自动放大；用户仍可手动放大查看。
 
 ## 模块边界
 

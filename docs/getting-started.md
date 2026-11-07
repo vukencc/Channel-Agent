@@ -2,7 +2,7 @@
 
 > 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
 
-在 Linux 或 WSL 中使用 Python 3.12 及以上、Git 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)；uv 可按安装指南安装 Python。原生 GUI 需要图形会话，WSL 需要 WSLg。Windows 用户请在 WSL 的 Linux 终端运行命令，避免用 Windows uv 操作 Linux 虚拟环境。
+使用 Python 3.12 及以上、Git 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)；uv 可按安装指南安装 Python。下面的命令适用于 Linux 或 WSL，原生 GUI 需要图形会话，WSL 需要 WSLg。Windows 原生界面及隔离命令的独立环境配置见 [Windows 指南](windows.md)。
 
 ## 安装与启动
 
@@ -34,7 +34,7 @@ if [ ! -f .env ]; then cp .env.example .env; fi
 
 已有 `.env` 不会被此命令覆盖。进程环境变量优先于 `.env`；不要把密钥提交或粘贴到问题报告中。完整设置和优先级见[配置说明](configuration.md)。
 
-创建经典 Agent 会话，选择模型并发送简单任务，例如“介绍你能使用的工具”。操作文件前检查项目目录和权限，并按提示处理确认。CLI 的 `/models` 可选择模型，`/project /绝对路径` 可选择已有 Linux 项目目录；详见 [CLI 指南](cli.md)。
+创建经典 Agent 会话，选择模型并发送简单任务，例如“介绍你能使用的工具”。操作文件前检查项目目录和权限，并按提示处理确认。CLI 的 `/models` 可选择模型，`/project /绝对路径` 可选择已有项目目录；详见 [CLI 指南](cli.md)。
 
 ## 创建 Flow 项目
 
@@ -49,4 +49,4 @@ if [ ! -f .env ]; then cp .env.example .env; fi
 
 普通对话不要求先准备 RAG 模型。使用知识库检索时需准备资料及嵌入、重排模型，首次使用可能需要额外下载；路径、支持的文件类型和准备方式见 [RAG 指南](rag.md)。PDF 和 Word 解析是可选依赖 `documents`。
 
-Linux 隔离命令需要系统安装 Bubblewrap（`bwrap`）和 `prlimit`；Debian/Ubuntu 对应的软件包是 `bubblewrap` 和 `util-linux`。此外系统必须允许所需命名空间；能力不可用时命令会被拒绝，不会自动退回宿主执行。文件工具仍可独立使用。配置、检查与本机模式边界见[沙箱说明](sandbox.md)和[环境准备](environment-preparation.md)。
+Linux 和 Windows 的 WSL 隔离命令需要在 Linux 中安装 Bubblewrap（`bwrap`）和 `prlimit`；Debian/Ubuntu 对应的软件包是 `bubblewrap` 和 `util-linux`。此外系统必须允许所需命名空间；能力不可用时命令会被拒绝，不会自动退回宿主执行。文件工具仍可独立使用。配置、检查与本机模式边界见[沙箱说明](sandbox.md)和[环境准备](environment-preparation.md)。

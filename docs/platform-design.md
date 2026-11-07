@@ -11,11 +11,11 @@
 | Linux | CLI/headless、WebUI、原生 Qt GUI | sandbox 使用 Bubblewrap/prlimit；可显式选择 local | 当前开发和验证环境，仍需实际隔离探针及 GUI 系统库 |
 | WSL2 Linux | 同 Linux；Qt 需 WSLg，建议项目置于 Linux 文件系统 | 同 Linux，能力不足则拒绝 | Windows 终端通过 WSL 调用 Linux uv/Python/Node；不等于 Windows 原生后端 |
 | macOS 原生 | 有基础平台适配，完整依赖、交互和文件边界未验收 | 当前命令入口拒绝，建议 Linux 环境 | 不作为已验收部署目标 |
-| Windows 原生 | 有锁适配等契约测试，依赖、终端和文件边界未完整验收 | 当前命令入口拒绝，建议 WSL2 | 不因存在 Windows 锁适配就宣称原生功能完成 |
+| Windows 原生 | 原生 Qt、Web 和 Core；项目目录使用本地盘路径，文件访问拒绝重解析点等不安全路径 | sandbox 通过 WSL2 中的 Linux 执行器；local 拒绝 | 后台命令任务与维护清理不可用；本轮验证范围见 [Windows 指南](windows.md) |
 
 `/platform` 或 `uv run --no-sync ai-agent-startup --platform` 只报告静态能力，不创建会话或调用模型。找到可执行文件不等于命名空间、资源限制和网络实际可用；用 `python -m agent_test.scripts.ci_sandbox_probe` 验证。状态目录由单个进程独占；多个界面进程须分别使用 `--state-dir`，不能同时写同一目录。
 
-经典会话 local 使用宿主工具链、网络和真实路径；Flow local 为防止越出所选项目，另通过 Bubblewrap 限制持久写入范围。不能把两者安全语义混用；完整规则见 [沙箱](sandbox.md)。网络文件系统的锁与目录身份行为还需部署环境验证。
+Linux 经典会话 local 使用宿主工具链、网络和真实路径；Flow local 为防止越出所选项目，另通过 Bubblewrap 限制持久写入范围。Windows 不支持 local 命令。不能把两者安全语义混用；完整规则见 [沙箱](sandbox.md)。网络文件系统的锁与目录身份行为还需部署环境验证。
 
 ## Headless 单次任务
 

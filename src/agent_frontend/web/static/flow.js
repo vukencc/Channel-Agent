@@ -11,7 +11,7 @@ function flowCanConnect(nodes, edges, source, target) {
   }
   return true;
 }
-function flowProjectInfo(flow, nodeId) {
+function flowProjectInfo(flow, nodeId, platform = "linux") {
   const nodes = new Map((flow.nodes || []).map((node) => [node.id, node]));
   const incoming = new Map(), memo = new Map(), visiting = new Set();
   for (const edge of flow.edges || []) {
@@ -20,6 +20,11 @@ function flowProjectInfo(flow, nodeId) {
   }
   function normalize(path) {
     if (!path) return "";
+    if (platform === "win32") {
+      if (!/^[A-Za-z]:[\\/]/.test(path) || path.split(/[\\/]/).includes("..")) return null;
+      const parts = path.slice(3).split(/[\\/]/).filter((part) => part && part !== ".");
+      return path[0].toUpperCase() + ":\\" + parts.join("\\");
+    }
     if (!path.startsWith("/") || path.startsWith("//") || path.split("/").includes("..")) return null;
     return "/" + path.split("/").filter((part) => part && part !== ".").join("/");
   }
@@ -31,7 +36,7 @@ function flowProjectInfo(flow, nodeId) {
     const candidate = own || (!parents.length ? flow.workspace_path || "" : "");
     const normalized = normalize(candidate);
     let result;
-    if (normalized === null) result = { error: "项目路径不合法：请选择绝对目录，不能包含 .. 或以 // 开头。" };
+    if (normalized === null) result = { error: "项目路径不合法：请选择绝对目录，不能包含 .. 或网络路径。" };
     else if (!parents.length) result = normalized ? { path: normalized, source: own ? "节点指定" : "流程默认" } : { error: "尚未选择项目" };
     else {
       const inherited = parents.map(resolve), failed = inherited.find((entry) => entry.error);
@@ -266,7 +271,7 @@ if (typeof window !== "undefined") (() => {
     parent.append(wrap); return input;
   }
   function projectInfo(id) {
-    const result = flowProjectInfo(current(), id); return result.error || `${result.source}：${result.path}`;
+    const result = flowProjectInfo(current(), id, (bridge.platform?.() || "linux")); return result.error || `${result.source}：${result.path}`;
   }
   function inspector(root) {
     const f = current(), node = f.nodes.find((n) => n.id === selected), tabs = el("div", "flow-tabs");
@@ -295,7 +300,7 @@ if (typeof window !== "undefined") (() => {
       inputField(details, mode === "node" ? "补充背景（可选）" : "项目背景（可选）", mode === "flow" && f.project_id ? f.project : target, "handoff", { multiline: true, project: mode === "flow" && Boolean(f.project_id) });
       body.append(details);
       if (mode === "flow" && f.project_id && f.project) {
-        inputField(body, "执行环境", f.project, "execution_environment", {project: true, nullable: true, select: [["", "使用默认环境"], ["sandbox", "隔离沙箱"], ["local", "Linux 本机"]]});
+        inputField(body, "执行环境", f.project, "execution_environment", {project: true, nullable: true, select: [["", "使用默认环境"], ["sandbox", (bridge.platform?.() || "linux") === "win32" ? "WSL 隔离沙箱" : "隔离沙箱"], ...((bridge.platform?.() || "linux") === "linux" ? [["local", "Linux 本机"]] : [])]});
         inputField(body, "权限模式", f.project, "permission_policy", {project: true, nullable: true, select: [["", "使用默认权限"], ["smart", "智能申请"], ["readonly", "只读"], ["full_access", "完全访问"]]});
       }
       inputField(body, "模型", mode === "flow" && f.project_id ? f.project : target, "model_profile", { project: mode === "flow" && Boolean(f.project_id), nullable: true, select: models });
@@ -455,7 +460,7 @@ if (typeof window !== "undefined") (() => {
     }
   }
   async function pickDirectory({ input, valid, apply }) {
-    const ticket = ++pickerGeneration, dialog = el("dialog", "standard-dialog flow-picker"), header = el("header", "dialog-header"), title = el("h2", "", "选择 Linux 项目目录");
+    const ticket = ++pickerGeneration, dialog = el("dialog", "standard-dialog flow-picker"), header = el("header", "dialog-header"), title = el("h2", "", "选择项目目录");
     const close = button("×", () => dialog.close(), "icon-button"); header.append(title, close);
     const body = el("div", "dialog-body"), location = el("input"), parent = button("上级目录", () => load(parent.dataset.path)), list = el("div", "workspace-directory-list"), problem = el("p", "inline-error"), select = button("选择当前目录", () => { if (ticket === pickerGeneration && valid()) { input.value = location.value; if (apply) apply(location.value); else input.dispatchEvent(new Event("input", { bubbles: true })); } dialog.close(); }, "button primary");
     body.append(location, button("前往", () => load(location.value)), parent, problem, list, select); dialog.append(header, body); document.body.append(dialog);

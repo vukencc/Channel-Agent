@@ -228,7 +228,7 @@ def test_saved_history_is_paginated_and_fully_reachable(qt_app, tmp_path):
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
-def test_native_file_preview_refuses_symlink_and_escape(qt_app, desktop, tmp_path):
+def test_native_file_preview_refuses_symlink_and_escape(qt_app, desktop, tmp_path, symlink_capable):
     window, bridge, _ = desktop
     replies = []
     errors = []

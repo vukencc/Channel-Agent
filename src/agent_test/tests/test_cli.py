@@ -1,10 +1,13 @@
 import asyncio
+import pytest
 
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from agent_frontend.cli.app import AgentCLI
 from agent_core.core.storage import SessionStore
+
+pytestmark = pytest.mark.usefixtures('headless_cli_session')
 
 
 def test_cli_commands_export_memory_and_restore(tmp_path):

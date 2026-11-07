@@ -1,10 +1,10 @@
 [project]
 name = "ai-agent-test"
-version = "0.2.1"
+version = "0.3.0"
 description = "Agent Debug 记录、诊断接口与测试工具"
 requires-python = ">=3.12"
 dependencies = [
-    "ai-agent-core==0.2.1",
+    "ai-agent-core==0.3.0",
     "fastapi>=0.115,<1",
 ]
 

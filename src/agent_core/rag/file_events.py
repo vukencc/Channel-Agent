@@ -2,6 +2,7 @@
 import ctypes
 import os
 import struct
+import sys
 
 
 class FileEvents:
@@ -9,6 +10,8 @@ class FileEvents:
         self.fd = -1
         self.paths = {}
         self.watched = set()
+        if sys.platform != 'linux':
+            return
         try:
             self.libc = ctypes.CDLL(None, use_errno=True)
             self.libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]

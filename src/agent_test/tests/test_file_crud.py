@@ -1,4 +1,6 @@
 """文件 CRUD 工具测试：正常流程、路径逃逸、确认通过/拒绝/超时、审计。"""
+from pathlib import Path
+
 from agent_core import config
 from agent_core.tools import sandbox
 from agent_core.tools.file_crud import create_file, delete_file, list_files, read_file, update_file
@@ -15,7 +17,7 @@ def test_full_crud_flow(sandbox_env):
     assert read_file("notes/a.txt") == "hello"
 
     listing = list_files("notes")
-    assert "notes/a.txt" in listing and "[file]" in listing
+    assert str(Path("notes/a.txt")) in listing and "[file]" in listing
 
     assert "[完成]" in update_file("notes/a.txt", "world")
     assert read_file("notes/a.txt") == "world"
@@ -46,7 +48,7 @@ def test_empty_dir_listing(sandbox_env):
     assert "（空）" in list_files(".")
 
 
-def test_list_does_not_follow_symlinks(sandbox_env):
+def test_list_does_not_follow_symlinks(sandbox_env, symlink_capable):
     outside = sandbox_env.parent / "secret.txt"
     outside.write_text("secret", encoding="utf-8")
     (sandbox_env / "link.txt").symlink_to(outside)
@@ -72,7 +74,7 @@ def test_parent_traversal_rejected(sandbox_env):
     assert not (sandbox_env.parent / "evil.txt").exists()
 
 
-def test_symlink_escape_rejected(sandbox_env):
+def test_symlink_escape_rejected(sandbox_env, symlink_capable):
     outside = sandbox_env.parent / "secret.txt"
     outside.write_text("secret", encoding="utf-8")
     (sandbox_env / "link.txt").symlink_to(outside)
@@ -80,7 +82,7 @@ def test_symlink_escape_rejected(sandbox_env):
     assert "[已拦截]" in read_file("link.txt")
 
 
-def test_symlinked_dir_escape_rejected(sandbox_env):
+def test_symlinked_dir_escape_rejected(sandbox_env, symlink_capable):
     outside_dir = sandbox_env.parent / "outside_dir"
     outside_dir.mkdir()
     (outside_dir / "f.txt").write_text("x", encoding="utf-8")

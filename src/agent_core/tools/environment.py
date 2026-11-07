@@ -3,6 +3,7 @@ from contextlib import nullcontext
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -68,6 +69,9 @@ def inspect_environment() -> str:
                     if local else _PROBE_SCRIPT)
     command = ('' if local else 'cd /tmp && ') + '/usr/bin/python3 -I -c ' + shlex.quote(probe_script)
     try:
+        if os.name == 'nt' and not local:
+            from agent_core.tools.wsl_command import execute_wsl_tool
+            return execute_wsl_tool('inspect_environment', {})
         options = {}
         if local:
             from agent_core.tools.execution_environment import local_process_environment, validate_local_execution
@@ -145,6 +149,11 @@ def _check_install_paths(project: Path) -> None:
 def prepare_project_environment(manager: str, project_dir: str = '.', network: bool = False,
                                 allow_scripts: bool = False, reason: str = '') -> str:
     try:
+        if os.name == 'nt' and execution_environment() == 'sandbox':
+            from agent_core.tools.wsl_command import execute_wsl_tool
+            return execute_wsl_tool('prepare_project_environment', {
+                'manager': manager, 'project_dir': project_dir, 'network': network,
+                'allow_scripts': allow_scripts, 'reason': reason})
         mode = execution_environment()
         local = mode == 'local'
         if local:
