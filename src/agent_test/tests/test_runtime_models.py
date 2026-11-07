@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import stat
+import subprocess
 import threading
 from types import SimpleNamespace
 
@@ -20,6 +21,32 @@ from agent_frontend.web.app import create_app
 def registry(tmp_path):
     from agent_core.core.runtime_models import RuntimeModelRegistry
     return RuntimeModelRegistry(tmp_path)
+
+
+def assert_private_windows_acl(path, *, protected=False):
+    """读取真实 DACL，以 SID 验证私密性，避免依赖本地化账户名称。"""
+    script = r'''
+$ErrorActionPreference = 'Stop'
+$acl = if ([System.IO.Directory]::Exists($env:TEST_PRIVATE_ACL_PATH)) {
+    [System.IO.Directory]::GetAccessControl($env:TEST_PRIVATE_ACL_PATH)
+} else {
+    [System.IO.File]::GetAccessControl($env:TEST_PRIVATE_ACL_PATH)
+}
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$entries = @($acl.Access | ForEach-Object {
+    @{sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;
+      type=$_.AccessControlType.ToString(); rights=$_.FileSystemRights.ToString()}
+})
+@{protected=$acl.AreAccessRulesProtected; user=$user; entries=$entries} | ConvertTo-Json -Depth 4 -Compress
+'''
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                            env={**os.environ, 'TEST_PRIVATE_ACL_PATH': str(path)},
+                            capture_output=True, text=True, check=True, timeout=15)
+    acl = json.loads(result.stdout)
+    if protected:
+        assert acl['protected'] is True
+    assert {entry['sid'] for entry in acl['entries']} == {acl['user'], 'S-1-5-18'}
+    assert all(entry['type'] == 'Allow' and entry['rights'] == 'FullControl' for entry in acl['entries'])
 
 
 def test_runtime_requests_without_session_have_private_routing_id(monkeypatch):
@@ -68,7 +95,11 @@ def test_registry_private_atomic_persistence_and_blank_key_retention(tmp_path):
                           api_key='secret-test', parameters={'temperature': .2})
     assert public['has_api_key'] is True
     assert 'secret-test' not in json.dumps(public)
-    assert stat.S_IMODE(settings.path.stat().st_mode) == 0o600
+    if os.name == 'nt':
+        assert_private_windows_acl(settings.root, protected=True)
+        assert_private_windows_acl(settings.path)
+    else:
+        assert stat.S_IMODE(settings.path.stat().st_mode) == 0o600
     updated = settings.update(public['id'], name='Updated', model='chat-test',
                               base_url='https://example.test/v1', api_key='')
     assert updated['has_api_key'] is True
@@ -91,11 +122,12 @@ def test_registry_rejects_credential_urls_without_echo(tmp_path, url):
 
 
 @pytest.mark.parametrize('link', ['symbolic', 'hard'])
-def test_private_registry_rejects_linked_file(tmp_path, link):
+def test_private_registry_rejects_linked_file(tmp_path, link, request):
     settings = registry(tmp_path)
     outside = tmp_path / 'outside.json'
     outside.write_text('{"sentinel": true}')
     if link == 'symbolic':
+        request.getfixturevalue('symlink_capable')
         settings.path.symlink_to(outside)
     else:
         os.link(outside, settings.path)
@@ -197,7 +229,11 @@ def test_registry_failed_write_preserves_previous_snapshot(tmp_path, monkeypatch
     entry = settings.add(name='a', model='m', base_url='https://a.test/v1', api_key='key-a')
     def fail(*args, **kwargs):
         raise OSError('atomic replace unavailable')
-    monkeypatch.setattr(os, 'replace', fail)
+    if os.name == 'nt':
+        from agent_core.core import files
+        monkeypatch.setattr(files, 'atomic_replace', fail)
+    else:
+        monkeypatch.setattr(os, 'replace', fail)
     with pytest.raises(ValueError):
         settings.update(entry['id'], name='a', model='changed', base_url='https://a.test/v1', api_key='new')
     assert settings.resolve(entry['id']).model == 'm'
@@ -209,10 +245,20 @@ def test_registry_rejects_replaced_root_and_unsafe_permissions(tmp_path):
     location = tmp_path / 'state'
     settings = registry(location)
     entry = settings.add(name='a', model='m', base_url='https://a.test/v1', api_key='key-a')
-    settings.path.chmod(0o644)
-    with pytest.raises(ValueError):
-        registry(location)
-    settings.path.chmod(0o600)
+    if os.name == 'nt':
+        subprocess.run(['icacls.exe', str(settings.path), '/grant', '*S-1-1-0:R'],
+                       capture_output=True, check=True, timeout=15)
+        try:
+            with pytest.raises(ValueError):
+                registry(location)
+        finally:
+            subprocess.run(['icacls.exe', str(settings.path), '/remove', '*S-1-1-0'],
+                           capture_output=True, check=True, timeout=15)
+    else:
+        settings.path.chmod(0o644)
+        with pytest.raises(ValueError):
+            registry(location)
+        settings.path.chmod(0o600)
     location.rename(tmp_path / 'old-state')
     location.mkdir()
     with pytest.raises(ValueError):

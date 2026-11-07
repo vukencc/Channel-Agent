@@ -4,6 +4,7 @@ import concurrent.futures
 import copy
 import hmac
 import json
+import sys
 import time
 import uuid
 from collections import OrderedDict
@@ -423,7 +424,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
 
     @app.get('/api/meta')
     async def meta():
-        return {'policies': ['full_access', 'smart', 'readonly'], 'models': app.state.manager.model_registry.ids(),
+        return {'platform': sys.platform, 'policies': ['full_access', 'smart', 'readonly'], 'models': app.state.manager.model_registry.ids(),
                 'tools': [row['function']['name'] for row in TOOL_SCHEMAS],
                 'limits': app.state.manager.concurrency_status()['limits'],
                 'load_errors': [*app.state.manager.store.errors, *app.state.projects.errors],

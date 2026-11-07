@@ -173,3 +173,15 @@ th { background: #222734; position: sticky; top: 0; } .error, .timeout, .cancell
 .communication-arrow { color: #90a9c8; font-size: 18px; }
 .communication-route small { color: #a7b2c3; overflow-wrap: anywhere; line-height: 1.6; }
 @media (max-width: 780px) { .communication-route { grid-template-columns: 76px 20px minmax(76px, 1fr); } .communication-route small { grid-column: 1 / -1; } }
+
+/* 调试外围采用直边工作台；因果时间线与箭头保持原布局。 */
+header{background:#151920}
+button,select{border-radius:3px}
+header button:not(:disabled):hover,.timeline-toolbar button:not(:disabled):hover,.event-detail button:not(:disabled):hover,.archive-dialog button:not(:disabled):hover{background-color:#303c4c;border-color:#7189a7}
+.module,.span{border-radius:0}
+.timeline-toolbar{border-width:1px 0;border-radius:0;background:#1d232c}
+.timeline-scroll,.event-detail{border-radius:0}
+.event-detail{background:#1d232c}
+.selection-row{border-radius:0}
+.archive-dialog{border-radius:5px}
+.archive-body pre{border-radius:0}

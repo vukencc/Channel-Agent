@@ -5,6 +5,7 @@ import json
 import os
 import re
 import stat
+import sys
 import threading
 from pathlib import Path
 
@@ -42,15 +43,23 @@ class SessionWorkspaces:
 
     def protected_paths(self):
         """应用自身的源码、凭据、状态、知识库与只读根不能被授予写权限。"""
-        return [Path(path).resolve() for path in (
+        paths = [Path(path).resolve() for path in (
             config.PROJECT_ROOT, self.manager.store.root, self.manager.store.workspace_root,
             config.AGENT_STATE_DIR, config.AUDIT_LOG, config.DOC_DIR, config.RAG_CACHE_DIR,
             *(entry['path'] for entry in config.TOOL_ROOTS.values()),
             *(entry['path'] for entry in config.RAG_SOURCES.values()))]
+        if getattr(sys, 'frozen', False):
+            paths.append(Path(sys.executable).resolve())
+            if getattr(sys, '_MEIPASS', None):
+                paths.append(Path(sys._MEIPASS).resolve())
+        return paths
 
     @staticmethod
     def directory_identity(path: Path):
         """沿目录句柄逐级打开，拒绝祖先或末级的符号链接与竞态替换。"""
+        if os.name == 'nt':
+            from agent_core.core.files import directory_identity
+            return directory_identity(path)
         if os.open not in os.supports_dir_fd or not hasattr(os, 'O_NOFOLLOW'):
             raise PermissionError('当前平台不支持安全的 Linux 工作区目录选择')
         if not path.is_absolute() or '..' in path.parts:
@@ -81,8 +90,13 @@ class SessionWorkspaces:
             raise ValueError('工作区路径无效')
         path = Path(value)
         identity = self.directory_identity(path)
-        if any(part in {'.agent', '.ssh', '.gnupg', '.aws', '.codex'} for part in path.parts):
+        if any((part.casefold() if os.name == 'nt' else part) in {'.agent', '.ssh', '.gnupg', '.aws', '.codex'} for part in path.parts):
             raise PermissionError('不能选择应用状态或用户私有目录')
+        if os.name == 'nt':
+            system_paths = [Path(value) for name in ('SystemRoot', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData')
+                            if (value := os.environ.get(name))]
+            if path.parent == path or any(path.is_relative_to(item) for item in system_paths):
+                raise PermissionError('请选择具体项目目录，不能选择磁盘根或系统目录')
         if Path.home().resolve().is_relative_to(path) or path in {
                 Path('/tmp'), Path('/var'), Path('/mnt'), Path('/media'), Path('/opt'), Path('/srv')}:
             raise PermissionError('请选择具体项目目录，不能选择系统或家目录根')
@@ -222,16 +236,18 @@ class SessionWorkspaces:
         self.directory_identity(path)
         protected = self.protected_paths()
         private = {'.agent', '.ssh', '.gnupg', '.aws', '.codex'}
-        if any(part in private for part in path.parts) or any(path.is_relative_to(item) for item in protected):
+        if any((part.casefold() if os.name == 'nt' else part) in private for part in path.parts) or any(path.is_relative_to(item) for item in protected):
             raise PermissionError('不能浏览应用或用户私有目录')
         from agent_core.core.files import opened_path
         directories = []
         truncated = False
-        with opened_path(Path('/'), path, directory=True) as descriptor:
-            with os.scandir(descriptor) as scan:
+        with opened_path(Path(path.anchor), path, directory=True) as descriptor:
+            with os.scandir(path if os.name == 'nt' else descriptor) as scan:
                 for item in scan:
                     target = path / item.name
                     if item.name.startswith('.') or item.is_symlink() or not item.is_dir(follow_symlinks=False):
+                        continue
+                    if os.name == 'nt' and item.stat(follow_symlinks=False).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
                         continue
                     if any(target.is_relative_to(entry) for entry in protected):
                         continue
@@ -244,7 +260,11 @@ class SessionWorkspaces:
             self.validate_path(str(path))
         except (ValueError, PermissionError, OSError) as exc:
             error = str(exc)
-        return {'path': str(path), 'parent_path': str(path.parent) if path.parent != path else None,
+        roots = []
+        if os.name == 'nt':
+            import string
+            roots = [f'{letter}:\\' for letter in string.ascii_uppercase if Path(f'{letter}:/').is_dir()]
+        return {'path': str(path), 'parent_path': str(path.parent) if path.parent != path else None, 'roots': roots,
                 'directories': sorted(directories, key=lambda item: item['name'].casefold()),
                 'truncated': truncated, 'selectable': not error, 'error': error}
 

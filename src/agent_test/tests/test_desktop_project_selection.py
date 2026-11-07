@@ -1,5 +1,6 @@
 """受控 Qt 界面回归：不调用模型、服务或用户项目。"""
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -346,7 +347,7 @@ def test_invalid_project_is_rejected_by_core_and_not_reported_effective(panel, t
     invalid = {'parent': str(project) + '/child/..', 'relative': 'project',
                'literal_home': '~/project', 'double_root': '/' + str(project)}[invalid_kind]
     definition['nodes'][1]['workspace_path'] = invalid
-    expected_error = PermissionError if invalid_kind == 'double_root' else ValueError
+    expected_error = PermissionError if os.name == 'nt' or invalid_kind == 'double_root' else ValueError
     with pytest.raises(expected_error):
         core_projects(definition, tmp_path)
     panel.set_flow(definition)
@@ -445,6 +446,7 @@ def test_real_project_dialog_options_and_accept_cancel(panel, tmp_path, monkeypa
     initial = tmp_path / 'initial'
     initial.mkdir()
     monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'qt-config'))
     observed, timed_out = [], []
 
@@ -490,7 +492,7 @@ def test_real_project_dialog_options_and_accept_cancel(panel, tmp_path, monkeypa
     assert not timed_out
     assert len(observed) == 1
     details = observed[0]
-    assert details['directory'] == str(home if empty_path else initial)
+    assert Path(details['directory']) == (home if empty_path else initial)
     assert details['mode'] == QFileDialog.FileMode.Directory
     for option in (QFileDialog.Option.DontUseNativeDialog, QFileDialog.Option.ShowDirsOnly,
                    QFileDialog.Option.ReadOnly, QFileDialog.Option.DontResolveSymlinks):
@@ -498,4 +500,7 @@ def test_real_project_dialog_options_and_accept_cancel(panel, tmp_path, monkeypa
     assert details['accept'] == '选择项目'
     assert details['reject'] == '取消'
     assert details['icons_empty']
-    assert result == (str(selected) if accept else '')
+    if accept:
+        assert Path(result) == selected
+    else:
+        assert result == ''

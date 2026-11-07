@@ -1,4 +1,6 @@
 """创建项目时明确选择经典 Agent 或可视化 Flow。"""
+import sys
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -41,9 +43,12 @@ class ProjectDialog(QDialog):
             self.template.addItem(row['title'], row['id'])
         self.project_picker = ProjectPicker(self)
         self.workspace = self.project_picker.path_edit
-        self.workspace.setPlaceholderText('已有 Linux 项目目录；可稍后在设置中选择')
+        self.workspace.setPlaceholderText('已有项目目录；可稍后在设置中选择')
         self.environment = ChoiceBox()
-        for label, value in [('使用默认环境', None), ('隔离沙箱', 'sandbox'), ('Linux 本机', 'local')]:
+        choices = [('使用默认环境', None), ('WSL 隔离沙箱' if sys.platform == 'win32' else '隔离沙箱', 'sandbox')]
+        if sys.platform == 'linux':
+            choices.append(('Linux 本机', 'local'))
+        for label, value in choices:
             self.environment.addItem(label, value)
         self.policy = ChoiceBox()
         for label, value in [('使用默认权限', None), ('智能申请', 'smart'), ('只读', 'readonly'), ('完全访问', 'full_access')]:

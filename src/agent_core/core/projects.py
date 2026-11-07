@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_core.core.files import opened_path
+from agent_core.core.files import opened_path, fsync_directory
 from agent_core.core.flows import Definition, _order
 
 
@@ -110,11 +110,7 @@ class ProjectService:
         self.manager.store.atomic_write(path, json.dumps(value, ensure_ascii=False, allow_nan=False))
         info = path.stat(follow_symlinks=False)
         self.file_identities[value["id"]] = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
-        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(self.directory)
         self.on_change()
 
     def list(self):
@@ -246,11 +242,7 @@ class ProjectService:
                 self.flows._write(flow)
                 self.flows.records[value["flow_id"]] = flow
             raise
-        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(self.directory)
         del self.records[project_id]
         self.file_identities.pop(project_id, None)
         self.on_change()

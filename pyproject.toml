@@ -1,9 +1,9 @@
 [project]
 name = "ai-agent-startup"
-version = "0.2.1"
+version = "0.3.0"
 description = "AgentCore、AgentTest 与 Frontend 的开发工作区"
 requires-python = ">=3.12"
-dependencies = ["ai-agent-frontend==0.2.1", "ai-agent-test==0.2.1"]
+dependencies = ["ai-agent-frontend==0.3.0", "ai-agent-test==0.3.0"]
 
 [project.optional-dependencies]
 web = ["ai-agent-frontend[web]"]
@@ -17,6 +17,9 @@ dev = [
     "onnx>=1.23.0",
     "pyarrow>=25.0.1",
     "pytest>=8",
+]
+packaging = [
+    "pyinstaller==6.22.3 ; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
 
 [tool.uv]

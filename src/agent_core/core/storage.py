@@ -89,6 +89,11 @@ class SessionStore:
     def __init__(self, root: Path, workspace_root: Path | None = None):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == 'nt':
+            from agent_core.core.files import directory_identity
+            from agent_core.core.windows_security import protect_private_path
+            directory_identity(Path(root).absolute())
+            protect_private_path(self.root)
         self.lock = (self.root / '.lock').open('a')
         try:
             lock_file(self.lock, blocking=False)
@@ -106,6 +111,9 @@ class SessionStore:
 
     def close(self):
         self.writer.shutdown(wait=True)
+        if os.name == 'nt':
+            from agent_core.core.audit_writer import close_audit_handles
+            close_audit_handles(self.root)
         if not self.lock.closed:
             unlock_file(self.lock)
             self.lock.close()
@@ -149,7 +157,13 @@ class SessionStore:
         append_audit(self.root / 'session-lifecycle.jsonl', json.dumps({
             'event': 'session_delete_requested', 'session_id': identifier,
             'workspace_preserved': True, 'created_at': now()}, ensure_ascii=False), sync=config.AUDIT_SYNC)
-        directory.rename(destination)
+        if os.name == 'nt':
+            from agent_core.core.audit_writer import close_audit_handles
+            from agent_core.core.windows_files import rename_noreplace
+            close_audit_handles(directory)
+            rename_noreplace(directory, destination)
+        else:
+            directory.rename(destination)
         return destination
 
     def delete_sessions(self, identifiers: list[str]) -> dict[str, Path]:
@@ -297,7 +311,8 @@ class SessionStore:
                 stream.write(text)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            from agent_core.core.files import atomic_replace
+            atomic_replace(Path(temporary), path)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
@@ -546,7 +561,8 @@ class SessionStore:
                 stream.write('\n')
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            from agent_core.core.files import atomic_replace
+            atomic_replace(Path(temporary), path)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)

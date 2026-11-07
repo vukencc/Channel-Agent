@@ -2,9 +2,13 @@
 
 一个基于 Python 3.12+ 的本地 Agent 工作区，提供对话、工具执行、多 Agent 协作、Flow 画布和混合 RAG。可选择原生桌面 GUI、浏览器 WebUI 或终端 CLI；模型请求需要自行配置可用的模型服务。
 
-在 Linux 或 WSL 中运行；原生界面需要图形会话（WSL 使用 WSLg），CLI 需要交互终端。Windows 的 WSL 仓库请在 WSL 内运行 Linux 的 uv 和 Python。[快速上手](docs/getting-started.md)介绍安装 uv、配置模型、启动和创建第一个 Flow。
+支持 Linux、WSL 和 Windows 原生应用。Windows 的桌面、Web、文件和 Flow 在本机运行，隔离命令使用 WSL2 的 Linux 执行器。Linux 原生界面需要图形会话，WSL 使用 WSLg，CLI 需要交互终端。[快速上手](docs/getting-started.md)介绍模型与首个项目，[Windows 指南](docs/windows.md)说明两套运行环境的安装和当前边界。
 
 ## 安装与启动
+
+Windows 和 Linux 桌面成品通过 [Releases](https://github.com/vukencc/Channel-Agent/releases) 分发；Windows 选择 ZIP，Linux x64 选择 tar.gz。运行与系统依赖见 [Windows 指南](docs/windows.md)和 [Linux 成品指南](docs/linux.md)。桌面、Web 与 Debug 使用平直的深色工作台、细分隔线和小圆角控件，Flow 状态点及连接端口保留圆形。
+
+Windows 成品为免安装目录：解压后双击 `ChannelAgent.exe`，保留同目录的 `_internal`，无需安装 Windows Python。首次使用在「模型管理」添加连接；用户数据默认保存在 `%LOCALAPPDATA%\ChannelAgent`。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
 
 ```bash
 uv sync --locked --extra desktop --extra web

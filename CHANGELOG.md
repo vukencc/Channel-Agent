@@ -4,7 +4,11 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
 ### Added
+- Windows 免安装桌面成品构建，包含独立 Python/Qt/Core 运行库、WSL 源码载荷、离线自检与 SHA256 清单；从任意启动目录使用固定用户数据位置，不依赖开发 checkout。
+- Windows 原生桌面、Web、项目和 Flow 支持，提供安全目录句柄、私有状态 ACL、节点会话复用及 WSL2 隔离命令桥接。配置与功能边界见 [Windows 指南](docs/windows.md)。
 - Flow 提供无工具多轮设计助手、节点工具与推理设置，以及便携模板导入导出；详见 [Agent Flow](docs/agent-flow.md)。
 - 原生桌面和 WebUI 提供 Agent Flow 画布，支持节点、项目与交接设置、有向连接、保存和运行状态查看；每个节点由 Core 会话执行。
 - 可选原生 Qt 桌面入口 `ai-agent-gui`，直接使用 AgentCore，提供会话、流式对话、模型管理、项目设置、安全文件预览与确认，无需浏览器。
@@ -13,6 +17,7 @@
 - CLI 命令搜索与补全、会话权限模式选择、会话回收维护，以及 Smart 风险规则和显式权限申请。
 
 ### Changed
+- 桌面、Web 和 Debug 统一平直工作台视觉，减少圆角与嵌套描边，统一分隔、色阶、消息和 Flow 检查器层次。
 - 新增快速上手与阶段总结，统一文档类型和导航；精简当前交接并保留历史归档，校正平台/API、Flow、Debug、RAG、贡献与发布说明。
 - Flow 模板与项目分离；项目导入独立副本，节点共用项目工作区。Flow local 命令使用 Bubblewrap 限制持久写入范围，保留本机网络。
 - 源码模块统一收纳至 `src/`，本地开发归档迁至 `docs/dev/`；工程脚本归入可安装的 `agent_test.scripts`，同步构建、CI 与文档入口。

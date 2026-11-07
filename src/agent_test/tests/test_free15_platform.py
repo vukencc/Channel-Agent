@@ -35,7 +35,8 @@ def test_platform_entry_requires_no_credentials_or_state_directory(tmp_path):
     result = subprocess.run([sys.executable, '-m', 'agent_frontend.main', '--platform', '--state-dir', str(tmp_path / 'unused')], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload['command_backend'] == 'bubblewrap' if sys.platform == 'linux' else payload['command_backend'] is None
+    expected = {'linux': 'bubblewrap', 'win32': 'wsl2-bubblewrap'}.get(sys.platform)
+    assert payload['command_backend'] == expected
     assert not (tmp_path / 'unused').exists()
 
 

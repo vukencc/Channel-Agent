@@ -118,7 +118,7 @@ def test_web_delete_requires_consent_and_preserves_workspace(client):
     assert client.request('DELETE', f'/api/sessions/{identifier}', json={'confirm': False}).status_code == 422
     assert client.get(f'/api/sessions/{identifier}').status_code == 200
     deleted = client.request('DELETE', f'/api/sessions/{identifier}', json={'confirm': True})
-    assert deleted.status_code == 200
+    assert deleted.status_code == 200, deleted.text
     assert (workspace / 'keep.txt').read_text() == 'keep'
     assert client.get(f'/api/sessions/{identifier}').status_code == 404
 
@@ -130,7 +130,7 @@ def test_web_memory_requires_explicit_consent_and_persists(client):
     assert client.get(f'/api/sessions/{identifier}/memory').json()['content'] == 'saved'
 
 
-def test_web_explorer_rejects_symlink_escape_and_hides_session_state(client, tmp_path):
+def test_web_explorer_rejects_symlink_escape_and_hides_session_state(client, tmp_path, symlink_capable):
     identifier = new_session(client)
     workspace = client.app.state.manager.workspace(client.app.state.manager.sessions[identifier])
     outside = tmp_path / 'private.txt'
@@ -156,7 +156,7 @@ def test_web_payload_validation_and_task_list(client):
 
 
 @pytest.mark.parametrize('directory', [False, True])
-def test_web_file_boundary_holds_when_path_changes_after_validation(client, tmp_path, monkeypatch, directory):
+def test_web_file_boundary_holds_when_path_changes_after_validation(client, tmp_path, monkeypatch, directory, symlink_capable):
     from agent_frontend.web import app as web_app
     identifier = new_session(client)
     workspace = client.app.state.manager.workspace(client.app.state.manager.sessions[identifier])

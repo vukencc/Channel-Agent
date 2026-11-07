@@ -5,7 +5,8 @@ import copy
 import math
 import os
 import json
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
+import sys
 import uuid
 
 from PySide6.QtCore import QMimeData, QPointF, QRectF, QSaveFile, QIODevice, QSignalBlocker, Qt, Signal
@@ -84,7 +85,7 @@ class NodeItem(QGraphicsItem):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor('#90b5eb' if self.isSelected() else '#455468'), 1.5))
         painter.setBrush(QColor('#27303c'))
-        painter.drawRoundedRect(QRectF(0, 0, 200, 90), 10, 10)
+        painter.drawRoundedRect(QRectF(0, 0, 200, 90), 3, 3)
         painter.setPen(QColor('#e1eaf6'))
         font = painter.font()
         font.setPixelSize(14)
@@ -310,8 +311,10 @@ class FlowPanel(QWidget):
         self.run_button = QPushButton('运行')
         self.fit_button = QPushButton('适配')
         self.inspector_button = QPushButton('检查器')
-        for button in (self.add_button, self.save_button, self.run_button, self.fit_button, self.inspector_button):
+        for button in (self.add_button, self.save_button, self.run_button, self.fit_button):
             controls.addWidget(button)
+        controls.addStretch(1)
+        controls.addWidget(self.inspector_button)
         root.addLayout(controls)
         run_input_row = QHBoxLayout()
         self.run_input = QTextEdit()
@@ -462,7 +465,9 @@ class FlowPanel(QWidget):
                 field = ChoiceBox()
                 choices = [('继承', None)]
                 if kind == 'environment':
-                    choices += [('隔离沙箱', 'sandbox'), ('Linux 本机', 'local')]
+                    choices += [('WSL 隔离沙箱' if sys.platform == 'win32' else '隔离沙箱', 'sandbox')]
+                    if sys.platform == 'linux':
+                        choices.append(('Linux 本机', 'local'))
                 elif kind == 'policy':
                     choices += [('智能申请', 'smart'), ('只读', 'readonly'), ('完全访问', 'full_access')]
                 elif kind == 'thinking':
@@ -594,12 +599,13 @@ class FlowPanel(QWidget):
             parents = incoming.get(key, [])
             own = str(node.get('workspace_path') or '')
             candidate = own or (path if not parents else '')
-            parsed = PurePosixPath(candidate) if candidate else None
-            # 这里只预览 Linux 路径语法；实际目录、身份与授权仍由 Core 校验。
+            parsed = (PureWindowsPath(candidate) if sys.platform == 'win32' else PurePosixPath(candidate)) if candidate else None
+            # 这里只预览路径语法；实际目录、身份与授权仍由 Core 校验。
             invalid = parsed is not None and (not parsed.is_absolute() or '..' in parsed.parts
-                                              or parsed.anchor == '//')
+                                              or (sys.platform == 'win32' and (len(parsed.drive) != 2 or parsed.drive[1] != ':'))
+                                              or (sys.platform != 'win32' and parsed.anchor == '//'))
             if invalid:
-                result = None, '项目路径不合法：请选择绝对目录，不能包含 .. 或以 // 开头。'
+                result = None, '项目路径不合法：请选择绝对目录，不能包含 .. 或网络路径。'
             elif not parents:
                 value = str(parsed) if parsed is not None else ''
                 result = (value, '本节点' if own else 'Flow') if value else (None, '尚未选择项目')
@@ -1094,6 +1100,10 @@ class FlowPanel(QWidget):
         rect = self.canvas.scene().itemsBoundingRect()
         if not rect.isEmpty():
             self.canvas.fitInView(rect.adjusted(-40, -40, 40, 40), Qt.AspectRatioMode.KeepAspectRatio)
+            scale = self.canvas.transform().m11()
+            if scale > 1.0:
+                self.canvas.scale(1.0 / scale, 1.0 / scale)
+                self.canvas.centerOn(rect.center())
 
     def _toggle_inspector(self) -> None:
         show = not self.inspector.isVisible()

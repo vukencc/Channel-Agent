@@ -3,6 +3,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from agent_core.core.audit_writer import close_audit_handles
 
 from agent_core.tools.command import run_command
 from agent_core.tools.sandbox import ToolContext, tool_context
@@ -11,9 +12,12 @@ from agent_core.tools.sandbox import ToolContext, tool_context
 def main():
     with tempfile.TemporaryDirectory(prefix='agent-ci-probe-') as temporary:
         root = Path(temporary)
-        with tool_context(ToolContext(root / 'work', root / 'audit.jsonl', lambda *_: True,
-                                      threading.Event(), execution_environment='sandbox')):
-            result = run_command('/bin/true')
+        try:
+            with tool_context(ToolContext(root / 'work', root / 'audit.jsonl', lambda *_: True,
+                                          threading.Event(), execution_environment='sandbox')):
+                result = run_command('/bin/true')
+        finally:
+            close_audit_handles()
         if '[退出码] 0' not in result:
             print('CI 环境不支持所需 Bubblewrap 命名空间/prlimit；真实沙箱测试不能运行。\n' + result, file=sys.stderr)
             raise SystemExit(2)

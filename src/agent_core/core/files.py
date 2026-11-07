@@ -8,6 +8,11 @@ import stat
 
 @contextmanager
 def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None):
+    if os.name == 'nt':
+        from .windows_files import opened_path as windows_opened_path
+        with windows_opened_path(root, target, directory=directory, expected_identity=expected_identity) as descriptor:
+            yield descriptor
+        return
     if os.open not in os.supports_dir_fd or not hasattr(os, 'O_NOFOLLOW'):
         raise PermissionError('当前平台不支持安全目录句柄，文件预览不可用')
     try:
@@ -47,3 +52,35 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def directory_identity(path: Path) -> tuple[int, int]:
+    """取得目录身份，供工作区变更检测使用。"""
+    if os.name == 'nt':
+        from .windows_files import directory_identity as windows_directory_identity
+        return windows_directory_identity(path)
+    with opened_path(path, path, directory=True) as descriptor:
+        info = os.fstat(descriptor)
+        return info.st_dev, info.st_ino
+
+
+def atomic_replace(source: Path, target: Path) -> None:
+    """原子发布同目录文件；Windows 在发布前刷新文件数据。"""
+    if os.name == 'nt':
+        from .windows_files import atomic_replace as windows_atomic_replace
+        windows_atomic_replace(source, target)
+    else:
+        os.replace(source, target)
+
+
+def fsync_directory(path: Path) -> None:
+    """同步目录；Windows 无 POSIX 等价保证，仅验证目录。"""
+    if os.name == 'nt':
+        from .windows_files import fsync_directory as windows_fsync_directory
+        windows_fsync_directory(path)
+        return
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

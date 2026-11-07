@@ -1,10 +1,11 @@
 import json
 import os
 import subprocess
+import sys
 
 
 def test_config_changes_prompt_schema_and_validation_together():
-    result = subprocess.run(['.venv/bin/python', '-c', '''
+    result = subprocess.run([sys.executable, '-c', '''
 import json
 from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE
 from agent_core.tools.file_crud import AppendFileArgs, ReadFileArgs
@@ -24,7 +25,7 @@ def test_custom_prompt_file_is_explicit_and_missing_file_fails(tmp_path):
     path = tmp_path / 'prompt.txt'
     path.write_text('custom system prompt')
     environment = {**os.environ, 'SYSTEM_PROMPT_FILE': str(path)}
-    command = ['.venv/bin/python', '-c', 'from agent_core.core.prompts import DEFAULT_PROMPT; print(DEFAULT_PROMPT)']
+    command = [sys.executable, '-c', 'from agent_core.core.prompts import DEFAULT_PROMPT; print(DEFAULT_PROMPT)']
     result = subprocess.run(command, env=environment, capture_output=True, text=True)
     assert result.returncode == 0
     assert result.stdout.strip() == 'custom system prompt'
@@ -34,7 +35,7 @@ def test_custom_prompt_file_is_explicit_and_missing_file_fails(tmp_path):
 
 
 def test_default_prompt_text_matches_pre_template_snapshot():
-    result = subprocess.run(['.venv/bin/python', '-c', '''
+    result = subprocess.run([sys.executable, '-c', '''
 import hashlib
 from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE
 # 保留原文件协议的逐字快照；本轮新增的环境指南另外断言，不放宽旧内容。

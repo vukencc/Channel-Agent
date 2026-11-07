@@ -6,7 +6,7 @@ import stat
 
 from agent_core.core.headless import redact_result
 from agent_core.core.history_context import HistoryContext
-from agent_core.core.maintenance import directory_handle
+from agent_core.core.files import opened_path
 
 
 class ContextArchiveReader(HistoryContext):
@@ -17,9 +17,8 @@ class ContextArchiveReader(HistoryContext):
     @staticmethod
     def _read_json(path):
         try:
-            with directory_handle(path.parent) as directory:
-                descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                with os.fdopen(descriptor, 'rb') as stream:
+            with opened_path(path.parent, path) as descriptor:
+                with os.fdopen(os.dup(descriptor), 'rb') as stream:
                     info = os.fstat(stream.fileno())
                     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 64 * 1024 * 1024:
                         raise PermissionError('归档必须是有界且没有硬链接的普通文件')

@@ -6,7 +6,7 @@ WebUI 是本机单用户界面，复用现有会话、权限、工具与审计�
 
 ## 安装与启动
 
-在 Linux / WSL 的项目根目录执行；Windows 宿主使用 WSL checkout 时，应在 WSL 内运行 Linux 的 `uv`，不要对该 `.venv` 使用 Windows `uv`：
+WebUI 可运行在 Linux、WSL 或 Windows 原生环境。以下命令在 Linux / WSL 的项目根目录执行；WSL checkout 的环境须用 Linux `uv`，不能用 Windows `uv` 操作其 `.venv`。Windows 本地源码环境见 [Windows 指南](windows.md)：
 
 ```bash
 uv sync --locked --extra web
@@ -19,11 +19,13 @@ WebUI 仅接受本机 Host，并拒绝跨站来源；它不是局域网部署或
 
 ## Agent Flow
 
+界面与桌面端采用同一平直工作台风格：主要区域靠背景层次和分隔线区分，常用控件使用小圆角，端口与状态点保留圆形。对话、工具内容、设置、Flow 检查器和 Debug 详情共用一致的色阶与焦点提示；窄屏长路径可换行。
+
 左栏顶部提供「新建项目」入口。会话、Flow 项目与 Flow 模板各有独立分区，内容较多时可在左栏统一滚动。模板区提供创建、导入和对话设计。
 
 新建 Flow 项目可导入模板的独立副本，也可从空白流程开始。项目需先选择有效工作区。画布支持节点拖动、端口连线、检查器中的连接按钮、删除、缩放和适配。Flow、节点及运行检查器提供项目、模型、权限、交接和节点会话入口。保存、运行与停止沿用 Core 的校验和执行规则。Web Flow 随 `web` extra 提供。完整操作和交接边界见 [Agent Flow 指南](agent-flow.md)。
 
-目录选择器浏览 Web 服务所在 Linux / WSL 的目录，不能把浏览器本机 Windows 目录句柄当作服务端项目；需要使用服务端可访问的 Linux 路径。
+目录选择器浏览 Web 服务所在系统：Windows 原生服务使用本地盘路径，Linux / WSL 服务使用 Linux 路径。浏览器本机的目录句柄不能替代服务端可访问的工作区。
 
 Flow API 使用 `GET/POST /api/flows`、`GET/PUT/DELETE /api/flows/{id}` 及 `POST /api/flows/{id}/run`、`POST /api/flows/{id}/cancel`；运行可带 `definition`，删除请求体须为 `{"confirm": true}`。状态 SSE 提供轻量流程摘要和 `flows_revision`，选中流程后再读取完整内容。这些接口沿用 WebUI 的来源检查与请求限制。
 
@@ -64,7 +66,7 @@ Linux 上创建根会话时可填写已有项目的绝对目录，也可在“�
 
 日志清理涵盖 Agent 主审计、会话级审计与生命周期日志、`cli.log` 和已知命令日志，并保留本次清理审计记录。会话清理会把所有当前会话记录移入状态目录的 `.trash/`，包括结构化上下文归档；这只是将会话记录移入回收区，不等于彻底删除运行目录。工作区文件、知识库原文、共享记忆和导出文件保留。
 
-文件面板只预览当前会话的项目工作区，不提供写入；未选择外部目录时使用 `SANDBOX_DIR/<根会话 ID>/`（默认 `crud_tests/<根会话 ID>/`）。目录最多列出 500 项，文本内容最多显示 256 KiB 并标注截断；符号链接不跟随。安全打开依赖支持目录文件描述符和 `O_NOFOLLOW` 的平台能力，不支持的平台会拒绝文件预览。会话列表的并发监控实时显示 Agent、模型调用和工具状态，包括 `queued`、`waiting_workspace` 与 `running`。工具超时返回后，若后台只读操作仍在执行，它仍会占用真实工具并发额度并留在监控中，直到线程结束。
+文件面板只预览当前会话的项目工作区，不提供写入；未选择外部目录时使用 `SANDBOX_DIR/<根会话 ID>/`（默认 `crud_tests/<根会话 ID>/`）。目录最多列出 500 项，文本内容最多显示 256 KiB 并标注截断；符号链接不跟随。Linux 使用目录文件描述符和 `O_NOFOLLOW`，Windows 使用原生安全句柄；路径无法安全打开时拒绝文件预览。会话列表的并发监控实时显示 Agent、模型调用和工具状态，包括 `queued`、`waiting_workspace` 与 `running`。工具超时返回后，若后台只读操作仍在执行，它仍会占用真实工具并发额度并留在监控中，直到线程结束。
 
 默认模型调用并发上限为 4、连续只读工具上限为 4、委派 Agent 上限为 2；RAG 推理并发默认 0，分别由 `MAX_CONCURRENT_AGENTS`、`TOOL_CONCURRENCY`、`AGENT_TASK_CONCURRENCY` 与 `RAG_INFERENCE_CONCURRENCY` 控制。RAG 并发为 0 时沿用只读工具池；设为正数时使用单独的 RAG 池。对同一项目工作区的串行工具操作会互斥，不同项目工作区及可并行只读工具可并行。共享工作区与会话独立数据的边界见[会话工具说明](session-tools.md)。
 

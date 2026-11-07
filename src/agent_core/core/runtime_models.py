@@ -96,6 +96,11 @@ class RuntimeModelRegistry:
         self._forbidden_roots = tuple(Path(root).resolve() for root in forbidden_roots)
         self._check_root()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == 'nt':
+            from agent_core.core.files import directory_identity
+            from agent_core.core.windows_security import protect_private_path
+            directory_identity(self.root)
+            protect_private_path(self.root)
         self._check_root()
         metadata = self.root.stat()
         self._root_identity = (metadata.st_dev, metadata.st_ino)
@@ -113,6 +118,9 @@ class RuntimeModelRegistry:
             return None
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise ValueError('模型设置文件必须是独立普通文件')
+        if os.name == 'nt':
+            from agent_core.core.windows_security import verify_private_path
+            verify_private_path(self.path)
         if os.name == 'posix' and (stat.S_IMODE(metadata.st_mode) & 0o077 or metadata.st_uid != os.getuid()):
             raise ValueError('模型设置文件需要私有访问权限')
         return metadata
@@ -149,9 +157,14 @@ class RuntimeModelRegistry:
             if self._check_file() is None:
                 return {}
             self._check_private_location()
-            file_fd = os.open(self.filename if descriptor is not None else self.path,
-                              os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0),
-                              **({'dir_fd': descriptor} if descriptor is not None else {}))
+            if os.name == 'nt':
+                from agent_core.core.files import opened_path
+                with opened_path(self.root, self.path, expected_identity=self._root_identity) as safe_fd:
+                    file_fd = os.dup(safe_fd)
+            else:
+                file_fd = os.open(self.filename if descriptor is not None else self.path,
+                                  os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0),
+                                  **({'dir_fd': descriptor} if descriptor is not None else {}))
             metadata = os.fstat(file_fd)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size > self.maximum_bytes:
                 raise ValueError('模型设置文件无效')
@@ -181,6 +194,16 @@ class RuntimeModelRegistry:
         return isinstance(identifier, str) and identifier.startswith('runtime-') and len(identifier) == 40 and all(c in '0123456789abcdef' for c in identifier[8:])
 
     def _save(self, entries):
+        if os.name == 'nt':
+            from agent_core.core.files import opened_path
+            try:
+                with opened_path(self.root, self.root, directory=True, expected_identity=self._root_identity):
+                    return self._save_entries(entries)
+            except OSError:
+                raise ValueError('模型设置目录已被替换或无法安全保存') from None
+        return self._save_entries(entries)
+
+    def _save_entries(self, entries):
         self._check_private_location()
         content = json.dumps({'version': 1, 'models': entries}, ensure_ascii=False).encode('utf-8')
         if len(content) > self.maximum_bytes:
@@ -206,7 +229,8 @@ class RuntimeModelRegistry:
                 os.replace(temporary, self.filename, src_dir_fd=descriptor, dst_dir_fd=descriptor)
                 os.fsync(descriptor)
             else:
-                os.replace(temporary_path, self.path)
+                from agent_core.core.files import atomic_replace
+                atomic_replace(temporary_path, self.path)
             created = False
         except OSError:
             raise ValueError('模型设置文件无法安全保存') from None

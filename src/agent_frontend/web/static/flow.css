@@ -73,3 +73,12 @@
 }
 
 .flow-edge-preview { fill: none; stroke: #a6caff; stroke-width: 3; stroke-dasharray: 7 5; pointer-events: none; }
+
+/* 画布与侧栏维持现有交互，用轻量边界区分节点和面板。 */
+.flow-viewport{background-color:#1b2028;background-image:radial-gradient(#3a4654 1px,transparent 1px)}
+.flow-node{border-radius:3px;background:#29323d;border-color:#596a7d}
+.flow-node:hover{border-color:#8cadd4}
+.flow-node.selected{border-color:#a6caff;box-shadow:0 0 0 1px #a6caff}
+.flow-inspector,.flow-designer-panel,.flow-tabs{background:#20262e}
+.flow-tab:hover{background:#ffffff08;color:#dbeaff}
+.flow-result{border-radius:0;border-left:2px solid #596f89}

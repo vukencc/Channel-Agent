@@ -41,6 +41,56 @@ jobs:
       - name: 验证真实隔离能力，不静默跳过
         run: uv run python -m agent_test.scripts.ci_sandbox_probe
       - run: uv run pytest -m 'not integration' -q
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      PYTHON_DOTENV_DISABLED: '1'
+      QT_QPA_PLATFORM: 'offscreen'
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - name: 设置 Windows 独立测试目录
+        shell: pwsh
+        run: |
+          "SANDBOX_DIR=$env:RUNNER_TEMP/agent-work" >> $env:GITHUB_ENV
+          "AGENT_STATE_DIR=$env:RUNNER_TEMP/agent-state" >> $env:GITHUB_ENV
+          "AUDIT_LOG=$env:RUNNER_TEMP/agent-audit.jsonl" >> $env:GITHUB_ENV
+          "RAG_CACHE_DIR=$env:RUNNER_TEMP/agent-rag" >> $env:GITHUB_ENV
+      - run: uv sync --locked --extra web --extra desktop
+      - name: Windows 原生文件、状态、GUI 和 Web 回归
+        shell: pwsh
+        run: |
+          $tests = @((Get-ChildItem src/agent_test/tests/test_desktop*.py).FullName)
+          $tests += @((Get-ChildItem src/agent_test/tests/test_windows*.py).FullName)
+          $tests += @(
+            'src/agent_test/tests/test_file_crud.py',
+            'src/agent_test/tests/test_cli.py',
+            'src/agent_test/tests/test_cli_async_transcript.py',
+            'src/agent_test/tests/test_web_ui.py',
+            'src/agent_test/tests/test_config.py',
+            'src/agent_test/tests/test_chunking.py',
+            'src/agent_test/tests/test_context.py',
+            'src/agent_test/tests/test_context_boundaries.py',
+            'src/agent_test/tests/test_context_supervisor.py',
+            'src/agent_test/tests/test_compact_budget_headroom.py',
+            'src/agent_test/tests/test_runtime_models.py',
+            'src/agent_test/tests/test_free15_platform.py',
+            'src/agent_test/tests/test_free16_prompt_templates.py',
+            'src/agent_test/tests/test_web_flow_ui.py',
+            'src/agent_test/tests/test_web_context_navigation.py',
+            'src/agent_test/tests/test_workspace_picker_ui.py',
+            'src/agent_test/tests/test_web_workspace_layout.py',
+            'src/agent_test/tests/test_context_archive_debug.py',
+            'src/agent_test/tests/test_packaged_smoke.py'
+          )
+          uv run --no-sync pytest -m 'not integration' -q @tests
   integration:
     if: github.event_name == 'workflow_dispatch' && inputs.integration
     runs-on: ubuntu-22.04

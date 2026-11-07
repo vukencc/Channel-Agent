@@ -60,7 +60,7 @@ def test_handoff_reaches_next_node(tmp_path, monkeypatch):
         store.close()
 
 
-def test_corrupt_and_symlink_records_are_not_overwritten(tmp_path):
+def test_corrupt_and_symlink_records_are_not_overwritten(tmp_path, symlink_capable):
     store = SessionStore(tmp_path / "state", workspace_root=tmp_path / "private")
     try:
         service = FlowService(SessionManager(store))
@@ -227,7 +227,7 @@ def test_checkpoint_and_concurrent_reservation(tmp_path, monkeypatch):
         store.close()
 
 
-def test_handoff_symlink_and_invalid_ids_are_rejected(tmp_path):
+def test_handoff_symlink_and_invalid_ids_are_rejected(tmp_path, symlink_capable):
     project = tmp_path / "project"
     project.mkdir()
     secret = tmp_path / "outside"

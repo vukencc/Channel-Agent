@@ -1,6 +1,9 @@
 """Interactive rendering and draft preservation under long session history."""
 
 import asyncio
+import pytest
+
+pytestmark = pytest.mark.usefixtures('headless_cli_session')
 import threading
 import time
 

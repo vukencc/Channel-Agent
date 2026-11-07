@@ -630,7 +630,7 @@ harness.setup({api:()=>new Promise(resolve=>release=resolve),toast:()=>{}},flow)
 
 def test_node_drag_cancel_redraws_connected_edges(tmp_path, monkeypatch, sandbox_env):
     run_flow_js(tmp_path, r"""
-const fs=require("node:fs"); const src=fs.readFileSync(process.argv[2],"utf8");
+const fs=require("node:fs"); const src=fs.readFileSync(process.argv[2],"utf8").replace(/\r\n/g,"\n");
 const start=src.indexOf("      card.addEventListener(\"pointerdown\", (event) => {"+String.fromCharCode(10)+"        if (locked()");
 const end=src.indexOf(String.fromCharCode(10)+"      });",start); assert.ok(start>=0 && end>start);
 const handler=src.slice(start,end)+String.fromCharCode(10)+"      });";

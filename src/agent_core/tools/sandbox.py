@@ -138,8 +138,14 @@ def path_scope(user_path: str, *, write: bool = False) -> tuple[Path, Path, str]
     if write and current_policy() == 'readonly':
         raise SandboxError('当前权限档位为 readonly，只允许读取')
     candidate = Path(user_path)
-    if candidate.is_absolute():
+    if candidate.is_absolute() or candidate.drive or candidate.root:
         raise SandboxError(f'不允许绝对路径：{user_path}')
+    if os.name == 'nt':
+        from agent_core.core.windows_files import _validate
+        try:
+            _validate(sandbox_root() / candidate)
+        except PermissionError as exc:
+            raise SandboxError(str(exc)) from exc
     if config.TOOL_ROOTS and candidate.parts and candidate.parts[0].startswith('@'):
         name = candidate.parts[0][1:]
         if name == 'workspace':
@@ -181,8 +187,8 @@ def _audit_path() -> Path:
     return path
 
 
-def audit(event: str, **fields) -> None:
-    """写一条审计记录（文件 + 日志）。审计写入失败不影响主流程。"""
+def audit(event: str, *, strict: bool = False, **fields) -> None:
+    """写入文件与日志；strict 用于必须确认持久化的执行协议。"""
     context = _context.get()
     prefix = _audit_prefix((context.session_id or context.root.name) if context else None,
         context.turn_id if context else None, context.tool_call_id if context else None,
@@ -197,6 +203,8 @@ def audit(event: str, **fields) -> None:
     try:
         append_audit(context.audit_path if context else config.AUDIT_LOG, line, sync=config.AUDIT_SYNC)
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("审计日志写入失败：%s", exc)
 
 

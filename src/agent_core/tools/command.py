@@ -73,6 +73,11 @@ def run_command(command: str, reason: str = "", network: bool = False,
     try:
         if execution_environment() == 'local':
             return _run_local_command(command, reason, network, runtime_profile, resource_profile)
+        if os.name == 'nt':
+            from agent_core.tools.wsl_command import execute_wsl_tool
+            return execute_wsl_tool('run_command', {
+                'command': command, 'reason': reason, 'network': network,
+                'runtime_profile': runtime_profile, 'resource_profile': resource_profile})
         if resource_profile not in {'standard', 'development'}:
             raise SandboxError('未知命令资源档位，仅支持 standard/development')
         limits = development_resource_limits() if resource_profile == 'development' else None
