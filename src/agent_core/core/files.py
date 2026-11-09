@@ -7,10 +7,11 @@ import stat
 
 
 @contextmanager
-def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None):
+def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None, writable: bool = False):
     if os.name == 'nt':
         from .windows_files import opened_path as windows_opened_path
-        with windows_opened_path(root, target, directory=directory, expected_identity=expected_identity) as descriptor:
+        with windows_opened_path(root, target, directory=directory, expected_identity=expected_identity,
+                                 writable=writable) as descriptor:
             yield descriptor
         return
     if os.open not in os.supports_dir_fd or not hasattr(os, 'O_NOFOLLOW'):
@@ -38,12 +39,16 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
             flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
             if directory or index < len(parts) - 1:
                 flags |= os.O_DIRECTORY
+            elif writable:
+                flags |= os.O_RDWR
             following = os.open(part, flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = following
-        mode = os.fstat(descriptor).st_mode
-        if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
+        info = os.fstat(descriptor)
+        if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
             raise ValueError('只支持普通文本文件或目录预览')
+        if not directory and info.st_nlink != 1:
+            raise PermissionError('无法确认硬链接全部位于授权目录，拒绝打开文件')
         yield descriptor
     except OSError as exc:
         if exc.errno in {errno.ELOOP, errno.ENOTDIR, errno.EACCES, errno.EPERM}:

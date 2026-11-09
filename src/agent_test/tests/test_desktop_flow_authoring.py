@@ -11,6 +11,32 @@ from agent_frontend.desktop.runtime import RuntimeBridge
 from agent_frontend.desktop.window import MainWindow
 
 
+def test_contract_draft_blocks_submit_and_survives_selection(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = FlowPanel()
+    panel.set_flow({'id': 'one', 'revision': 1, 'nodes': [], 'edges': []}, [])
+    panel.add_node()
+    field = panel.node_fields['handoff_contract']
+    field.setPlainText('{"fields":')
+    assert '无效' in panel.contract_hint.text()
+    messages, commands = [], []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: messages.append(args))
+    panel.command.connect(lambda action, payload: commands.append((action, payload)))
+    panel._submit('flow_save')
+    panel._export_file()
+    assert len(messages) == 2 and not commands
+    panel.set_flow({'id': 'two', 'revision': 1, 'nodes': [], 'edges': []}, [])
+    panel.set_flow({'id': 'one', 'revision': 1, 'nodes': [], 'edges': []}, [])
+    assert panel.draft()['nodes'][0]['handoff_contract'] == '{"fields":'
+    panel.nodes[panel.draft()['nodes'][0]['id']].setSelected(True)
+    field.setPlainText('{"fields":{"answer":{"type":"string"}}}')
+    panel._submit('flow_save')
+    assert commands[-1][1]['definition']['nodes'][0]['handoff_contract']['fields']['answer']['type'] == 'string'
+    field.clear()
+    assert panel.draft()['nodes'][0]['handoff_contract'] is None
+    panel.deleteLater()
+
+
 def test_node_authoring_settings_survive_draft_switch():
     app = QApplication.instance() or QApplication([])
     panel = FlowPanel()

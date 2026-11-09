@@ -16,7 +16,7 @@ from agent_core.tools.base import register_tool
 from agent_core.tools.command import _execute, _flow_scope, development_resource_limits
 from agent_core.tools.sandbox import (
     SandboxError, ask_permission, audit, check_command, check_workspace_quota,
-    command_memory_limit_mb, isolated_command, resolve_path, sandbox_root,
+    command_memory_limit_mb, isolated_command, opened_tool_file, resolve_path, sandbox_root,
     execution_environment,
 )
 
@@ -128,8 +128,10 @@ class PrepareProjectEnvironmentArgs(BaseModel):
 def _manifest(path: Path) -> str:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
         raise SandboxError(f'需要不含符号链接且不超过 4 MiB 的 manifest：{path.name}')
-    with path.open('rb') as stream:
-        content = stream.read(4 * 1024 * 1024 + 1)
+    relative = path.relative_to(sandbox_root()).as_posix()
+    with opened_tool_file(relative, expected_path=path) as (_, descriptor):
+        with os.fdopen(os.dup(descriptor), 'rb') as stream:
+            content = stream.read(4 * 1024 * 1024 + 1)
     if len(content) > 4 * 1024 * 1024:
         raise SandboxError(f'manifest 超过 4 MiB：{path.name}')
     return hashlib.sha256(content).hexdigest()

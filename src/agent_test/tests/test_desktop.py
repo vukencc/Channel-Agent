@@ -161,6 +161,41 @@ def test_shutdown_drains_running_task_and_releases_store(qt_app, desktop):
         with_store.close()
 
 
+def test_close_during_store_initialization_drains_worker(qt_app, tmp_path, monkeypatch):
+    import agent_frontend.desktop.runtime as runtime
+
+    started = threading.Event()
+    release = threading.Event()
+    original_store = runtime.SessionStore
+
+    def delayed_store(*args, **kwargs):
+        started.set()
+        assert release.wait(10), '测试未释放初始化'
+        return original_store(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, 'SessionStore', delayed_store)
+    bridge = RuntimeBridge(tmp_path / 'state', workspace_root=tmp_path / 'workspace')
+    window = MainWindow(bridge)
+    window.show()
+    bridge.start()
+    try:
+        wait_until(qt_app, started.is_set)
+        window.close()
+        assert bridge.worker_alive and bridge.is_running
+        assert window.isVisible()
+        release.set()
+        wait_until(qt_app, lambda: not bridge.worker_alive, timeout=10000)
+        wait_until(qt_app, lambda: not window.isVisible())
+        store = original_store(bridge.state_dir, workspace_root=bridge.workspace_root)
+        store.close()
+    finally:
+        release.set()
+        if bridge.worker_alive:
+            bridge.shutdown()
+            bridge._thread.join(10)
+        window.close()
+
+
 def test_untrusted_message_never_loads_local_or_remote_resource(qt_app, desktop, tmp_path):
     window, _, _ = desktop
     private = tmp_path / 'private.svg'
@@ -269,25 +304,71 @@ def test_invalid_settings_do_not_partially_change_permission(qt_app, desktop):
     assert window.current_session['permission_policy'] == before['permission_policy']
 
 
-def test_entrypoint_native_teardown_exits_cleanly_without_web(tmp_path):
+def _check_entrypoint_native_teardown(tmp_path, *, process_early_events=False):
     script = '''
 import sys
+import time
+started = time.monotonic()
+def stage(name):
+    print(f"{time.monotonic() - started:.3f} {name}", flush=True)
+stage('child start')
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
-from agent_frontend.desktop.app import main
+import agent_frontend.desktop.app as desktop_app
+from agent_frontend.desktop.runtime import RuntimeBridge
+from agent_frontend.desktop.window import MainWindow
+stage('imports complete')
 app = QApplication([])
-def close_window():
-    for window in app.topLevelWidgets():
+original_run = RuntimeBridge._run
+def run(bridge):
+    try:
+        original_run(bridge)
+    finally:
+        stage('worker drained')
+RuntimeBridge._run = run
+original_show = MainWindow.show
+def show(window):
+    original_show(window)
+    stage('window shown')
+    window.bridge.state_changed.connect(lambda _: stage('runtime ready'))
+    def close_window():
+        stage('close requested')
         window.close()
-QTimer.singleShot(600, close_window)
-main()
+    QTimer.singleShot(600, close_window)
+MainWindow.show = show
+if EARLY_EVENTS:
+    original_fonts = desktop_app.configure_fonts
+    def process_early(app):
+        QTimer.singleShot(0, lambda: stage('early events before window'))
+        app.processEvents()
+        original_fonts(app)
+    desktop_app.configure_fonts = process_early
+desktop_app.main()
+stage('main returned')
 assert 'fastapi' not in sys.modules
 assert 'PySide6.QtWebEngineWidgets' not in sys.modules
-'''
+'''.replace('EARLY_EVENTS', str(process_early_events))
     environment = {**os.environ, 'QT_QPA_PLATFORM': 'offscreen', 'DEBUG': 'false', 'ENABLE_DEBUG_TOOL': 'false'}
-    result = subprocess.run([sys.executable, '-c', script, '--state-dir', str(tmp_path / 'state')],
-                            env=environment, capture_output=True, text=True, timeout=20)
-    assert result.returncode == 0, result.stderr
+    parent_started = time.monotonic()
+    try:
+        result = subprocess.run([sys.executable, '-c', script, '--state-dir', str(tmp_path / 'state')],
+                                env=environment, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f'桌面子进程在 20 秒内未退出；阶段：{exc.stdout!r}；错误：{exc.stderr!r}')
+    print(result.stdout, end='')
+    print(f'{time.monotonic() - parent_started:.3f} child exited (parent clock)')
+    assert result.returncode == 0, f'{result.stdout}\n{result.stderr}'
+    assert 'close requested' in result.stdout and 'worker drained' in result.stdout, result.stdout
+    if process_early_events:
+        assert 'early events before window' in result.stdout
+
+
+def test_entrypoint_native_teardown_exits_cleanly_without_web(tmp_path):
+    _check_entrypoint_native_teardown(tmp_path)
+
+
+def test_entrypoint_close_timer_survives_events_before_window(tmp_path):
+    _check_entrypoint_native_teardown(tmp_path, process_early_events=True)
 
 
 def test_dynamic_labels_never_interpret_html(qt_app, desktop, tmp_path):

@@ -72,8 +72,10 @@ def test_actual_wsl_audit_failure_blocks_side_effect(bridge, monkeypatch):
     assert not (root / 'must-not-execute').exists()
 
 
-def test_actual_wsl_flow_rejects_external_hardlink(bridge, tmp_path):
+@pytest.mark.parametrize('flow_scope', [False, True])
+def test_actual_wsl_rejects_external_hardlink(bridge, tmp_path, flow_scope):
     root, context = bridge
+    context.flow_workspace_scope = flow_scope
     outside = tmp_path / 'outside.txt'
     outside.write_text('protected', encoding='utf-8')
     os.link(outside, root / 'linked.txt')

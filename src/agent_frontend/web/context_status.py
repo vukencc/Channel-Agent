@@ -5,6 +5,8 @@ import re
 
 def public_run_error(error) -> str:
     """保留安全配置项名称，不把供应商正文或配置值发送到页面。"""
+    if isinstance(error, str) and error.startswith('保存失败：'):
+        return '会话保存失败，请检查本地存储。'
     if isinstance(error, str) and error.startswith(('APIConnectionError:', 'ModelConnectionError:')):
         return '模型服务连接失败，请检查服务、网络和代理；任务记录已保留，可稍后发送“继续”。'
     if isinstance(error, str) and error.startswith('ValueError:'):

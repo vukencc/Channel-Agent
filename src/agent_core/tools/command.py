@@ -199,6 +199,9 @@ def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None,
             check_workspace_quota()
         # 审批期间根目录被替换时仍关闭执行；本机模式也不能悄悄跟随新路径。
         root = sandbox_root()
+        if execution_mode == 'sandbox':
+            from agent_core.tools.execution_environment import check_command_workspace
+            check_command_workspace(root)
         if execution_mode == 'local':
             from agent_core.tools.sandbox import _context
             context = _context.get()

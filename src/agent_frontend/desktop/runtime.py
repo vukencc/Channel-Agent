@@ -206,7 +206,6 @@ class RuntimeBridge(QObject):
             await asyncio.to_thread(record.materialize)
 
     def _clean(self, value: Any) -> Any:
-        cleaned = redact_result(value)
         # Core 的通用脱敏覆盖环境密钥；桌面再覆盖私有运行时连接。
         if self._manager is not None:
             for identifier in self._manager.model_registry.ids():
@@ -214,17 +213,7 @@ class RuntimeBridge(QObject):
                 if endpoint is not None and len(endpoint.api_key) >= 8:
                     self._secrets.add(endpoint.api_key)
 
-        def clean(item: Any) -> Any:
-            if isinstance(item, str):
-                for secret in self._secrets:
-                    item = item.replace(secret, '[已隐藏配置密钥]')
-                return item
-            if isinstance(item, dict):
-                return {key: clean(child) for key, child in item.items()}
-            if isinstance(item, list):
-                return [clean(child) for child in item]
-            return item
-        return clean(cleaned)
+        return redact_result(value, extra_secrets=self._secrets)
 
     def _publish(self) -> None:
         self._dirty = False
@@ -370,6 +359,8 @@ class RuntimeBridge(QObject):
                 result = self._flows.save(arguments['definition'])
             elif action in ('flow_run', 'flow_queue'):
                 result = self._flows.start(flow_id, arguments.get('definition'), input_text=arguments.get('input_text', ''), queue_only=action == 'flow_queue')
+            elif action == 'flow_retry_completion':
+                result = self._flows.retry_completion(flow_id)
             elif action == 'flow_cancel':
                 self._flows.cancel(flow_id)
                 result = self._flows.get(flow_id)
@@ -381,7 +372,7 @@ class RuntimeBridge(QObject):
             else:
                 raise ValueError('未知 Flow 操作。')
             await asyncio.to_thread(self._audit, action, flow_id=result.get('id', flow_id))
-            if action in ('flow_run', 'flow_queue', 'flow_cancel'):
+            if action in ('flow_run', 'flow_queue', 'flow_cancel', 'flow_retry_completion'):
                 # 审计期间运行可能已推进；确认应反映后台最新快照。
                 result = self._flows.get(flow_id)
             if result.get('project_id'):

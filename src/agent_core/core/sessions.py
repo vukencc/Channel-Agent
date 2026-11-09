@@ -62,8 +62,15 @@ class Session:
         return self.record['id']
 
     @property
-    def busy(self):
-        return self.deleting or self.forking or (self.task is not None and not self.task.done())
+    def turn_active(self) -> bool:
+        task = self.task
+        # 任务若在首个事件循环步骤前被取消，仍需保存取消终态。
+        return task is not None and (not task.done() or (
+            task.cancelled() and self.record['status'] in {'queued', 'stopping'}))
+
+    @property
+    def busy(self) -> bool:
+        return self.deleting or self.forking or self.turn_active
 
 
 class SessionManager:
@@ -287,7 +294,7 @@ class SessionManager:
                            sum(self._active_model_sessions.get(identifier, 0) for identifier in session_ids))
             active_tools = [dict(item) for item in self._active_tools.values()
                             if session_ids is None or item['session_id'] in session_ids]
-        return {'active_agents': sum(session.task is not None and not session.task.done()
+        return {'active_agents': sum(session.turn_active
                                      for session in self.sessions.values()
                                      if session_ids is None or session.id in session_ids),
                 'active_model_calls': model_calls, 'active_tools': active_tools,
@@ -364,27 +371,22 @@ class SessionManager:
         if attachments:
             message['_attachments'] = copy.deepcopy(attachments)
         session.record['messages'].append(message)
-        self.save(session)
+        queued_save = self.save(session)
         if self.observer.enabled:
             self.observer.event('turn.started', session_id=session.id,
                 turn_id=session.record['last_run']['turn_id'],
                 parent_session_id=session.record.get('delegated_from'), state='queued')
-        session.task = asyncio.create_task(self._run_with_budget(session))
-        submitted_turn = session.record['last_run']['turn_id']
-        def finish(task):
-            if task.cancelled():
-                session.record['status'] = 'cancelled'
-                self.observer.event('turn.stopped', session_id=session.id, turn_id=submitted_turn,
-                                 state='cancelled', reason='cancelled')
-                self.save(session)
-            elif task.exception() is not None:
-                # 初始化预算/连接失败发生在主循环之前，也必须发布终态。
-                session.record['status'] = 'error'
-                session.phase = '运行失败'
-                session.record['error'] = type(task.exception()).__name__ + ': 模型或会话预算初始化失败，请检查设置。'
-                self.observer.event('turn.stopped', session_id=session.id, turn_id=submitted_turn,
-                                 state='failed', reason='error')
-                self.save(session)
+        session.task = asyncio.create_task(self._run_submitted(session, queued_save))
+
+        def finish(task: asyncio.Task) -> None:
+            if task is session.task and task.cancelled() and session.turn_active:
+                # 直接取消未启动的任务时，由同一轮继续排空保存。
+                session.cancelled.set()
+                session.record['status'] = 'stopping'
+                session.task = asyncio.create_task(self._run_submitted(session, queued_save))
+                session.task.add_done_callback(finish)
+            self.notify()
+
         session.task.add_done_callback(finish)
 
     def emit(self, session, kind, text):
@@ -451,13 +453,16 @@ class SessionManager:
             self.agent_tasks.cancel_owner(session.id)
         if session.summary_task and not session.summary_task.done():
             session.summary_task.cancel()
-        if session.task is not None and not session.task.done() and session.record["status"] != "stopping":
+        status = session.record['status']
+        if session.task is not None and not session.task.done() and status in {'queued', 'running', 'confirming'}:
             session.cancelled.set()
             self.decide(session, False)
             session.record['status'] = 'stopping'
             session.phase = '停止中：等待当前网络调用或推理批次退出；不会重放工具'
             self._observe_phase(session, 'stopping')
-            session.task.cancel()
+            # 等待首笔写入时只设置取消标记，确保任务即使尚未启动也会排空写入并保存终态。
+            if status != 'queued':
+                session.task.cancel()
             self.notify()
 
     @trace_function('permission.confirm')
@@ -996,6 +1001,30 @@ class SessionManager:
         self.save(session)
 
     @traced('agent.run')
+    async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None]) -> None:
+        input_committed = False
+        try:
+            # 已提交的 queued 快照包含本轮输入。先验证写入结果，再允许任何模型调用或工具副作用。
+            try:
+                await asyncio.shield(queued_save)
+            except asyncio.CancelledError:
+                await wait_for_io_completion(queued_save)
+                raise
+            input_committed = True
+            if session.cancelled.is_set():
+                raise asyncio.CancelledError
+            await self._run_with_budget(session)
+        except asyncio.CancelledError:
+            session.record.update(status='cancelled', error='任务已停止；已执行的文件操作不会自动回滚。')
+        except Exception as exc:
+            if input_committed:
+                error = f'{type(exc).__name__}: 模型或会话预算初始化失败，请检查设置。'
+            else:
+                error = '保存失败：本轮排队记录写入失败，模型和工具尚未启动。'
+                session.record['last_run']['stop_reason'] = 'persistence_failed'
+            session.record.update(status='error', error=error)
+        await self._finish_turn(session)
+
     async def _run_with_budget(self, session):
         from agent_core.core.images import image_scope
         profile = session.record.get('model_profile')
@@ -1031,7 +1060,6 @@ class SessionManager:
 
         try:
             session.record['status'] = 'running'
-            await self.save(session)
             session.record['last_run']['automatic_continuations'] = 0
             session.record['last_run']['recovery_attempts'] = 0
             for round_index in policy.rounds():
@@ -1336,40 +1364,53 @@ class SessionManager:
             session.record['last_run']['stop_reason'] = 'context_budget'
             self._observe_context_sample(session, exc.metrics, reason='context_budget')
             session.record['messages'].append({'role': 'assistant', 'content': '[阶段已保存] ' + str(exc)})
-        except asyncio.CancelledError:
-            session.record['status'] = 'cancelled'
-            session.record['error'] = '任务已停止；已执行的文件操作不会自动回滚。'
         except Exception as exc:
             session.record['status'] = 'error'
             session.record['error'] = f'{type(exc).__name__}: {exc}'
-        finally:
-            if session.record['status'] in {'cancelled', 'error'}:
-                finish_pending_tools(session.record['messages'])
-            if session.partial:
-                message = {'role': 'assistant', 'content': session.partial}
-                if session.partial_reasoning:
-                    message['reasoning_content'] = session.partial_reasoning
-                session.record['messages'].append(message)
-                session.partial = ''
-            session.partial_reasoning = ''
-            session.phase = ''
-            session.record['last_run']['total_s'] = round(time.monotonic() - session.started_at, 3)
-            session.record['last_run']['status'] = session.record['status']
-            if self.observer.enabled:
-                self.observer.event('turn.stopped', session_id=session.id,
-                    turn_id=session.record['last_run']['turn_id'],
-                    state='completed' if session.record['status'] == 'idle' else session.record['status'],
-                    reason=session.record['last_run'].get('stop_reason') or
-                           ('finished' if session.record['status'] == 'idle' else session.record['status']))
-            if self.task_plans is not None:
-                try:
-                    await self.task_plans.finish_run(session)
-                except Exception as exc:
-                    session.record['error'] = (session.record.get('error', '') + '\n计划保存失败：' + str(exc)).strip()
-            session.record.setdefault('run_history', []).append(copy.deepcopy(session.record['last_run']))
-            session.record['run_history'] = session.record['run_history'][-config.RUN_HISTORY_LIMIT:]
-            logger.info('turn_finished session=%s %s', session.id, json.dumps(session.record['last_run'], ensure_ascii=False))
-            await self.save(session)
+
+    async def _finish_turn(self, session: Session) -> None:
+        record = session.record
+        if record['status'] in {'cancelled', 'error'}:
+            finish_pending_tools(record['messages'])
+        if session.partial:
+            message = {'role': 'assistant', 'content': session.partial}
+            if session.partial_reasoning:
+                message['reasoning_content'] = session.partial_reasoning
+            record['messages'].append(message)
+            session.partial = ''
+        session.partial_reasoning = ''
+        session.phase = '保存本轮状态'
+        run = record['last_run']
+        run.update(total_s=round(time.monotonic() - session.started_at, 3), status=record['status'])
+        if self.task_plans is not None:
+            try:
+                await wait_for_io_completion(asyncio.create_task(self.task_plans.finish_run(session)))
+            except Exception as exc:
+                record['error'] = (record.get('error', '') + '\n计划保存失败：' + str(exc)).strip()
+        history_entry = copy.deepcopy(run)
+        record.setdefault('run_history', []).append(history_entry)
+        record['run_history'] = record['run_history'][-config.RUN_HISTORY_LIMIT:]
+        try:
+            await wait_for_io_completion(self.save(session))
+        except Exception as exc:
+            logger.warning('会话终态保存失败（%s）', type(exc).__name__)
+            error = '保存失败：本轮终态未确认，请检查本地存储。'
+            record.update(status='error', error=error)
+            run.update(status='error', stop_reason='persistence_failed')
+            history_entry.update(status='error', stop_reason='persistence_failed')
+            # 只尝试保存错误终态。若存储持续不可用，保留内存错误和上次可读的磁盘快照。
+            try:
+                await wait_for_io_completion(self.save(session))
+            except Exception as exc:
+                record['error'] = error
+                logger.warning('会话错误终态保存失败（%s）', type(exc).__name__)
+        session.phase = ''
+        if self.observer.enabled:
+            status = record['status']
+            self.observer.event('turn.stopped', session_id=session.id, turn_id=run['turn_id'],
+                state='completed' if status == 'idle' else status,
+                reason=run.get('stop_reason') or ('finished' if status == 'idle' else status))
+        logger.info('turn_finished session=%s %s', session.id, json.dumps(run, ensure_ascii=False))
 
     async def shutdown(self):
         self.closing = True
@@ -1388,7 +1429,9 @@ class SessionManager:
                 session.memory_task.cancel()
             if session.summary_task:
                 session.summary_task.cancel()
-        await asyncio.gather(*(s.task for s in self.sessions.values() if s.task), return_exceptions=True)
+        # 首步前取消的任务会在完成回调中交接给终态保存任务。
+        while active := [s.task for s in self.sessions.values() if s.turn_active]:
+            await asyncio.gather(*active, return_exceptions=True)
         await asyncio.gather(*(s.assessment_task for s in self.sessions.values() if s.assessment_task), return_exceptions=True)
         await asyncio.gather(*(s.memory_task for s in self.sessions.values() if s.memory_task), return_exceptions=True)
         for task in self.summary_tasks:

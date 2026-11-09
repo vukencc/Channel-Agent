@@ -328,22 +328,11 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         return result
 
     def clean_flow(value):
-        cleaned = redact_result(value)
         for identifier in app.state.manager.model_registry.ids():
             endpoint = app.state.manager.model_registry.resolve(identifier)
             if endpoint is not None and len(endpoint.api_key) >= 8:
                 app.state.flow_secrets.add(endpoint.api_key)
-        def clean(item):
-            if isinstance(item, str):
-                for secret in app.state.flow_secrets:
-                    item = item.replace(secret, '[已隐藏配置密钥]')
-                return item
-            if isinstance(item, dict):
-                return {key: clean(child) for key, child in item.items()}
-            if isinstance(item, list):
-                return [clean(child) for child in item]
-            return item
-        return clean(cleaned)
+        return redact_result(value, extra_secrets=app.state.flow_secrets)
 
     def flow_summaries():
         return clean_flow([{'id': row['id'], 'title': row['title'],
@@ -670,6 +659,13 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         flow(identifier)
         app.state.flows.cancel(identifier)
         await flow_audit('flow_cancel', identifier)
+        return public_flow(flow(identifier))
+
+    @app.post('/api/flows/{identifier}/retry-completion')
+    async def retry_flow_completion(identifier: str):
+        flow(identifier)
+        app.state.flows.retry_completion(identifier)
+        await flow_audit('flow_retry_completion', identifier)
         return public_flow(flow(identifier))
 
     @app.delete('/api/flows/{identifier}')

@@ -238,7 +238,7 @@ def test_flow_rejects_nested_mount_entry(sandbox_env, monkeypatch):
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, 'read_text', fake_read_text)
     with pytest.raises(sandbox.SandboxError, match='嵌套挂载'):
-        execution_environment._check_flow_workspace(sandbox_env)
+        execution_environment.check_command_workspace(sandbox_env)
 
 
 def test_flow_rejects_real_nested_mount(sandbox_env):
@@ -247,13 +247,13 @@ def test_flow_rejects_real_nested_mount(sandbox_env):
     script = '''
 import subprocess, sys
 from pathlib import Path
-from agent_core.tools.execution_environment import _check_flow_workspace
+from agent_core.tools.execution_environment import check_command_workspace
 from agent_core.tools.sandbox import SandboxError
 mounted = subprocess.run(['/usr/bin/mount', '-t', 'tmpfs', 'tmpfs', sys.argv[2]], capture_output=True)
 if mounted.returncode:
     sys.exit(77)
 try:
-    _check_flow_workspace(Path(sys.argv[1]))
+    check_command_workspace(Path(sys.argv[1]))
 except SandboxError as exc:
     assert '嵌套挂载' in str(exc)
 else:

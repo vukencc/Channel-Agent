@@ -86,6 +86,8 @@ class LazyRecord(dict):
 
 
 class SessionStore:
+    _SESSION_SAVE_LANES = 3 if os.name == 'nt' else 1
+
     def __init__(self, root: Path, workspace_root: Path | None = None):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -106,11 +108,17 @@ class SessionStore:
         self.errors: list[str] = []
         self.workspace_root = Path(workspace_root or config.SANDBOX_DIR).resolve()
         self.writer = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-save")
+        # 按会话固定到单线程队列。同一日志和索引按序提交，独立会话可重叠 Windows 文件等待。
+        self._session_writers = (self.writer, *(concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f'session-save-{lane}')
+            for lane in range(1, self._SESSION_SAVE_LANES)))
+        self._session_write_locks = tuple(threading.Lock() for _ in self._session_writers)
         self._workspace_lock = threading.Lock()
         self._memory_lock = threading.RLock()
 
     def close(self):
-        self.writer.shutdown(wait=True)
+        for writer in self._session_writers:
+            writer.shutdown(wait=True)
         if os.name == 'nt':
             from agent_core.core.audit_writer import close_audit_handles
             close_audit_handles(self.root)
@@ -216,11 +224,23 @@ class SessionStore:
         snapshot['messages'] = record['messages']
         snapshot['_count'] = len(record['messages'])
         snapshot['_system'] = copy.deepcopy(record['messages'][0])
-        return asyncio.get_running_loop().run_in_executor(self.writer, self.save, snapshot)
+        writer = self._session_writers[self._session_lane(snapshot['id'])]
+        return asyncio.get_running_loop().run_in_executor(writer, self.save, snapshot)
+
+    def _session_lane(self, identifier: str) -> int:
+        try:
+            return int(identifier, 16) % len(self._session_writers)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('无效会话 ID') from exc
 
     def save(self, record: dict):
         if isinstance(record, LazyRecord):
             record.materialize()
+        # 同步恢复也不得与同队列里的日志提交同时操作同一文件。
+        with self._session_write_locks[self._session_lane(record['id'])]:
+            self._commit_session(record)
+
+    def _commit_session(self, record: dict) -> None:
         directory = self.directory(record['id'])
         directory.mkdir(exist_ok=True, mode=0o700)
         if not (directory / 'memory.md').exists():

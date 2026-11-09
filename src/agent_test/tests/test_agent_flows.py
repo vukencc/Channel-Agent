@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -89,25 +90,46 @@ def test_cancel_blocks_downstream_and_releases_reservation(tmp_path, monkeypatch
     store = SessionStore(tmp_path / "state", workspace_root=tmp_path / "private")
     async def run():
         started = asyncio.Event()
+        cleaning = asyncio.Event()
+        allow_cleanup = asyncio.Event()
         async def model(history, *, session_id, emit):
             started.set()
             await asyncio.Event().wait()
         manager = SessionManager(store, model=model)
         service = FlowService(manager)
+        drain = service._drain
+
+        async def hold_final_cleanup(session, identity, flow_id, *, cancel, run=None):
+            if run is None:
+                cleaning.set()
+                await allow_cleanup.wait()
+            await drain(session, identity, flow_id, cancel=cancel, run=run)
+
+        monkeypatch.setattr(service, '_drain', hold_final_cleanup)
         flow = service.create(workspace_path=str(project))
         flow["nodes"] = [{"id": key, "title": key, "prompt": key} for key in ("a", "b")]
         flow["edges"] = [{"source": "a", "target": "b"}]
         flow = service.save(flow)
-        service.start(flow["id"])
-        await asyncio.wait_for(started.wait(), 2)
-        service.cancel(flow["id"])
-        await asyncio.wait_for(service.tasks[flow["id"]], 2)
-        result = service.get(flow["id"])["run"]
-        assert result["status"] == "cancelled"
-        assert result["nodes"]["b"]["status"] == "blocked"
-        assert not result["nodes"]["a"]["output_handoff"]
-        assert not manager.project_reservations
-        await manager.flush()
+        identifier = flow["id"]
+        try:
+            service.start(identifier)
+            await asyncio.wait_for(started.wait(), 2)
+            service.cancel(identifier)
+            await asyncio.wait_for(cleaning.wait(), 2)
+            assert service.get(identifier)["run"]["status"] == "cancelling"
+            assert manager.project_reservations
+            allow_cleanup.set()
+            await asyncio.wait_for(service.tasks[identifier], 2)
+            result = service.get(identifier)["run"]
+            assert result["status"] == "cancelled"
+            assert result["nodes"]["b"]["status"] == "blocked"
+            assert not result["nodes"]["a"]["output_handoff"]
+            assert not manager.project_reservations
+            assert json.loads(service._path(identifier).read_text(encoding='utf-8'))['run'] == result
+        finally:
+            allow_cleanup.set()
+            await service.shutdown()
+            await manager.shutdown()
     try:
         asyncio.run(run())
     finally:
@@ -227,12 +249,18 @@ def test_checkpoint_and_concurrent_reservation(tmp_path, monkeypatch):
         store.close()
 
 
-def test_handoff_symlink_and_invalid_ids_are_rejected(tmp_path, symlink_capable):
+@pytest.mark.parametrize("link_kind", ["symbolic", "hard"])
+def test_handoff_link_and_invalid_ids_are_rejected(tmp_path, request, link_kind):
     project = tmp_path / "project"
     project.mkdir()
     secret = tmp_path / "outside"
     secret.write_text("outside")
-    (project / "link").symlink_to(secret)
+    if link_kind == "symbolic":
+        request.getfixturevalue("symlink_capable")
+        (project / "link").symlink_to(secret)
+    else:
+        import os
+        os.link(secret, project / "link")
     store = SessionStore(tmp_path / "state", workspace_root=tmp_path / "private")
     calls = []
     async def model(history, *, session_id, emit):

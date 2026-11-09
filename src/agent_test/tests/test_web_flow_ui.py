@@ -37,6 +37,40 @@ const flow={id:'a'.repeat(32),project_id:'project-1',title:'受控流程',nodes:
 ''' + body)
 
 
+def test_contract_draft_keeps_invalid_input_and_clears(tmp_path):
+    run_flow_js(tmp_path, r'''
+const {flowContractDraft, flowContractInvalid, flowDefinition} = api;
+const node = {id:'one', handoff_contract:flowContractDraft('{"fields":')};
+const flow = {id:'a', nodes:[node], edges:[]};
+assert.equal(node.handoff_contract, '{"fields":');
+assert.equal(flowContractInvalid(flow), true);
+assert.equal(flowContractDraft('{"fields":{"answer":{"type":"bad"}}}'), '{"fields":{"answer":{"type":"bad"}}}');
+assert.equal(flowContractDraft('{"fields":{"answer":{"type":"integer","enum":[true]}}}'), '{"fields":{"answer":{"type":"integer","enum":[true]}}}');
+for (const spec of [
+  {type:'number',enum:[1.5]},
+  {type:'integer',enum:[9007199254740992]},
+  {type:'integer',enum:[-9007199254740992]},
+  {type:'string',enum:['\ud800']},
+  {type:'string',enum:['\udc00']},
+]) {
+  const text = JSON.stringify({fields:{answer:spec}});
+  assert.equal(flowContractDraft(text), text);
+}
+for (const spec of [
+  {type:'number'}, {type:'integer',enum:[-9007199254740991,9007199254740991]},
+  {type:'string',enum:['😀']},
+]) {
+  const text = JSON.stringify({fields:{answer:spec}});
+  assert.deepEqual(flowContractDraft(text), JSON.parse(text));
+}
+node.handoff_contract = flowContractDraft('{"fields":{"answer":{"type":"string"}}}');
+assert.equal(flowContractInvalid(flow), false);
+assert.deepEqual(flowDefinition(flow).nodes[0].handoff_contract, {fields:{answer:{type:'string'}}});
+node.handoff_contract = flowContractDraft('  ');
+assert.equal(node.handoff_contract, null);
+''')
+
+
 def test_designer_dock_keeps_canvas_after_generation_and_ignores_late_reply(tmp_path):
     # 受控 DOM 与异步接口，仅验证 UI 状态；不代表浏览器布局或模型执行。
     run_flow_js(tmp_path, r'''

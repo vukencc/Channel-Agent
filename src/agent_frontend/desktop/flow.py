@@ -21,13 +21,31 @@ from .theme import ChoiceBox
 from .project_picker import ProjectPicker
 from . import project_picker
 from .flow_designer import FlowDesigner
+from agent_core.core.flow_handoff import HandoffContract
 
 
 STATUS_LABELS = {
     'pending': '待运行', 'queued': '排队中', 'running': '运行中', 'completed': '已完成',
     'failed': '失败', 'cancelled': '已取消', 'cancelling': '正在取消', 'interrupted': '已中断',
     'confirming': '等待确认', 'idle': '空闲', 'checkpoint': '检查点',
+    'persistence_failed': '完成状态保存失败，请检查存储后重试保存；节点不会重跑。',
 }
+
+CONTRACT_HINT = ('留空不配置；所有字段必填，不允许额外字段。number 不支持枚举；'
+                 'integer 枚举限安全整数，字符串须为有效 Unicode。')
+
+
+def _contract_draft(text: str):
+    if not text.strip():
+        return None
+    try:
+        value = json.loads(text)
+        HandoffContract.model_validate(value)
+        if isinstance(value, dict):
+            return value
+    except (ValueError, TypeError):
+        pass
+    return text
 
 
 def _status_text(status) -> str:
@@ -37,7 +55,7 @@ def _status_text(status) -> str:
 def _status_color(status) -> str:
     if status in ('completed',):
         return '#7ad2b0'
-    if status in ('failed', 'interrupted', 'error'):
+    if status in ('failed', 'interrupted', 'error', 'persistence_failed'):
         return '#e49aa7'
     if status in ('running', 'queued', 'confirming', 'cancelling'):
         return '#a9caff'
@@ -348,7 +366,7 @@ class FlowPanel(QWidget):
             ('项目背景（可选）', 'handoff', 'text'), ('执行环境', 'execution_environment', 'environment'),
             ('权限模式', 'permission_policy', 'policy'), ('模型', 'model_profile', 'model')])
         self.node_fields = self._make_form([
-            ('名称', 'title', 'line'), ('节点指令', 'prompt', 'text'), ('复用会话', 'reuse_session', 'checkbox'),
+            ('名称', 'title', 'line'), ('节点指令', 'prompt', 'text'), ('结构化交接契约（可选）', 'handoff_contract', 'text'), ('复用会话', 'reuse_session', 'checkbox'),
             ('项目目录', 'workspace_path', 'line'), ('补充背景（可选）', 'handoff', 'text'),
             ('已有交接文件（可选）', 'handoff_file', 'line'), ('模型', 'model_profile', 'model'),
             ('思考模式', 'thinking_mode', 'thinking'), ('推理强度', 'reasoning_effort', 'effort')])
@@ -443,6 +461,9 @@ class FlowPanel(QWidget):
                 field = QTextEdit()
                 field.setAcceptRichText(False)
                 field.setMinimumHeight(90)
+                if key == 'handoff_contract':
+                    field.setPlaceholderText('留空不配置。例：{"fields":{"answer":{"type":"string"}}}')
+                    field.setMaximumHeight(130)
                 if key == 'handoff':
                     field.setMaximumHeight(130)
                 elif key == 'prompt':
@@ -493,6 +514,9 @@ class FlowPanel(QWidget):
                 target_form.setRowVisible(project_container, False)
             else:
                 target_form.addRow(_label(caption), picker if key == 'workspace_path' else field)
+                if key == 'handoff_contract':
+                    self.contract_hint = _label(CONTRACT_HINT)
+                    target_form.addRow(self.contract_hint)
                 if not is_node and key in ('execution_environment', 'permission_policy'):
                     self._project_rows[key] = (target_form, field)
                 if key in ('workspace_path', 'handoff_file', 'execution_environment', 'permission_policy'):
@@ -630,6 +654,9 @@ class FlowPanel(QWidget):
     def _field_changed(self, key, value, node) -> None:
         if self._loading or self.running or not self._flow:
             return
+        if key == 'handoff_contract':
+            value = _contract_draft(value)
+            self.contract_hint.setText('契约无效，请修正或清空。' if isinstance(value, str) else CONTRACT_HINT)
         project_field = not node and self._flow.get('project_id') and key in ('handoff', 'execution_environment', 'permission_policy', 'model_profile')
         target = self._flow.get('project') if project_field else (self.nodes.get(self._selected).data if node and self._selected in self.nodes else (None if node else self._flow))
         if target is not None and target.get(key) != value:
@@ -649,7 +676,11 @@ class FlowPanel(QWidget):
                 index = field.findData(value)
                 field.setCurrentIndex(max(0, index))
             elif isinstance(field, QTextEdit):
+                if key == 'handoff_contract' and isinstance(value, dict):
+                    value = json.dumps(value, ensure_ascii=False, indent=2)
                 field.setPlainText(str(value or ''))
+                if key == 'handoff_contract':
+                    self.contract_hint.setText('契约无效，请修正或清空。' if isinstance(data.get(key), str) else CONTRACT_HINT)
             else:
                 field.setText(str(value or ''))
         if fields is self.node_fields:
@@ -710,7 +741,15 @@ class FlowPanel(QWidget):
         except (OSError, ValueError, UnicodeError) as exc:
             QMessageBox.warning(self, '导入失败', str(exc))
 
+    def _contract_valid(self) -> bool:
+        if any(isinstance(node.get('handoff_contract'), str) for node in self._flow.get('nodes', [])):
+            QMessageBox.warning(self, '契约无效', '结构化交接契约无效，请修正或清空后重试。')
+            return False
+        return True
+
     def _export_file(self) -> None:
+        if not self._contract_valid():
+            return
         if self._export_path is not None:
             return
         path, _ = QFileDialog.getSaveFileName(self, '导出 Flow 模板', '', 'JSON (*.json)')
@@ -818,7 +857,8 @@ class FlowPanel(QWidget):
         for form, field in self._project_rows.values():
             form.setRowVisible(field, bool(self._flow.get('project_id')))
         self.run_button.setEnabled((bool(self._flow.get('project_id')) and not updating_project) or running)
-        self.run_button.setText('停止' if running else '运行')
+        retry_completion = (self._flow.get('run') or {}).get('status') == 'persistence_failed'
+        self.run_button.setText('停止' if running else '重试保存' if retry_completion else '运行')
         has_project = bool(self._flow.get('project_id'))
         self.run_input.setVisible(has_project)
         self.queue_count.setVisible(has_project)
@@ -868,6 +908,11 @@ class FlowPanel(QWidget):
             if result.get(key):
                 value = _status_text(result[key]) if key == 'status' else result[key]
                 parts.append(f"{title}：\n{value}")
+        validation = result.get('handoff_validation')
+        if validation or (self._selected in self.nodes and self.nodes[self._selected].data.get('handoff_contract')):
+            value = ('尚未校验' if not validation else '格式校验通过（不代表业务验收通过）' if validation.get('status') == 'passed'
+                     else '校验失败：' + str(validation.get('message') or '格式不符合契约'))
+            parts.append(f'结构化格式校验：\n{value}')
         if result.get('session_status'):
             parts.append(f"会话状态：\n{_status_text(result['session_status'])}")
         if run.get('error'):
@@ -928,6 +973,8 @@ class FlowPanel(QWidget):
         self._refresh_state()
 
     def _submit(self, action: str) -> None:
+        if not self._contract_valid():
+            return
         if self._pending_project_action or self._directory_update_id:
             return
         if action == 'flow_run' and not self._flow.get('project_id'):
@@ -962,6 +1009,8 @@ class FlowPanel(QWidget):
     def _run_or_stop(self) -> None:
         if self.running:
             self.command.emit('flow_cancel', {'flow_id': self._flow.get('id')})
+        elif (self._flow.get('run') or {}).get('status') == 'persistence_failed':
+            self.command.emit('flow_retry_completion', {'flow_id': self._flow.get('id')})
         else:
             self._submit('flow_run')
 
