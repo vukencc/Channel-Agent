@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent_core import config
 from agent_core.core.flows import Edge, Definition, _order
+from agent_core.core.flow_handoff import HandoffContract
 from agent_core.core.tool_settings import model_catalog
 from agent_core.tools import all_schemas
 
@@ -32,6 +33,7 @@ class PortableNode(BaseModel):
     y: float = Field(default=0, allow_inf_nan=False)
     handoff: str = Field(default='', max_length=16000)
     handoff_file: str | None = Field(default=None, max_length=4096)
+    handoff_contract: HandoffContract | None = None
     model_profile: str | None = Field(default=None, max_length=200)
     tool_names: list[str] | None = Field(default=None, max_length=256)
     reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] | None = None

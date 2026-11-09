@@ -6,6 +6,7 @@
 """
 from typing import List
 import os
+from pathlib import Path
 import tempfile
 
 from agent_core import config
@@ -17,6 +18,7 @@ from agent_core.tools.sandbox import (
     SandboxError,
     ask_permission,
     audit,
+    opened_tool_file,
     resolve_path,
     sandbox_root,
     path_scope,
@@ -28,6 +30,26 @@ def _confirmed_target(path, target):
     """确认等待后重新核对授权根及相对路径，不能沿用先前解析的宿主路径。"""
     if cancellation_requested() or resolve_path(path, write=True) != target:
         raise SandboxError('已取消或确认期间工作区路径发生变化')
+
+
+def _read_file_bytes(path: str, expected_path: Path | None = None) -> tuple[Path, bytes]:
+    with opened_tool_file(path, write=True, expected_path=expected_path) as (target, descriptor):
+        with os.fdopen(os.dup(descriptor), 'rb') as stream:
+            return target, stream.read()
+
+
+def _replace_file(target: Path, *chunks: bytes, prefix: str) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=prefix, dir=target.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            for chunk in chunks:
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, target.stat().st_mode & 0o777)
+        os.replace(temporary, target)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 class CreateFileArgs(BaseModel):
@@ -123,23 +145,17 @@ def read_file(path: str, offset: int = 0, limit: int = config.FILE_READ_CHARS, s
     """
     读取沙箱内文件的内容。
     """
-    try:
-        target = resolve_path(path)
-    except SandboxError as exc:
-        audit("blocked", action="read_file", path=path, reason=str(exc))
-        return f"[已拦截] {exc}"
-
-    if not target.is_file():
-        return f"[失败] 文件不存在：{path}"
     if offset < 0 or limit < 1:
         return "[失败] offset 必须非负，limit 必须为正数。"
 
     try:
         size = min(limit, config.FILE_READ_CHARS, max(1, config.TOOL_MAX_OUTPUT))
-        if search:
-            with target.open(encoding='utf-8', newline='') as source:
+        with opened_tool_file(path) as (_, descriptor), os.fdopen(
+            os.dup(descriptor), 'r', encoding='utf-8', newline=''
+        ) as stream:
+            if search:
                 tail, consumed, found = '', 0, -1
-                while chunk := source.read(65536):
+                while chunk := stream.read(65536):
                     window = tail + chunk
                     base = consumed - len(tail)
                     index = window.find(search, max(0, offset - base))
@@ -151,7 +167,7 @@ def read_file(path: str, offset: int = 0, limit: int = config.FILE_READ_CHARS, s
                 if found < 0:
                     return f"[未找到] 从 offset={offset} 起没有匹配 search 的文本，文件未修改。"
                 offset = found
-        with target.open(encoding="utf-8", newline='') as stream:
+                stream.seek(0)
             remaining = offset
             while remaining:
                 skipped = stream.read(min(remaining, 65536))
@@ -160,7 +176,12 @@ def read_file(path: str, offset: int = 0, limit: int = config.FILE_READ_CHARS, s
                 remaining -= len(skipped)
             text = stream.read(size)
             more = bool(stream.read(1))
-    except (OSError, UnicodeDecodeError) as exc:
+    except SandboxError as exc:
+        audit("blocked", action="read_file", path=path, reason=str(exc))
+        return f"[已拦截] {exc}"
+    except FileNotFoundError:
+        return f"[失败] 文件不存在：{path}"
+    except (OSError, ValueError) as exc:
         audit("failed", action="read_file", path=path, error=str(exc))
         return f"[失败] 读取失败：{exc}"
 
@@ -176,13 +197,12 @@ def read_file(path: str, offset: int = 0, limit: int = config.FILE_READ_CHARS, s
 def edit_file(path: str, old_text: str, new_text: str, reason: str = "") -> str:
     """Replace one exact anchor atomically; refuse ambiguity and changes during confirmation."""
     try:
-        target = resolve_path(path, write=True)
-        before = target.read_bytes()
+        target, before = _read_file_bytes(path)
         text = before.decode('utf-8')
     except SandboxError as exc:
         audit("blocked", action="edit_file", path=path, reason=str(exc))
         return f"[已拦截] {exc}"
-    except (OSError, UnicodeError) as exc:
+    except (OSError, ValueError) as exc:
         return f"[失败] 无法读取文件：{exc}"
     count = text.count(old_text) if old_text else 0
     if count != 1:
@@ -191,25 +211,19 @@ def edit_file(path: str, old_text: str, new_text: str, reason: str = "") -> str:
         return "[未修改] 新旧片段相同。"
     if not ask_permission('edit_file', f'{path}（替换 {len(old_text)} → {len(new_text)} 字符）', reason, paths=[path]):
         return "[已取消] 用户未确认，文件未修改。"
-    temporary = None
     try:
-        _confirmed_target(path, target)
-        if target.read_bytes() != before:
+        if cancellation_requested():
+            raise SandboxError('已取消，文件未修改')
+        if _read_file_bytes(path, target)[1] != before:
             return "[失败] 确认期间文件发生变化，请重新读取后修改。"
         after = text.replace(old_text, new_text, 1).encode('utf-8')
-        descriptor, temporary = tempfile.mkstemp(prefix='.edit-', dir=target.parent)
-        with os.fdopen(descriptor, 'wb') as stream:
-            stream.write(after)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, target.stat().st_mode & 0o777)
-        os.replace(temporary, target)
-    except (OSError, SandboxError) as exc:
+        _replace_file(target, after, prefix='.edit-')
+    except SandboxError as exc:
+        audit('blocked', action='edit_file', path=path, reason=str(exc))
+        return f"[已拦截] {exc}"
+    except (OSError, ValueError) as exc:
         audit('failed', action='edit_file', path=path, error=str(exc))
         return f"[失败] 修改失败：{exc}"
-    finally:
-        if temporary and os.path.exists(temporary):
-            os.unlink(temporary)
     audit('executed', action='edit_file', path=path, removed=len(old_text), added=len(new_text), reason=reason)
     return f"[完成] 已局部更新 {path}（替换 1 处，文件 {len(after)} 字节；其余内容保留）"
 
@@ -220,19 +234,17 @@ def update_file(path: str, content: str = "", reason: str = "") -> str:
     覆盖写入沙箱内已存在的文件。
     """
     try:
-        target = resolve_path(path, write=True)
+        with opened_tool_file(path, write=True) as (target, descriptor):
+            with os.fdopen(os.dup(descriptor), 'r', encoding='utf-8') as stream:
+                before = stream.read(config.FILE_READ_CHARS + 1)
     except SandboxError as exc:
         audit("blocked", action="update_file", path=path, reason=str(exc))
         return f"[已拦截] {exc}"
-
-    if not target.is_file():
+    except FileNotFoundError:
         return f"[失败] 文件不存在，请先用 create_file 创建：{path}"
-    try:
-        with target.open(encoding='utf-8') as stream:
-            large = len(stream.read(config.FILE_READ_CHARS + 1)) > config.FILE_READ_CHARS
-    except (OSError, UnicodeError) as exc:
+    except (OSError, ValueError) as exc:
         return f"[失败] 无法检查原文件：{exc}"
-    if large:
+    if len(before) > config.FILE_READ_CHARS:
         audit('blocked', action='update_file', path=path, reason='large_file_requires_edit')
         return '[已拦截] 原文件超过单页读取上限，禁止全文覆盖；请分页 read_file 后使用 edit_file 局部替换，原文件未修改。'
 
@@ -240,9 +252,22 @@ def update_file(path: str, content: str = "", reason: str = "") -> str:
         return "[已取消] 用户未确认（拒绝或确认超时），文件未修改。"
 
     try:
-        _confirmed_target(path, target)
-        target.write_text(content, encoding="utf-8")
-    except (OSError, SandboxError) as exc:
+        if cancellation_requested():
+            raise SandboxError('已取消，文件未修改')
+        with opened_tool_file(path, expected_path=target, writable=True) as (_, descriptor):
+            with os.fdopen(os.dup(descriptor), 'r+', encoding='utf-8') as stream:
+                if stream.read(config.FILE_READ_CHARS + 1) != before:
+                    raise SandboxError('确认期间文件内容发生变化，请重新读取')
+                if cancellation_requested():
+                    raise SandboxError('已取消，文件未修改')
+                # 在已核验的文件上写入，保留所有权和访问控制，避免重新打开路径。
+                stream.seek(0)
+                stream.write(content)
+                stream.truncate()
+    except SandboxError as exc:
+        audit("blocked", action="update_file", path=path, reason=str(exc))
+        return f"[已拦截] {exc}"
+    except (OSError, ValueError) as exc:
         audit("failed", action="update_file", path=path, error=str(exc))
         return f"[失败] 写入失败：{exc}"
 
@@ -329,31 +354,22 @@ AppendFileArgs.__doc__ = AppendFileArgs.__doc__.replace('4000', str(config.FILE_
 @register_tool(AppendFileArgs, name='append_file')
 def append_file(path: str, content: str, expected_chars: int, reason: str = '') -> str:
     AppendFileArgs(path=path, content=content, expected_chars=expected_chars, reason=reason)
-    temporary = None
     try:
-        target = resolve_path(path, write=True)
-        before = target.read_bytes()
+        target, before = _read_file_bytes(path)
         actual = len(before.decode('utf-8'))
         if actual != expected_chars:
             audit('blocked', action='append_file', path=path, expected=expected_chars, actual=actual)
             return f'[已拦截] 文件字符偏移不匹配：当前 {actual}，请求 {expected_chars}；请先读取核对。'
         if not ask_permission('append_file', f'{path}，偏移 {actual}，新增 {len(content)} 字符', reason, paths=[path]):
             return '[已取消] 用户未确认，文件未修改。'
-        if resolve_path(path, write=True) != target or target.read_bytes() != before:
+        if cancellation_requested() or _read_file_bytes(path, target)[1] != before:
             return '[已拦截] 确认期间文件已变化，请重新读取。'
-        descriptor, temporary = tempfile.mkstemp(prefix='.append-', dir=target.parent)
-        with os.fdopen(descriptor, 'wb') as stream:
-            stream.write(before)
-            stream.write(content.encode('utf-8'))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, target.stat().st_mode & 0o777)
-        os.replace(temporary, target)
+        _replace_file(target, before, content.encode('utf-8'), prefix='.append-')
         audit('executed', action='append_file', path=path, added_chars=len(content))
         return f'[完成] 已追加 {len(content)} 字符；next_offset={actual + len(content)}'
-    except (OSError, UnicodeError, SandboxError) as exc:
+    except SandboxError as exc:
+        audit('blocked', action='append_file', path=path, reason=str(exc))
+        return f'[已拦截] {exc}'
+    except (OSError, ValueError) as exc:
         audit('failed', action='append_file', path=path, error=type(exc).__name__)
         return f'[失败] 无法追加：{exc}'
-    finally:
-        if temporary and os.path.exists(temporary):
-            os.unlink(temporary)

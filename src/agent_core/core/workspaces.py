@@ -116,7 +116,9 @@ class SessionWorkspaces:
         return self.owner_binding(session).identity
 
     def path(self, session):
-        binding = self.owner_binding(session)
+        return self._path_for_binding(self.owner_binding(session))
+
+    def _path_for_binding(self, binding: WorkspaceBinding) -> Path:
         if binding.path is None:
             if binding.identity is not None:
                 raise PermissionError('工作区授权记录无效')
@@ -135,7 +137,10 @@ class SessionWorkspaces:
             binding = self.binding(session)
         except (PermissionError, ValueError):
             return False
-        if binding.parent_id is not None:
+        return self._can_change_binding(session, binding)
+
+    def _can_change_binding(self, session, binding: WorkspaceBinding) -> bool:
+        if binding.parent_id is not None or session.busy or session.tool_workers:
             return False
         if self.manager.closing or self.manager.maintenance or any(
             value.busy or value.tool_workers for value in self.manager.sessions.values()
@@ -217,18 +222,26 @@ class SessionWorkspaces:
 
     def metadata(self, session):
         """状态流不创建默认目录，失效工作区仍可显示并让用户重新选择。"""
-        path, custom = '', False
+        path, custom, can_change = '', False, False
         try:
-            binding = self.owner_binding(session)
-            path = binding.path or str(self.manager.store.workspace_path(binding.owner_id))
-            custom = binding.path is not None
-            if binding.path is not None:
-                self.path(session)
+            binding = self.binding(session)
+            can_change = self._can_change_binding(session, binding)
+            owner = self._parent_binding(binding.owner_id) if binding.owner_id != session.id else binding
+            custom = owner.path is not None
+            if owner.path:
+                path = owner.path
+            elif owner is binding:
+                # binding 已检查默认工作区所有者对应的会话目录。
+                path = str(self.manager.store.workspace_root / binding.owner_id)
+            else:
+                path = str(self.manager.store.workspace_path(owner.owner_id))
+            if custom:
+                self._path_for_binding(owner)
             return {'workspace_path': path, 'workspace_custom': custom,
-                    'workspace_can_change': self.can_change(session), 'workspace_error': ''}
+                    'workspace_can_change': can_change, 'workspace_error': ''}
         except (ValueError, PermissionError, OSError) as exc:
             return {'workspace_path': path, 'workspace_custom': custom,
-                    'workspace_can_change': self.can_change(session), 'workspace_error': str(exc)}
+                    'workspace_can_change': can_change, 'workspace_error': str(exc)}
 
     def directories(self, value=None):
         """仅供本机用户浏览目录；该结果不改变任何 Agent 的授权。"""

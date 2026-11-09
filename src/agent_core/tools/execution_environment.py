@@ -8,10 +8,10 @@ import shutil
 import stat
 
 from agent_core import config
-from agent_core.tools.sandbox import SandboxError, sandbox_root
+from agent_core.tools.sandbox import SandboxError, cancellation_requested, sandbox_root
 
 
-def _check_flow_workspace(root: Path) -> None:
+def check_command_workspace(root: Path) -> None:
     """拒绝项目内嵌套挂载和连接到项目外的现存硬链接。"""
     try:
         for line in Path('/proc/self/mountinfo').read_text().splitlines():
@@ -20,23 +20,25 @@ def _check_flow_workspace(root: Path) -> None:
                 raise ValueError('mountinfo 格式无效')
             mount = Path(re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1), 8)), fields[4]))
             if mount != root and mount.is_relative_to(root):
-                raise SandboxError('Flow 项目内含嵌套挂载，拒绝执行本机命令')
+                raise SandboxError('工作区内含嵌套挂载，拒绝执行隔离命令')
         links: dict[tuple[int, int], tuple[int, int]] = {}
         def fail(error):
             raise error
         for directory, names, files in os.walk(root, followlinks=False, onerror=fail):
+            if cancellation_requested():
+                raise SandboxError('已取消，命令未启动')
             for name in (*names, *files):
                 info = os.lstat(Path(directory) / name)
                 if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
                     key = (info.st_dev, info.st_ino)
                     count, expected = links.get(key, (0, info.st_nlink))
                     if expected != info.st_nlink:
-                        raise SandboxError('Flow 项目硬链接在检查期间改变')
+                        raise SandboxError('工作区硬链接在检查期间改变')
                     links[key] = (count + 1, expected)
         if any(count != expected for count, expected in links.values()):
-            raise SandboxError('Flow 项目含指向项目外的硬链接，拒绝执行本机命令')
+            raise SandboxError('工作区含指向外部的硬链接，拒绝执行隔离命令')
     except (OSError, ValueError) as exc:
-        raise SandboxError('无法检查 Flow 项目的挂载或硬链接，拒绝执行') from exc
+        raise SandboxError('无法检查工作区的挂载或硬链接，拒绝执行') from exc
 
 
 def flow_local_command(argv: list[str], environment: dict[str, str], protected_paths=()) -> tuple[list[str], dict[str, str]]:
@@ -45,7 +47,7 @@ def flow_local_command(argv: list[str], environment: dict[str, str], protected_p
     if sys.platform != 'linux' or not executable:
         raise SandboxError('Flow 本机命令需要 Linux bubblewrap；拒绝无隔离执行')
     root = sandbox_root()
-    _check_flow_workspace(root)
+    check_command_workspace(root)
     protected = [Path(p).resolve() for p in protected_paths]
     protected += [Path(config.PROJECT_ROOT).resolve(), Path(config.AGENT_STATE_DIR).resolve(),
                   Path(config.AUDIT_LOG).resolve()]

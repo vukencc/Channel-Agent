@@ -1,7 +1,10 @@
 """单次无 TTY 执行入口；复用完整会话循环，默认拒绝所有待确认操作。"""
 import asyncio
+import json
 import os
 import logging
+from collections.abc import Iterable
+from typing import Any
 
 from agent_core import config
 from agent_core.core.llm import call_model
@@ -9,15 +12,22 @@ from agent_core.core.sessions import SessionManager
 from agent_core.core.session_service import open_session
 
 
-def redact_result(value):
+def redact_result(value: Any, *, extra_secrets: Iterable[str] = ()) -> Any:
     secrets = [config.API_KEY, config.EMBEDDING_MODEL_API_KEY, config.WEB_SEARCH_API_KEY]
     secrets += [os.getenv(endpoint['api_key_env'], '') for endpoint in config.MODEL_FALLBACKS if endpoint.get('api_key_env')]
-    secrets += [os.getenv('TAVILY_API_KEY', '')]
-    def clean(item):
+    secrets.extend((os.getenv('TAVILY_API_KEY', ''), *extra_secrets))
+    # 结构化交接作为 JSON 文本传输，需同时遮盖字面量和 JSON 转义后的密钥。
+    forms: set[str] = set()
+    for secret in secrets:
+        if secret and len(secret) >= 8:
+            forms.update((secret, json.dumps(secret, ensure_ascii=True)[1:-1],
+                          json.dumps(secret, ensure_ascii=False)[1:-1]))
+    ordered = sorted(forms, key=len, reverse=True)
+
+    def clean(item: Any) -> Any:
         if isinstance(item, str):
-            for secret in secrets:
-                if secret and len(secret) >= 8:
-                    item = item.replace(secret, '[已隐藏配置密钥]')
+            for secret in ordered:
+                item = item.replace(secret, '[已隐藏配置密钥]')
             return item
         if isinstance(item, dict):
             return {key: clean(child) for key, child in item.items()}

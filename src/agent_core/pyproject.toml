@@ -1,6 +1,6 @@
 [project]
 name = "ai-agent-core"
-version = "0.3.0"
+version = "0.4.0"
 description = "Agent Loop、工具、会话与上下文运行内核"
 requires-python = ">=3.12"
 dependencies = [

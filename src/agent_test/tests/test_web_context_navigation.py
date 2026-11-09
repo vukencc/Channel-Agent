@@ -136,6 +136,46 @@ def test_quick_picker_patches_only_requested_setting_and_preserves_busy_draft():
     ''')
 
 
+def test_conversation_detail_retries_only_a_transport_failure_once():
+    run_js(function('api') + function('jsonApi') + function('loadConversation') + r'''
+      const assert = require('node:assert/strict');
+      const state = {activeId: 'one', snapshotVersion: 0, sessions: new Map([['one', {}]]),
+        history: new Map(), loading: new Set(), pendingHistory: new Set(), ready: true};
+      const nodes = {}; const $ = id => nodes[id] ||= {};
+      const nearBottom = () => true;
+      const renderMessages = () => {}, renderConversationStatus = () => {}, renderLiveMessage = () => {};
+      const renderSessions = () => {}, renderTabs = () => {}, scrollBottom = () => {}, updateJumpButton = () => {};
+      const detailText = value => value;
+      let attempts, calls, errors;
+      const showError = (_id, error) => errors.push(error);
+      const fetch = async (path, options) => {
+        calls.push([path, options.method ?? 'GET']);
+        return attempts.shift()();
+      };
+      const networkError = () => { throw new TypeError('connection reset'); };
+      const bodyError = () => ({ok: true, json: async () => { throw new TypeError('incomplete body'); }});
+      const unauthorized = () => ({ok: false, status: 401, json: async () => ({detail: 'unauthorized'})});
+      const success = () => ({ok: true, json: async () => ({messages: [{content: 'latest'}], total_messages: 1, next_before: 0})});
+      async function run(steps, expectedCalls) {
+        attempts = [...steps]; calls = []; errors = []; state.history.clear();
+        await loadConversation('one', {quiet: true});
+        assert.equal(calls.length, expectedCalls);
+        assert.ok(calls.every(([path, method]) => path === '/api/sessions/one?limit=60' && method === 'GET'));
+      }
+      (async () => {
+        for (const failed of [networkError, bodyError]) {
+          await run([failed, success], 2);
+          assert.equal(errors.length, 0);
+          assert.equal(state.history.get('one').records[0].message.content, 'latest');
+        }
+        await run([unauthorized], 1);
+        assert.equal(errors[0].status, 401);
+        await run([networkError, networkError], 2);
+        assert.equal(errors.length, 1);
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    ''')
+
+
 def test_workspace_shortcuts_ignore_ime_and_keep_command_palette():
     run_js(function("handleWorkspaceShortcut") + '''
       const assert=require('node:assert/strict');const state={ready:true,cleanupPending:false};let newCount=0,focused=0,commands=0,closed=0;

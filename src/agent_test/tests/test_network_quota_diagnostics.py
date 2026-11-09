@@ -25,15 +25,19 @@ def test_lifetime_connection_rejection_is_visible_and_audited(sandbox_env, monke
     monkeypatch.setattr(socket, 'getaddrinfo', lambda *args, **kw: [
         (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', ('198.18.0.11', 443))])
     with NetworkProxy(max_connections=1, max_bytes=4096, timeout=1) as proxy:
-        for _ in range(2):
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(2)
-                client.connect(str(proxy.path))
-                client.sendall(b'CONNECT registry.npmjs.org:443 HTTP/1.1\r\nAuthorization: secret\r\n\r\n')
-                try:
-                    client.recv(1024)
-                except ConnectionResetError:
-                    pass
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2)
+            client.connect(str(proxy.path))
+            client.sendall(b'CONNECT registry.npmjs.org:443 HTTP/1.1\r\nAuthorization: secret\r\n\r\n')
+            try:
+                client.recv(1024)
+            except ConnectionResetError:
+                pass
+        # 连接超额在 accept 后立即拒绝，客户端无须写入请求头。
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as denied:
+            denied.settimeout(2)
+            denied.connect(str(proxy.path))
+            assert denied.recv(1024) == b''
         deadline = time.monotonic() + 2
         while '连接' not in proxy.denial_summary() and time.monotonic() < deadline:
             time.sleep(.01)

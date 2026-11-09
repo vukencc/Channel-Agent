@@ -89,7 +89,6 @@ def main():
         from agent_core import config
         from agent_core.tools.base import TOOL_REGISTRY
         from agent_core.tools import command, environment  # noqa: F401
-        from agent_core.tools.execution_environment import _check_flow_workspace
         from agent_core.tools.sandbox import ToolContext, tool_context
         paths = request.get('paths', {})
         if not isinstance(paths, dict) or not paths.keys() <= {'PROJECT_ROOT', 'AGENT_STATE_DIR', 'AUDIT_LOG'}:
@@ -107,8 +106,6 @@ def main():
             elif type(value) is not type(default):
                 raise ValueError('配置类型无效：' + key)
             setattr(config, key, value)
-        if request.get('flow_workspace_scope', False):
-            _check_flow_workspace(root)
         cancelled = threading.Event()
         deadline = threading.Timer(max(config.COMMAND_TIMEOUT, config.ENVIRONMENT_PREPARE_TIMEOUT)
                                    + 5 * config.CONFIRM_TIMEOUT + 30, cancelled.set)
@@ -176,8 +173,6 @@ def main():
                     condition.wait(remaining)
                 pending.discard(key)
                 allowed = decisions.pop(key, False) and not cancelled.is_set()
-            if allowed and request.get('flow_workspace_scope', False):
-                _check_flow_workspace(root)
             return allowed
 
         with tempfile.TemporaryDirectory(prefix='agent-wsl-audit-') as directory:

@@ -1,5 +1,8 @@
 """文件 CRUD 工具测试：正常流程、路径逃逸、确认通过/拒绝/超时、审计。"""
+import os
 from pathlib import Path
+
+import pytest
 
 from agent_core import config
 from agent_core.tools import sandbox
@@ -34,6 +37,35 @@ def test_create_refuses_to_overwrite(sandbox_env):
 
 def test_update_requires_existing_file(sandbox_env):
     assert "[失败]" in update_file("missing.txt", "x")
+
+
+def test_update_preserves_original_file_identity(sandbox_env):
+    target = sandbox_env / 'identity.txt'
+    target.write_text('long original text', encoding='utf-8')
+    original = target.stat()
+
+    assert '[完成]' in update_file('identity.txt', 'new')
+    assert target.read_text(encoding='utf-8') == 'new'
+    current = target.stat()
+    assert (current.st_dev, current.st_ino) == (original.st_dev, original.st_ino)
+
+
+def test_update_respects_file_write_permission(sandbox_env):
+    target = sandbox_env / 'locked.txt'
+    target.write_text('original', encoding='utf-8')
+    target.chmod(0o444)
+    try:
+        try:
+            with target.open('r+', encoding='utf-8'):
+                pass
+        except PermissionError:
+            pass
+        else:
+            pytest.skip('当前测试账户可以写入只读文件')
+        assert '[完成]' not in update_file('locked.txt', 'changed')
+        assert target.read_text(encoding='utf-8') == 'original'
+    finally:
+        target.chmod(0o600)
 
 
 def test_read_missing_file(sandbox_env):
@@ -89,6 +121,46 @@ def test_symlinked_dir_escape_rejected(sandbox_env, symlink_capable):
     (sandbox_env / "linkdir").symlink_to(outside_dir, target_is_directory=True)
 
     assert "[已拦截]" in read_file("linkdir/f.txt")
+
+
+@pytest.mark.parametrize("action", ["read", "search", "edit", "append", "update", "copy"])
+def test_file_tools_reject_external_hardlink(sandbox_env, action):
+    from agent_core.tools.file_crud import append_file, edit_file
+    from agent_core.tools.file_extras import copy
+
+    outside = sandbox_env.parent / "outside.txt"
+    marker = "synthetic-external-file"
+    outside.write_text(marker, encoding="utf-8")
+    os.link(outside, sandbox_env / "alias.txt")
+    operations = {
+        "read": lambda: read_file("alias.txt"),
+        "search": lambda: read_file("alias.txt", search=marker),
+        "edit": lambda: edit_file("alias.txt", marker, "changed"),
+        "append": lambda: append_file("alias.txt", "changed", len(marker)),
+        "update": lambda: update_file("alias.txt", "changed"),
+        "copy": lambda: copy("alias.txt", "copy.txt"),
+    }
+    result = operations[action]()
+    assert "[已拦截]" in result and "硬链接" in result
+    assert marker not in result
+    assert outside.read_text(encoding="utf-8") == marker
+    assert not (sandbox_env / "copy.txt").exists()
+
+
+def test_update_rejects_hardlink_substituted_during_confirmation(sandbox_env, monkeypatch):
+    outside = sandbox_env.parent / "outside.txt"
+    outside.write_text("before", encoding="utf-8")
+    target = sandbox_env / "target.txt"
+    target.write_text("before", encoding="utf-8")
+
+    def confirm(*_):
+        target.unlink()
+        os.link(outside, target)
+        return True
+
+    monkeypatch.setattr(sandbox, "confirmer", confirm)
+    assert "硬链接" in update_file("target.txt", "changed")
+    assert outside.read_text(encoding="utf-8") == "before"
 
 
 # ------------------------------------------------------------------

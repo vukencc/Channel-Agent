@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 from agent_core import config
 from agent_core.tools.base import register_tool
 from agent_core.tools.sandbox import (SandboxError, ask_permission, audit, cancellation_requested,
-                           check_workspace_quota, execution_environment, resolve_path, sandbox_root, path_scope)
+                           check_workspace_quota, execution_environment, opened_tool_file, resolve_path,
+                           sandbox_root, path_scope)
 
 
 class MkdirArgs(BaseModel):
@@ -115,16 +116,17 @@ def _transfer(action, source, destination, reason):
         else:
             if enforce_quota and usage + identity[2] > config.WORKSPACE_LIMIT_MB * 1024 ** 2:
                 raise SandboxError('复制后将超过 WORKSPACE_LIMIT_MB 配额')
-            descriptor, temporary = tempfile.mkstemp(prefix='.copy-', dir=dst.parent)
-            with os.fdopen(descriptor, 'wb') as output, src.open('rb') as input_stream:
-                copied = 0
-                while chunk := input_stream.read(65536):
-                    copied += len(chunk)
-                    if cancellation_requested() or copied > identity[2]:
-                        raise SandboxError('已取消或复制期间源文件增长')
-                    output.write(chunk)
-                output.flush()
-                os.fsync(output.fileno())
+            with opened_tool_file(source, expected_path=src) as (_, source_fd):
+                descriptor, temporary = tempfile.mkstemp(prefix='.copy-', dir=dst.parent)
+                with os.fdopen(descriptor, 'wb') as output, os.fdopen(os.dup(source_fd), 'rb') as input_stream:
+                    copied = 0
+                    while chunk := input_stream.read(65536):
+                        copied += len(chunk)
+                        if cancellation_requested() or copied > identity[2]:
+                            raise SandboxError('已取消或复制期间源文件增长')
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
             if (_identity(src) != identity or resolve_path(destination, write=True) != dst
                     or cancellation_requested()):
                 raise SandboxError('复制期间源文件或目标路径发生变化')
@@ -132,7 +134,7 @@ def _transfer(action, source, destination, reason):
             os.link(temporary, dst)
         audit('executed', action=action, source=source, destination=destination, reason=reason)
         return f'[完成] {action}: {source} → {destination}'
-    except (OSError, SandboxError) as exc:
+    except (OSError, ValueError, SandboxError) as exc:
         return _failed(action, exc, source=source, destination=destination)
     finally:
         if temporary is not None:

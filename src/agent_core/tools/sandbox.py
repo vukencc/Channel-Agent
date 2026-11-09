@@ -4,6 +4,7 @@
 """
 from contextvars import ContextVar
 from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass
 from threading import Event
 
@@ -18,6 +19,7 @@ from functools import lru_cache
 import time
 
 from agent_core import config
+from agent_core.core.files import opened_path
 from agent_core.core.log import get_logger
 from agent_core.core.audit_writer import append_audit
 
@@ -165,12 +167,35 @@ def resolve_path(user_path: str, *, write: bool = False) -> Path:
     （`..` 上跳与符号链接都会在 resolve() 时展开，因此一并拦住）。
     """
     root, candidate, _ = path_scope(user_path, write=write)
+    return _resolve_scoped_path(root, candidate, user_path)
+
+
+def _resolve_scoped_path(root: Path, candidate: Path, user_path: str) -> Path:
     target = (root / candidate).resolve()   # 展开 .. 与符号链接
 
     if target != root and not target.is_relative_to(root):
         raise SandboxError(f"路径越出沙箱：{user_path}")
 
     return target
+
+
+@contextmanager
+def opened_tool_file(user_path: str, *, write: bool = False,
+                     expected_path: Path | None = None, writable: bool = False) -> Iterator[tuple[Path, int]]:
+    """核验实际文件句柄。writable 另检查系统写权限，且不截断文件。"""
+    root, candidate, _ = path_scope(user_path, write=write or writable)
+    target = _resolve_scoped_path(root, candidate, user_path)
+    if expected_path is not None and target != expected_path:
+        raise SandboxError('确认期间文件路径发生变化')
+    context = _context.get()
+    identity = context.root_identity if context and root == context.root else None
+    # Linux 保留根内符号链接的解析行为，Windows 用原路径检查每个重解析点。
+    requested = root / candidate if os.name == 'nt' else target
+    try:
+        with opened_path(root, requested, expected_identity=identity, writable=writable) as descriptor:
+            yield target, descriptor
+    except PermissionError as exc:
+        raise SandboxError(str(exc)) from exc
 
 
 def truncate(text: str) -> str:

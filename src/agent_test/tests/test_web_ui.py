@@ -71,6 +71,27 @@ def test_api_requires_token_and_rejects_cross_origin_and_host(client):
     assert client.get('/api/meta').status_code == 200
 
 
+def test_web_snapshot_reuses_verified_default_workspace_binding(client, monkeypatch):
+    identifiers = [new_session(client) for _ in range(3)]
+    store = client.app.state.manager.store
+    directory = store.directory
+    checked = []
+
+    def track_directory(identifier):
+        checked.append(identifier)
+        return directory(identifier)
+
+    monkeypatch.setattr(store, 'directory', track_directory)
+    response = client.get('/api/sessions')
+    assert response.status_code == 200
+    sessions = {row['id']: row for row in response.json()['sessions']}
+    assert set(sessions) == set(identifiers)
+    for identifier, row in sessions.items():
+        assert row['workspace_path'] == str(store.workspace_root / identifier)
+        assert row['workspace_can_change'] and not row['workspace_error']
+    assert checked == identifiers
+
+
 def test_web_session_chat_rename_settings_and_page_history(client):
     identifier = new_session(client)
     assert client.patch('/api/sessions/' + identifier, json={
@@ -139,6 +160,22 @@ def test_web_explorer_rejects_symlink_escape_and_hides_session_state(client, tmp
     assert client.get(f'/api/sessions/{identifier}/file?path=linked.txt').status_code == 403
     assert client.get(f'/api/sessions/{identifier}/files?path=../../state').status_code == 403
     assert client.get(f'/api/sessions/{identifier}/file?path=/etc/passwd').status_code == 403
+
+
+def test_workspace_previews_reject_external_hardlink(client, tmp_path):
+    from agent_frontend.desktop.files import preview
+
+    identifier = new_session(client)
+    manager = client.app.state.manager
+    workspace = manager.workspace(manager.sessions[identifier])
+    outside = tmp_path / 'outside.txt'
+    marker = 'synthetic-preview-boundary'
+    outside.write_text(marker, encoding='utf-8')
+    os.link(outside, workspace / 'alias.txt')
+    response = client.get(f'/api/sessions/{identifier}/file?path=alias.txt')
+    assert response.status_code == 403 and marker not in response.text
+    with pytest.raises(PermissionError, match='硬链接'):
+        preview(workspace, 'alias.txt', directory=False)
 
 
 def test_web_meta_does_not_return_credentials_or_model_parameters(client, monkeypatch):

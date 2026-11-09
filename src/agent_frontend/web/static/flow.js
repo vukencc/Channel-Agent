@@ -66,6 +66,29 @@ function flowCancelConnectionOnEscape(event, cancel) {
   if (event.key !== "Escape" || !cancel) return false;
   event.preventDefault(); cancel(); return true;
 }
+function flowContractDraft(text) {
+  if (!text.trim()) return null;
+  try {
+    const value = JSON.parse(text);
+    const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+    const types = ["string", "integer", "number", "boolean", "object", "array", "null"];
+    const matches = (v, type) => type === "null" ? v === null : type === "integer" ? Number.isSafeInteger(v) : typeof v === type;
+    const invalidUnicode = (s) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+    if (!object(value) || Object.keys(value).some((key) => key !== "fields") || !object(value.fields)) return text;
+    const entries = Object.entries(value.fields);
+    if (!entries.length || entries.length > 32) return text;
+    for (const [key, spec] of entries) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) || !object(spec) || Object.keys(spec).some((k) => k !== "type" && k !== "enum") || !types.includes(spec.type)) return text;
+      if (spec.enum != null && (!Array.isArray(spec.enum) || !spec.enum.length || spec.enum.length > 32 || ["number", "object", "array"].includes(spec.type) || spec.enum.some((item) => !matches(item, spec.type) || (typeof item === "string" && ([...item].length > 256 || invalidUnicode(item)))))) return text;
+    }
+    if (JSON.stringify(value).replace(/[^\x00-\x7f]/g, "\\u0000").length > 8192) return text;
+    return value;
+  } catch (_) {}
+  return text;
+}
+function flowContractInvalid(flow) {
+  return (flow.nodes || []).some((node) => typeof node.handoff_contract === "string");
+}
 function flowDefinition(flow) {
   const { id, title, project_id, workspace_path, handoff, execution_environment, permission_policy, model_profile, nodes, edges, revision } = flow;
   return structuredClone({ id, title, ...(project_id !== undefined ? {project_id} : {}), workspace_path, handoff, execution_environment, permission_policy, model_profile, nodes, edges, revision });
@@ -93,7 +116,7 @@ function flowDesignerTrim(history) {
   }
   return rows;
 }
-if (typeof module !== "undefined" && module.exports) module.exports = { flowCanConnect, flowProjectInfo, flowCanvasBounds, flowExpandDragCanvas, flowCancelConnectionOnEscape, flowDefinition, flowMergeProject, flowDisplayTitle, flowDesignerReply, flowDesignerTrim };
+if (typeof module !== "undefined" && module.exports) module.exports = { flowCanConnect, flowProjectInfo, flowCanvasBounds, flowExpandDragCanvas, flowCancelConnectionOnEscape, flowContractDraft, flowContractInvalid, flowDefinition, flowMergeProject, flowDisplayTitle, flowDesignerReply, flowDesignerTrim };
 if (typeof window !== "undefined") (() => {
   let bridge, active = null, selected = null, selectedEdge = null, generation = 0, revision = -1, epoch = null;
   let cancelConnection = null, cancelNodeDrag = null;
@@ -202,6 +225,7 @@ if (typeof window !== "undefined") (() => {
   async function perform(kind) {
     const id = active, f = current(); if (!f || pending) return;
     if ((kind === "run" || kind === "queue") && !f.project_id) return;
+    if ((kind === "save" || kind === "run") && flowContractInvalid(f)) { error("结构化交接契约无效，请修正或清空后重试。"); return; }
     const inputText = runInputs.get(id) || "";
     if (kind === "delete" && !window.confirm("删除此 Flow？项目文件与节点会话会保留。")) return;
     const requestedEpoch = epoch;
@@ -219,6 +243,7 @@ if (typeof window !== "undefined") (() => {
       if (kind === "run") result = await bridge.api(path(id, "/run"), { method: "POST", body: { definition: flowDefinition(f), input_text: inputText } });
       if (kind === "queue") result = await bridge.api(path(id, "/run"), { method: "POST", body: { input_text: inputText, queue_only: true } });
       if (kind === "cancel") result = await bridge.api(path(id, "/cancel"), { method: "POST", body: {} });
+      if (kind === "retry-completion") result = await bridge.api(path(id, "/retry-completion"), { method: "POST", body: {} });
       if (kind === "delete") {
         await bridge.api(f.project_id ? `/api/projects/${encodeURIComponent(f.project_id)}` : path(id), { method: "DELETE", body: { confirm: true } });
         if (requestedEpoch !== epoch) throw new Error("服务已重启，请刷新后重试。");
@@ -226,7 +251,7 @@ if (typeof window !== "undefined") (() => {
         if (active === id) { hide(); $("welcome").hidden = false; }
       } else {
         if (requestedEpoch !== epoch) throw new Error("服务已重启，请核对草稿后重试。");
-        if (kind === "queue") { f.run = result.run; f.pending_runs = result.pending_runs; }
+        if (kind === "queue" || kind === "retry-completion") { f.run = result.run; f.pending_runs = result.pending_runs; }
         else drafts.set(id, result);
         if (kind === "run" || kind === "queue") runInputs.delete(id);
         if (kind === "save" || kind === "run") dirty.delete(id);
@@ -288,6 +313,8 @@ if (typeof window !== "undefined") (() => {
         if (f.run?.input_text) body.append(el("h4", "", "本次补充信息"), el("pre", "flow-result", f.run.input_text));
         if (result) {
           [["状态", "status"], ["项目目录", "workspace_path"], ["输入交接", "received_handoff"], ["输出交接", "output_handoff"], ["错误", "error"]].forEach(([label, key]) => { body.append(el("h4", "", label), el("pre", "flow-result", String(result[key] || "—"))); });
+          const validation = result.handoff_validation;
+          if (validation || node.handoff_contract) body.append(el("h4", "", "结构化格式校验"), el("pre", "flow-result", !validation ? "尚未校验" : validation.status === "passed" ? "格式校验通过（不代表业务验收通过）" : `校验失败：${validation.message || "格式不符合契约"}`));
           if (result.session_id) body.append(button("打开节点会话", () => bridge.selectSession(result.session_id)));
         } else body.append(el("p", "field-hint", "选择节点后查看运行详情。"));
         return;
@@ -305,6 +332,12 @@ if (typeof window !== "undefined") (() => {
       }
       inputField(body, "模型", mode === "flow" && f.project_id ? f.project : target, "model_profile", { project: mode === "flow" && Boolean(f.project_id), nullable: true, select: models });
       if (mode === "node") {
+        const contractWrap = el("div", "flow-field"), contractLabel = el("label", "", "结构化交接契约（可选）"), contract = document.createElement("textarea"), contractHint = el("p", "field-hint", '留空不配置。例：{"fields":{"answer":{"type":"string"}}}；所有字段必填，不允许额外字段。number 不支持枚举；integer 枚举限安全整数，字符串须为有效 Unicode。'), contractError = el("p", "inline-error");
+        contract.setAttribute("aria-label", "结构化交接契约（可选）"); contract.dataset.flowField = "handoff_contract"; contract.dataset.flowScope = "node"; contract.disabled = locked();
+        contract.value = typeof node.handoff_contract === "string" ? node.handoff_contract : node.handoff_contract == null ? "" : JSON.stringify(node.handoff_contract, null, 2);
+        const updateContractError = () => { contractError.hidden = typeof node.handoff_contract !== "string"; contractError.textContent = contractError.hidden ? "" : "契约无效，请修正或清空。"; };
+        updateContractError(); contract.addEventListener("input", () => { node.handoff_contract = flowContractDraft(contract.value); updateContractError(); mark(); });
+        contractLabel.append(contract); contractWrap.append(contractLabel, contractHint, contractError); body.append(contractWrap);
         const reuseLabel = el("label", "flow-tool-choice"), reuse = document.createElement("input"); reuse.type = "checkbox"; reuse.checked = Boolean(node.reuse_session); reuse.disabled = locked(); reuseLabel.append(reuse, document.createTextNode("复用会话")); body.append(reuseLabel);
         reuse.addEventListener("change", () => { node.reuse_session = reuse.checked; mark(); });
         inputField(body, "思考模式", node, "thinking_mode", { node: true, nullable: true, select: [["", "继承默认"], ...catalog.thinking_modes.map((v) => [v, v])] });
@@ -345,8 +378,10 @@ if (typeof window !== "undefined") (() => {
     root.replaceChildren();
     const header = el("header", "flow-header"), title = el("h1"); title.id = "flow-title";
     const actions = el("div", "flow-actions");
-    [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : "运行", () => perform(running(f) ? "cancel" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = label === "运行" || label === "停止"; const b = button(label, fn, isRun ? "button primary" : "button subtle"); b.disabled = pending || (running(f) && !isRun); actions.append(b); });
+    const retryCompletion = f.run?.status === "persistence_failed";
+    [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : retryCompletion ? "重试保存" : "运行", () => perform(running(f) ? "cancel" : retryCompletion ? "retry-completion" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = ["运行", "停止", "重试保存"].includes(label); const b = button(label, fn, isRun ? "button primary" : "button subtle"); b.disabled = pending || (running(f) && !isRun); actions.append(b); });
     header.append(title, actions);
+    if (retryCompletion) header.append(el("p", "inline-error", "完成状态保存失败，请检查存储后重试保存；节点不会重跑。"));
     const runInputRow = el("div", "flow-run-input");
     if (f.project_id) {
       const input = document.createElement("textarea"); input.rows = 1; input.maxLength = 16000; input.placeholder = "本次运行补充信息（可选）"; input.setAttribute("aria-label", "本次运行补充信息（可选）"); input.dataset.flowField = "run_input"; input.dataset.flowScope = "run"; input.value = runInputs.get(active) || ""; input.disabled = pending; input.addEventListener("input", () => runInputs.set(active, input.value)); runInputRow.append(input);
@@ -479,6 +514,7 @@ if (typeof window !== "undefined") (() => {
     dialog.request = 0; dialog.showModal(); load(input.value);
   }
   async function exportDraft() {
+    if (flowContractInvalid(current())) { error("结构化交接契约无效，请修正或清空后重试。"); return; }
     try {
       const data = await bridge.api("/api/flows/export", { method: "POST", body: { definition: flowDefinition(current()) } });
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));

@@ -79,7 +79,9 @@
       response = await fetch(path, { ...options, headers, credentials: "omit", cache: "no-store" });
     } catch (error) {
       if (error.name === "AbortError") throw error;
-      throw new Error("无法连接本地服务。请确认启动终端仍在运行。");
+      const failure = new Error("无法连接本地服务。请确认启动终端仍在运行。");
+      failure.transport = true;
+      throw failure;
     }
     if (!response.ok) {
       let detail = "";
@@ -542,7 +544,14 @@
     const atBottom = nearBottom();
     try {
       const query = new URLSearchParams({ limit: "60" }); if (before !== null) query.set("before", String(before));
-      const data = await jsonApi(sessionPath(id, `?${query}`));
+      const path = sessionPath(id, `?${query}`);
+      let data;
+      try { data = await jsonApi(path); }
+      catch (error) {
+        // 连接断开后只重读一次详情。HTTP 错误和已取消的请求保留原行为。
+        if ((!error.transport && !(error instanceof TypeError)) || !state.sessions.has(id)) throw error;
+        data = await jsonApi(path);
+      }
       if (!state.sessions.has(id)) return;
       const current = state.sessions.get(id), mergedSession = { ...current, ...data };
       if (current.plan && (!data.plan || current.plan.revision > data.plan.revision ||

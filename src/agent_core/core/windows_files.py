@@ -56,9 +56,10 @@ def _validate(path: Path) -> None:
             raise PermissionError('路径分量无效')
 
 
-def _open(path: Path, *, directory: bool) -> tuple[int, tuple[int, int]]:
+def _open(path: Path, *, directory: bool, writable: bool = False) -> tuple[int, tuple[int, int]]:
     # 不允许删除共享，防止已验证的路径分量被替换。
-    handle = _create(str(path), 0x80000000, 0x1 | 0x2, None, 3,
+    access = 0x80000000 | (0x40000000 if writable else 0)
+    handle = _create(str(path), access, 0x1 | 0x2, None, 3,
                      0x00200000 | 0x02000000, None)
     if handle == _INVALID:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -70,6 +71,9 @@ def _open(path: Path, *, directory: bool) -> tuple[int, tuple[int, int]]:
     if info.attributes & 0x400 or bool(info.attributes & 0x10) != directory:
         _close(handle)
         raise PermissionError('路径权限或类型已发生变化，拒绝预览')
+    if not directory and info.links != 1:
+        _close(handle)
+        raise PermissionError('无法确认硬链接全部位于授权目录，拒绝打开文件')
     try:
         return handle, _identity(handle)
     except BaseException:
@@ -78,7 +82,7 @@ def _open(path: Path, *, directory: bool) -> tuple[int, tuple[int, int]]:
 
 
 @contextmanager
-def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None):
+def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None, writable: bool = False):
     root, target = Path(root), Path(target)
     _validate(root)
     _validate(target)
@@ -100,13 +104,15 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
             raise PermissionError('工作区目录身份已变化，拒绝预览')
         for index, part in enumerate(parts):
             current /= part
-            handle, _ = _open(current, directory=directory or index < len(parts) - 1)
+            is_directory = directory or index < len(parts) - 1
+            handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory)
             handles.append(handle)
         if not parts and not directory:
             raise ValueError('只支持普通文本文件或目录预览')
         handle = handles.pop()
         try:
-            fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+            access = os.O_RDWR if writable and not directory else os.O_RDONLY
+            fd = msvcrt.open_osfhandle(handle, access | os.O_BINARY)
         except BaseException:
             _close(handle)
             raise

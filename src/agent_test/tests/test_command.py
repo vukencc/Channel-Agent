@@ -1,5 +1,6 @@
 """Real isolated commands, confirmation, host boundaries and process cleanup."""
 import json
+import os
 import shutil
 
 
@@ -64,6 +65,29 @@ def test_system_files_readonly(sandbox_env):
     result = run_command("sh -c 'touch /usr/sandbox-write-probe'")
     assert '[退出码] 0' not in result
     assert 'Read-only' in result
+
+
+def test_sandbox_command_rejects_external_hardlink_added_during_confirmation(sandbox_env, monkeypatch):
+    outside = sandbox_env.parent / 'outside.txt'
+    outside.write_text('synthetic-command-boundary', encoding='utf-8')
+
+    def confirm(*_):
+        os.link(outside, sandbox_env / 'alias.txt')
+        return True
+
+    monkeypatch.setattr(sandbox, 'confirmer', confirm)
+    result = run_command('cat alias.txt; printf changed > alias.txt')
+    assert '[已拦截]' in result and '硬链接' in result
+    assert 'synthetic-command-boundary' not in result
+    assert outside.read_text(encoding='utf-8') == 'synthetic-command-boundary'
+
+
+def test_sandbox_command_allows_hardlinks_contained_in_workspace(sandbox_env):
+    original = sandbox_env / 'original.txt'
+    original.write_text('contained', encoding='utf-8')
+    os.link(original, sandbox_env / 'alias.txt')
+    result = run_command('cat alias.txt')
+    assert '[退出码] 0' in result and 'contained' in result
 
 
 def test_missing_isolation_never_runs_host_command(sandbox_env, monkeypatch):
