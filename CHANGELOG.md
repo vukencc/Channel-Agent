@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-10
+
+### Added
+
+- 桌面和 Web 新增只读 Working 视图，展示进行中的 Flow 实例、节点运行状态、模型、任务和子 Agent；运行结束后可在 Flow 运行详情查看结果。复用会话的子 Agent 按运行 ID 隔离，任务摘录经过脱敏。详见 [Agent Flow](docs/agent-flow.md#working-运行视图)。
+
+### Fixed
+
+- Working 显示排队、等待确认及取消排空的实际状态。子 Agent 的阶段与模型绑定委派轮次，自动标题先脱敏再截断。
+- Web Working 标记失效快照，连接超时或重新打开后会获取新数据。
+
 ## [0.4.0] - 2026-11-09
 
 ### Added

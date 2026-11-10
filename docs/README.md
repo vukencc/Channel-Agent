@@ -47,6 +47,7 @@
 
 以下记录保留当时的执行和问题，不代表当前质量或性能。
 
+- [客服反馈分流与 Working 实测](agent-flow-working-validation-2026-11-10.md)：真实模型委派、运行耗时、桌面与 Web 检查及状态显示修复。
 - [Agent Flow 验证记录](agent-flow-validation.md)：多流程测试、修复与验证边界。
 - [Web Flow 画布与三个 Agent 验证](agent-flow-canvas-validation-2026-10-31.md)：实时拖线、节点裁剪、测试计划、实际步骤与真实模型执行问题。
 - [五 Agent 设备借用业务验证](agent-flow-equipment-validation-2026-10-31.md)：可复用的真实应用场景、分工、完整验收与执行记录。

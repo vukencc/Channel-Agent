@@ -27,7 +27,7 @@ from agent_core.core.flow_handoff import HandoffContract
 STATUS_LABELS = {
     'pending': '待运行', 'queued': '排队中', 'running': '运行中', 'completed': '已完成',
     'failed': '失败', 'cancelled': '已取消', 'cancelling': '正在取消', 'interrupted': '已中断',
-    'confirming': '等待确认', 'idle': '空闲', 'checkpoint': '检查点',
+    'confirming': '等待确认', 'stopping': '正在停止', 'idle': '空闲', 'checkpoint': '检查点',
     'persistence_failed': '完成状态保存失败，请检查存储后重试保存；节点不会重跑。',
 }
 

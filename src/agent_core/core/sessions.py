@@ -56,6 +56,7 @@ class Session:
     forking: bool = False
     deleting: bool = False
     tool_workers: set = field(default_factory=set)
+    flow_task_ids: list[str] = field(default_factory=list)
 
     @property
     def id(self):
@@ -342,7 +343,8 @@ class SessionManager:
             # 完成回调可追加后继保存；让它们运行后再检查，避免漏等或忙等。
             await asyncio.sleep(0)
 
-    def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None):
+    def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
+               completion_error: asyncio.Future[str] | None = None):
         if self.sessions.get(session.id) is not session:
             raise ValueError('会话已删除，不能继续执行')
         if self.closing or self.maintenance:
@@ -376,14 +378,14 @@ class SessionManager:
             self.observer.event('turn.started', session_id=session.id,
                 turn_id=session.record['last_run']['turn_id'],
                 parent_session_id=session.record.get('delegated_from'), state='queued')
-        session.task = asyncio.create_task(self._run_submitted(session, queued_save))
+        session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error))
 
         def finish(task: asyncio.Task) -> None:
             if task is session.task and task.cancelled() and session.turn_active:
                 # 直接取消未启动的任务时，由同一轮继续排空保存。
                 session.cancelled.set()
                 session.record['status'] = 'stopping'
-                session.task = asyncio.create_task(self._run_submitted(session, queued_save))
+                session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error))
                 session.task.add_done_callback(finish)
             self.notify()
 
@@ -1001,7 +1003,8 @@ class SessionManager:
         self.save(session)
 
     @traced('agent.run')
-    async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None]) -> None:
+    async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None],
+                             completion_error: asyncio.Future[str] | None = None) -> None:
         input_committed = False
         try:
             # 已提交的 queued 快照包含本轮输入。先验证写入结果，再允许任何模型调用或工具副作用。
@@ -1024,6 +1027,8 @@ class SessionManager:
                 session.record['last_run']['stop_reason'] = 'persistence_failed'
             session.record.update(status='error', error=error)
         await self._finish_turn(session)
+        if completion_error is not None and not completion_error.done():
+            completion_error.set_result(session.record.get('error', ''))
 
     async def _run_with_budget(self, session):
         from agent_core.core.images import image_scope

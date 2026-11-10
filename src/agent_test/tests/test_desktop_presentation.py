@@ -96,6 +96,7 @@ def test_composer_and_parameter_editor_paste_plain_text(presentation_app):
 
 class PresentationBridge(QObject):
     state_changed = Signal(str)
+    working_changed = Signal(str)
     error = Signal(str)
     finished = Signal(str, str)
     stopped = Signal()
