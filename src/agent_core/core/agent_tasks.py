@@ -134,7 +134,8 @@ class AgentTasks:
                     return
                 record['status'] = 'running'
                 await self._save(identifier)
-                self.manager.submit(child, record['task'])
+                completion_error = asyncio.get_running_loop().create_future()
+                self.manager.submit(child, record['task'], completion_error=completion_error)
                 # 会话可接收独立后续输入，委派的模型与阶段只归属这次提交。
                 turn = child.record['last_run']
                 record['turn_id'] = turn['turn_id']
@@ -142,7 +143,8 @@ class AgentTasks:
                 self.manager.observer.event('agent.started', session_id=child.id,
                     parent_session_id=record['owner'], task_id=identifier,
                     turn_id=child.record.get('last_run', {}).get('turn_id'), state='running')
-                record['error'] = await asyncio.shield(child.task)
+                await asyncio.shield(child.task)
+                record['error'] = completion_error.result()
                 status = turn['status']
                 record['status'] = 'completed' if status == 'idle' else status
                 messages = child.record['messages'][message_start:]
