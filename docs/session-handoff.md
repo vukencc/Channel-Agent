@@ -6,6 +6,10 @@
 
 ## 当前工作与 Git
 
+- 2026-11-10，0.4.1 的客服验证使用原六条合成反馈和五节点流程。完整一轮 151.174 秒，五份交接通过，29/29 模型请求成功，两个真实子 Agent 的模型请求重叠 4.631 秒。整轮业务检查 52/53，服务节点定向复验 20/20。修复了 Working 的审批、停止状态、委派轮次隔离、标题脱敏与 Web 刷新恢复。[实测报告](agent-flow-working-validation-2026-11-10.md)。
+
+- 2026-11-10，桌面与 Web 新增只读 Working 区，显示当前 Flow 实例和本轮节点、模型、任务及子 Agent。按运行 ID 隔离复用会话的历史，摘录前脱敏。运行详情仍在原 Flow 查看。[使用指南](agent-flow.md#working-运行视图)。Linux 非集成回归 1946 passed、38 skipped、5 deselected，Windows 原生专项 24 passed。Chromium 检查 1440px 与 416px，Qt 使用离屏测试，两端都通过受控运行验证刷新与选择。
+
 - 2026-11-09，本轮发布版本为 0.4.0。Qt 与 Web 节点可选结构化交接契约，Core 在会话与工具排空后验收本轮最终 JSON，失败阻断下游并保留暂停队列。三项真实模型角色用例在配置后全部通过，格式验收 7/7。未配置对照仍有两个交接夹带正文。模型格式、岗位语义及文件权限独立计分。 [使用指南](agent-flow.md) · [正式资产](https://github.com/vukencc/Channel-Agent/releases/tag/v0.4.0)
 - Windows 退出回归可复现旧计时器在窗口出现前触发，现等待窗口显示后发关闭请求。保留原 20 秒与退出断言，记录导入、就绪、关闭、线程排空和退出。Windows 两种专项各通过 5 轮，历史单次超时的具体阶段缺少记录。更新的原系统报告和 TODO 仍在本地 .cache/reports/system-review-20261109-tTp5vr/，新证据在 .cache/reports/f03-f05-9ald4n7x/ 和 .cache/reports/f03-f05-desktop-J95pTskU/。
 

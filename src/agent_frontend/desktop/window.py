@@ -7,7 +7,7 @@ import sys
 from pathlib import PurePath
 from typing import Any
 
-from PySide6.QtCore import QByteArray, QSize, Qt, Signal
+from PySide6.QtCore import QByteArray, QSize, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeyEvent, QKeySequence, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from .presentation import message_html
 from .runtime import RuntimeBridge
 from .flow import FlowPanel
+from .working import WorkingPanel
 from .project_dialog import ProjectDialog
 from .theme import ChoiceBox, ElidingLabel, SessionDelegate, STYLE, icon
 
@@ -282,6 +283,7 @@ class MainWindow(QMainWindow):
         self._older_requested = False
         self._preview_path = '.'
         self._compact_sidebar = False
+        self._working_open = False
         self._pending_close_drafts: dict[str, dict] | None = None
         self._close_save_phase = None
         self.project_dialog: ProjectDialog | None = None
@@ -292,6 +294,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLE)
         self._build()
         self.bridge.state_changed.connect(self._receive_state)
+        self.bridge.working_changed.connect(self._receive_working)
         self.bridge.error.connect(self._show_error)
         self.bridge.finished.connect(self._finished)
         self.bridge.stopped.connect(self._stopped)
@@ -329,6 +332,10 @@ class MainWindow(QMainWindow):
         self.new_button.setToolTip('选择 Agent / Flow 模式 · Ctrl+N')
         self.new_button.clicked.connect(self._new_session)
         left.addWidget(self.new_button)
+        self.working_button = QPushButton('Working · 运行中')
+        self.working_button.setObjectName('quiet')
+        self.working_button.clicked.connect(self._open_working)
+        left.addWidget(self.working_button)
         self.search = QLineEdit()
         self.search.setObjectName('search')
         self.search.setPlaceholderText('搜索会话')
@@ -392,6 +399,10 @@ class MainWindow(QMainWindow):
         toolbar.setContentsMargins(18, 16, 20, 15)
         toolbar.setSpacing(10)
         toolbar.addWidget(self._icon_button('menu', '显示 / 隐藏会话栏 · Ctrl+B', self._toggle_sidebar))
+        working_shortcut = QPushButton('Working')
+        working_shortcut.setObjectName('quiet')
+        working_shortcut.clicked.connect(self._open_working)
+        toolbar.addWidget(working_shortcut)
         heading = QVBoxLayout()
         heading.setSpacing(5)
         self.title_label = ElidingLabel('正在打开会话…')
@@ -433,6 +444,8 @@ class MainWindow(QMainWindow):
         self.flow_panel.designer_button.toggled.connect(self._designer_toggled)
         flow_layout.addWidget(self.flow_panel, 1)
         self.workspace_stack.addWidget(self.flow_page)
+        self.working_panel = WorkingPanel()
+        self.workspace_stack.addWidget(self.working_panel)
         self.error_label = QLabel()
         self.error_label.setObjectName('error')
         self.error_label.setWordWrap(True)
@@ -656,7 +669,7 @@ class MainWindow(QMainWindow):
         current_flow = state.get('selected_flow')
         self.flow_panel.set_flow(current_flow, state.get('models', []))
         self.flow_panel.set_tool_catalog(state.get('flow_tools', {}))
-        self.workspace_stack.setCurrentWidget(self.flow_page if current_flow or getattr(self, '_designer_open', False) else self.agent_page)
+        self.workspace_stack.setCurrentWidget(self.working_panel if self._working_open else (self.flow_page if current_flow or getattr(self, '_designer_open', False) else self.agent_page))
         if selected:
             self.title_label.setText(selected['title'])
             self.title_label.setToolTip(html.escape(selected['title']))
@@ -701,6 +714,11 @@ class MainWindow(QMainWindow):
             flow_status = (current_flow.get('run') or {}).get('status', 'idle')
             self.status_chip.setText({'completed': '已完成', 'failed': '失败', 'cancelling': '停止中',
                                       'running': '运行中', 'queued': '排队中', 'cancelled': '已停止'}.get(flow_status, 'Flow'))
+        if self._working_open:
+            self.title_label.setText('Working')
+            self.workspace_label.setText('运行中的 Flow')
+            self.status_chip.setText('只读')
+            self.activity_dock.hide()
         runtime = state['runtime']
         self.statusBar().showMessage(f"{len(state['sessions'])} 个 Agent  ·  {runtime['active_agents']} 个任务运行  ·  {runtime['active_model_calls']} 个模型请求  ·  {len(runtime['active_tools'])} 个工具执行")
         if state.get('load_errors'):
@@ -769,6 +787,7 @@ class MainWindow(QMainWindow):
             item.setHidden(query not in item.text().casefold() and query not in item.data(Qt.ItemDataRole.UserRole))
 
     def _select_item(self, item: QListWidgetItem) -> None:
+        self._leave_working()
         self._designer_open = False
         self.flow_panel.designer.cancel()
         self.bridge.request('select', session_id=item.data(Qt.ItemDataRole.UserRole))
@@ -858,9 +877,14 @@ class MainWindow(QMainWindow):
             self.delete_button.setText('删除当前会话')
         self.activity_button.setEnabled(bool(session) and not current_flow)
         self.files_button.setEnabled(bool(session) and not current_flow)
+        if self._working_open:
+            self.settings_button.setEnabled(False)
+            self.activity_button.setEnabled(False)
+            self.files_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
 
     def _send(self) -> None:
-        if not self.send_button.isEnabled() or not self.current_session:
+        if self._working_open or not self.send_button.isEnabled() or not self.current_session:
             return
         text = self.composer.toPlainText()
         self._pending_send = (self.current_session['id'], text)
@@ -927,6 +951,8 @@ class MainWindow(QMainWindow):
             self._update_buttons()
 
     def _cancel(self) -> None:
+        if self._working_open:
+            return
         flow = self.state.get('selected_flow') if self.state else None
         if flow:
             self.bridge.request('flow_cancel', flow_id=flow['id'])
@@ -943,6 +969,7 @@ class MainWindow(QMainWindow):
         dialog = ProjectDialog(self, mode=mode, templates=[row for row in self.state.get('flows', []) if not row.get('project_id')])
         self.project_dialog = dialog
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._leave_working()
             payload = dict(dialog.result_payload)
             flow = payload.pop('mode') == 'flow'
             if not flow:
@@ -952,7 +979,32 @@ class MainWindow(QMainWindow):
         self.project_dialog = None
         dialog.deleteLater()
 
+    def _open_working(self) -> None:
+        self._working_open = True
+        self.bridge.request('working_visible', visible=True)
+        self.workspace_stack.setCurrentWidget(self.working_panel)
+        self.title_label.setText('Working')
+        self.workspace_label.setText('运行中的 Flow')
+        self.status_chip.setText('只读')
+        self.activity_dock.hide()
+        self._update_buttons()
+        if self.width() < 760:
+            self.sidebar.hide()
+
+    @Slot(str)
+    def _receive_working(self, payload: str) -> None:
+        if self._working_open:
+            self.working_panel.set_runs(json.loads(payload))
+
+    def _leave_working(self) -> None:
+        if self._working_open:
+            self._working_open = False
+            self.bridge.request('working_visible', visible=False)
+            if self.state.get('runtime'):
+                self._receive_state(json.dumps(self.state))
+
     def _select_flow_item(self, item) -> None:
+        self._leave_working()
         self._designer_open = False
         self.flow_panel.designer.cancel()
         kind, identifier = item.data(Qt.ItemDataRole.UserRole)
@@ -964,9 +1016,11 @@ class MainWindow(QMainWindow):
     def _new_flow_template(self) -> None:
         title, accepted = QInputDialog.getText(self, '新建 Flow 模板', '模板名称')
         if accepted and title.strip():
+            self._leave_working()
             self.bridge.request('flow_create', title=title.strip())
 
     def _open_flow_designer(self) -> None:
+        self._leave_working()
         self._designer_open = True
         self.workspace_stack.setCurrentWidget(self.flow_page)
         self.flow_panel.designer_button.setChecked(True)

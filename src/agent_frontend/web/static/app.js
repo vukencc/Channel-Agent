@@ -322,7 +322,7 @@
       showError("connection-error", null); applySnapshot(snapshot);
       const remembered = sessionStorage.getItem("agent-workspace-session");
       const initial = state.sessions.has(remembered) ? remembered : state.sessions.keys().next().value;
-      if (!window.FlowUI?.isActive?.()) { if (initial) selectSession(initial); else showWelcome(); }
+      if (!window.FlowUI?.isActive?.() && !window.WorkingUI?.isActive?.()) { if (initial) selectSession(initial); else showWelcome(); }
       startEvents(); refreshTasks(true);
       // Model labels are supplementary; a library failure must not delay chat.
       loadModels().then(() => { if (state.activeId) renderConversationStatus(); if ($("settings-dialog").open) fillSelect("settings-model", state.meta.models, $("settings-model").value, "model"); }).catch(() => {});
@@ -409,6 +409,7 @@
   function applySnapshot(snapshot, { flowAuthoritative = false } = {}) {
     if (!snapshot || !Array.isArray(snapshot.sessions)) return;
     window.FlowUI?.snapshot(snapshot, { authoritative: flowAuthoritative });
+    window.WorkingUI?.snapshot(snapshot);
     state.snapshotVersion++;
     const oldActive = selectedSession();
     const incoming = new Map(snapshot.sessions.filter((session) => !state.deletedIds.has(session.id)).map((session) => {
@@ -509,7 +510,7 @@
   }
   function saveDraft() { if (state.activeId) state.drafts.set(state.activeId, $("message-input").value); }
   function showWelcome() {
-    window.FlowUI?.hide();
+    window.FlowUI?.hide(); window.WorkingUI?.hide();
     if ($("quick-dialog").open) $("quick-dialog").close();
     state.activeId = null; renderArchiveLink(); state.selectionGeneration++; state.planHydrationKey = null; $("welcome").hidden = false; $("conversation").hidden = true;
     sessionStorage.removeItem("agent-workspace-session"); renderSessions(); renderTabs(); renderRuntime();
@@ -517,7 +518,7 @@
   }
   function selectSession(id) {
     if (!state.sessions.has(id)) return;
-    window.FlowUI?.hide();
+    window.FlowUI?.hide(); window.WorkingUI?.hide();
     if (id === state.activeId) { $("sidebar").classList.remove("mobile-open"); return; }
     if ($("quick-dialog").open) $("quick-dialog").close();
     saveDraft(); state.activeId = id; state.selectionGeneration++; state.planHydrationKey = null;
@@ -1453,7 +1454,8 @@
   $("flow-create").addEventListener("click", async () => { const title = window.prompt("Flow 模板名称", "新建 Flow"); if (!title?.trim()) return; try { const flow = await jsonApi("/api/flows", {method: "POST", body: {title: title.trim()}}); window.FlowUI.openCreated(flow); } catch (error) { toast(errorText(error), "error"); } });
   $("new-mode").addEventListener("change", updateNewMode);
   $("new-browse").addEventListener("click", () => window.FlowUI.pickDirectory({ input: $("new-project-path"), valid: () => $("new-dialog").open }));
-  window.FlowUI.init({ api: jsonApi, platform: () => state.meta.platform || "linux", models: () => normalizeOptions(state.meta.models, "model"), selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
+  window.WorkingUI.init({ api: jsonApi, enter: () => { window.FlowUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); } });
+  window.FlowUI.init({ api: jsonApi, platform: () => state.meta.platform || "linux", models: () => normalizeOptions(state.meta.models, "model"), selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { window.WorkingUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
   $("refresh-sessions").addEventListener("click", refreshSessions); $("session-search").addEventListener("input", renderSessions);
   $("composer-form").addEventListener("submit", sendMessage); $("stop-agent").addEventListener("click", () => stopSession());
   $("message-input").addEventListener("input", () => { saveDraft(); resizeInput(); renderComposer(); state.slashIndex = 0; renderSlash(); });

@@ -1,4 +1,6 @@
 """持久化有向工作流；项目预约与会话管理器共用。"""
+from __future__ import annotations
+
 import asyncio
 import copy
 import hashlib
@@ -6,6 +8,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from agent_core.core.files import opened_path, fsync_directory
 from agent_core.core.flow_handoff import HandoffContract, validate_handoff
+from agent_core.core.flow_working import working_runs
 from agent_core.core.log import get_logger
 from agent_core.core.session_service import open_session
 from agent_core.core.storage import now, wait_for_io_completion
@@ -220,6 +224,9 @@ class FlowService:
         value = self.records[flow_id]
         self._check_project_link(value)
         return copy.deepcopy(value)
+
+    def working_runs(self, *, redact: Callable[[list[dict]], list[dict]] | None = None) -> list[dict]:
+        return working_runs(self, redact=redact)
 
     def create(self, title="新建Flow", workspace_path=None, handoff="", execution_environment=None,
                permission_policy=None, model_profile=None):
@@ -601,6 +608,8 @@ class FlowService:
                 result["status"] = "running"
                 session, reused = self._node_session(value, node, path, identity, settings)
                 session.record.update(flow_id=value["id"], flow_node_id=key, flow_run_id=run["id"])
+                session.flow_task_ids.clear()
+                result["started_at"] = now()
                 if self.manager.project_reservations.get(identity) != value["id"]:
                     raise PermissionError("项目预约已变化")
                 self.manager.project_reservation_nodes[identity] = session.id
@@ -660,6 +669,7 @@ class FlowService:
                        if node["handoff_contract"] is not None else
                        "\n只执行当前节点的职责；后续任务留在交接中。最后总结已改动、验证、未完成事项和风险。")
                 ), flow_id=value["id"])
+                result["turn_id"] = session.record["last_run"]["turn_id"]
                 try:
                     await session.task
                 except asyncio.CancelledError:

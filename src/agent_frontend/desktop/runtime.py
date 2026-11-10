@@ -25,6 +25,7 @@ class RuntimeBridge(QObject):
     """信号只传递 JSON 字符串，禁止把 Core Session 引用交给 Qt。"""
 
     state_changed = Signal(str)
+    working_changed = Signal(str)
     error = Signal(str)
     finished = Signal(str, str)
     stopped = Signal()
@@ -45,6 +46,9 @@ class RuntimeBridge(QObject):
         self._projects: ProjectService | None = None
         self._page_sizes: dict[str, int] = {}
         self._dirty = False
+        self._working_visible = False
+        self._working_membership = None
+        self._working_payload = ''
         self._last_payload = ''
         self._manager: SessionManager | None = None
         self._store: SessionStore | None = None
@@ -116,10 +120,21 @@ class RuntimeBridge(QObject):
             if self._closing:
                 self._stop.set()
             lifecycle = None
+            working_refresh = 0.0
             while not self._stop.is_set():
                 # Core 的最后一次保存可能早于 task.done；终态不得依赖下一次外部通知。
                 current = tuple((value.id, value.busy, len(value.tool_workers), value.record['status'])
                                 for value in self._manager.sessions.values())
+                now = asyncio.get_running_loop().time()
+                if self._working_visible:
+                    # 仅跟踪轻量身份与状态，新增和结束不等待下一次定时刷新。
+                    membership = tuple((key, (self._flows.records[key].get('run') or {}).get('id'),
+                                        (self._flows.records[key].get('run') or {}).get('status'))
+                                       for key, task in self._flows.tasks.items() if not task.done())
+                    if now >= working_refresh or membership != self._working_membership:
+                        self._publish_working()
+                        self._working_membership = membership
+                        working_refresh = now + 1.0
                 if self._dirty or current != lifecycle:
                     self._publish()
                     lifecycle = current
@@ -156,6 +171,13 @@ class RuntimeBridge(QObject):
 
     def _schedule_command(self, action: str, arguments: dict) -> None:
         if self._closing:
+            return
+        if action == 'working_visible':
+            self._working_visible = bool(arguments.get('visible'))
+            self._working_membership = None
+            if not self._working_visible:
+                self._working_payload = ''
+            self._dirty = True
             return
         if action == 'flow_design_cancel':
             self._cancel_design()
@@ -214,6 +236,12 @@ class RuntimeBridge(QObject):
                     self._secrets.add(endpoint.api_key)
 
         return redact_result(value, extra_secrets=self._secrets)
+
+    def _publish_working(self) -> None:
+        payload = json.dumps(self._flows.working_runs(redact=self._clean), ensure_ascii=False)
+        if payload != self._working_payload:
+            self._working_payload = payload
+            self.working_changed.emit(payload)
 
     def _publish(self) -> None:
         self._dirty = False

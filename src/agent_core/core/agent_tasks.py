@@ -8,6 +8,7 @@ import time
 import uuid
 
 from agent_core import config
+from agent_core.core.messages import is_user_request
 from agent_core.core.session_limits import effective_limits, validate_limits
 from agent_core.tools import TOOL_REGISTRY
 from agent_core.tools.sandbox import audit
@@ -83,7 +84,12 @@ class AgentTasks:
             communication = '当前工具子集未提供信箱通信工具；完成后由任务结果向调用者返回信息。'
         # 在首次 await 前登记，防止并发委派绕过队列容量。
         identifier = uuid.uuid4().hex
-        child = self.manager.create(title or '子任务 · ' + task[:24], parent.record['messages'][0]['content'] +
+        if not title:
+            from agent_core.core.headless import redact_result
+            endpoints = (self.manager.model_registry.resolve(key) for key in self.manager.model_registry.ids())
+            safe_task = redact_result(task, extra_secrets=(item.api_key for item in endpoints if item is not None))
+            title = '子任务 · ' + safe_task[:24]
+        child = self.manager.create(title, parent.record['messages'][0]['content'] +
             '\n[子任务] ' + workspace_guide + '只执行所给任务；不可递归委派。'
             '需要文件产物或测试时，使用实际工具调用并检查真实结果；文本代码或工具调用草稿不代表执行。'
             '仅分析任务可以直接回答；执行任务未完成时须说明缺少的产物或验证，不得把准备执行当作完成。'
@@ -97,6 +103,9 @@ class AgentTasks:
                   'workspace_mode': workspace_mode, 'workspace_id': child.record['workspace_owner_id'],
                   'created_at': time.time(), 'due_at': time.time() + delay_seconds, 'task': task, 'error': '', 'result': ''}
         self.records[identifier] = record
+        if child.record.get('flow_run_id'):
+            # 运行面板按当前节点查找子任务，避免扫描历史委派记录。
+            parent.flow_task_ids.append(identifier)
         try:
             await self.manager.save(child)
             await self._save(identifier)
@@ -117,6 +126,7 @@ class AgentTasks:
     async def _run(self, identifier):
         record = self.records[identifier]
         child = self.manager.sessions[record['child_id']]
+        turn = {}
         try:
             await asyncio.sleep(max(0, record['due_at'] - time.time()))
             async with self.slots:
@@ -125,13 +135,21 @@ class AgentTasks:
                 record['status'] = 'running'
                 await self._save(identifier)
                 self.manager.submit(child, record['task'])
+                # 会话可接收独立后续输入，委派的模型与阶段只归属这次提交。
+                turn = child.record['last_run']
+                record['turn_id'] = turn['turn_id']
+                message_start = len(child.record['messages'])
                 self.manager.observer.event('agent.started', session_id=child.id,
                     parent_session_id=record['owner'], task_id=identifier,
                     turn_id=child.record.get('last_run', {}).get('turn_id'), state='running')
-                await asyncio.shield(child.task)
-                record['status'] = 'completed' if child.record['status'] == 'idle' else child.record['status']
-                record['error'] = child.record.get('error', '')
-                result = next((m.get('content', '') for m in reversed(child.record['messages']) if m['role'] == 'assistant'), '')
+                record['error'] = await asyncio.shield(child.task)
+                status = turn['status']
+                record['status'] = 'completed' if status == 'idle' else status
+                messages = child.record['messages'][message_start:]
+                if child.record['last_run'] is not turn:
+                    end = next((i for i, message in enumerate(messages) if is_user_request(message)), len(messages))
+                    messages = messages[:end]
+                result = next((m.get('content') or '' for m in reversed(messages) if m['role'] == 'assistant'), '')
                 record['result'] = result[:config.TOOL_MAX_OUTPUT]
                 record['result_truncated'] = len(result) > config.TOOL_MAX_OUTPUT
         except asyncio.CancelledError:
@@ -142,10 +160,13 @@ class AgentTasks:
         except Exception as exc:
             record.update(status='failed', error=f'{type(exc).__name__}: {exc}')
         finally:
+            calls = turn.get('model_calls', [])
+            if calls and isinstance(calls[-1], dict) and isinstance(calls[-1].get('model'), str):
+                record['model'] = calls[-1]['model']
             if self.manager.observer.enabled:
                 self.manager.observer.event('agent.completed', session_id=child.id,
                     parent_session_id=record['owner'], task_id=identifier,
-                    turn_id=child.record.get('last_run', {}).get('turn_id'),
+                    turn_id=record.get('turn_id'),
                     state='error' if record['status'] == 'failed' else record['status'])
             audit('agent_task_finished', task_id=identifier, child_id=child.id, status=record['status'])
             record['finished_at'] = time.time()

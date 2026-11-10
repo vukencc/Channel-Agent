@@ -590,6 +590,10 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             await asyncio.gather(task, return_exceptions=True)
         return {'cancelled': True}
 
+    @app.get('/api/working')
+    async def working():
+        return {'runs': app.state.flows.working_runs(redact=clean_flow)}
+
     @app.get('/api/flows')
     async def flows():
         return {'flows': flow_summaries(), 'flows_revision': app.state.flows_revision,

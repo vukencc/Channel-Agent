@@ -56,6 +56,7 @@ class Session:
     forking: bool = False
     deleting: bool = False
     tool_workers: set = field(default_factory=set)
+    flow_task_ids: list[str] = field(default_factory=list)
 
     @property
     def id(self):
@@ -1001,7 +1002,7 @@ class SessionManager:
         self.save(session)
 
     @traced('agent.run')
-    async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None]) -> None:
+    async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None]) -> str:
         input_committed = False
         try:
             # 已提交的 queued 快照包含本轮输入。先验证写入结果，再允许任何模型调用或工具副作用。
@@ -1024,6 +1025,7 @@ class SessionManager:
                 session.record['last_run']['stop_reason'] = 'persistence_failed'
             session.record.update(status='error', error=error)
         await self._finish_turn(session)
+        return session.record.get('error', '')
 
     async def _run_with_budget(self, session):
         from agent_core.core.images import image_scope
