@@ -6,7 +6,7 @@
 
 ## 当前工作与 Git
 
-- 2026-11-11，准备 0.5.0：动态工具安全审查修复入口覆盖、起始审计失败仍执行、排队/确认期间祖先撤权后执行旧工具，以及 WSL 完成故障误称拦截。Linux 本地全量 2108 passed、39 skipped、5 deselected，真实隔离探针通过。Windows/发布成品及后补协议用例仍待验证，不能以此条宣称发布成功。说明见 [动态工具](dynamic-tools.md) 和 [安全验证报告](dynamic-tools-security-validation-2026-11-11.md)。
+- 2026-11-11，0.5.0 交付基线：动态工具审查修复入口覆盖、审计失败仍执行、排队/确认期间执行已撤销旧工具，以及 WSL 完成故障误称拦截。[PR #46](https://github.com/vukencc/Channel-Agent/pull/46) 的双平台 CI 已通过：Linux 2119 passed、42 skipped、5 deselected；Windows 583 passed、46 skipped。最终安全专项 107 passed；本机原生 572 passed/56 skipped，真实 Windows→WSL 8 passed。实际 Windows exe 离线 15/15、自检含 WSL 16/16 通过。正式双平台包由标签工作流重建，最终状态见 [0.5.0 发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.5.0)。实现与边界见 [动态工具](dynamic-tools.md) 和 [安全验证报告](dynamic-tools-security-validation-2026-11-11.md)，保留此前两轮 Ubuntu DNS 安装失败记录。
 
 - 2026-11-11，使用真实设计助手重建五节点客服动态工具模板。经历可选结构化交接失败及业务规则缺失后，恢复原用例完整规则，以默认文本 Handoff 在第九轮全新项目完成：292.234 秒，30/30 模型回调、30 工具/结果配对，三个动态工具各一次，真实 RAG 两次；独立静态 **218/218**，六条语义复核通过。前八轮失败/业务未全过/取消记录保留，未追认结构化契约成功。[正式实测报告](agent-flow-dynamic-tools-validation-2026-11-11.md) · [可导入模板](../src/agent_test/scripts/cases/customer_feedback_dynamic.template.json)。
 - 本轮修复设计图缺省/全重合坐标、Working 提示层挡点击、新验收器的命令包装/Windows 路径/转人工空答复误判；结构化提示明确 Schema 并绑定新建及复用节点的系统提示，但真实格式可靠性仍是限制。补回原分类与分级规则、增加事实保真及发送后核对。Linux 全量 **2034 passed、39 skipped、5 deselected**，Windows 原生专项 **72 passed**，真实隔离探针通过。Web 1440/416 实时与 Qt 离屏/真实快照回放分开记录，两端实际文件 JSON 往返通过。独立证据在 `.cache/reports/dynamic-feedback-live-20261111-bdxmjv01/`，不修改用户原项目、会话、知识库与模板。

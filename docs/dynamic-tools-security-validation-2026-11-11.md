@@ -30,7 +30,12 @@
 - 最终专项（禁用本机 `.env`，8 个文件）：**107 passed，69.17 秒**，含真实 worker 协议四项与源码/参数同时达到上限的组合用例。
 - 本机 Windows 原生：按工作流选择的 57 个文件，**572 passed、56 skipped，339.23 秒**；另显式启用真实 Windows→WSL：**8 passed，80.52 秒**。WSL 用例未因原生选择集跳过而被追认为已通过，而是独立实际执行。
 - PR 首轮 Windows CI：**583 passed、45 skipped，79.57 秒**。平台权限、可选依赖及显式 WSL 开关导致跳过数不同，集成模型/权重下载未启用。
-- Linux CI 的 Azure mirrorlist 和直接 Ubuntu 主站两轮均在 APT 下载阶段因 DNS 失败，未运行代码测试。安装动作现先限时探测 Ubuntu 主站、kernel.org 和 Ubuntu 国家镜像，排除超过七天的安全索引；保留 Ubuntu GPG 签名、APT 有效期/TLS 校验及真实隔离探针。实测发现 Iceland 的已签名安全索引陈旧近三个月而被拒绝；kernel.org 的索引签名有效且日期为当天。该主机探测不证明 runner 可达。五项受控 shell 回归覆盖回退、全部不可达、陈旧索引、更新/安装失败传播，均通过。最终 CI 与冻结成品结果待补齐。
+- Linux CI 的 Azure mirrorlist 和直接 Ubuntu 主站两轮均在 APT 下载阶段因 DNS 失败，未运行代码测试。安装动作现先限时探测 Ubuntu 主站、kernel.org 和 Ubuntu 国家镜像，排除超过七天的安全索引；保留 Ubuntu GPG 签名、APT 有效期/TLS 校验及真实隔离探针。实测发现 Iceland 的已签名安全索引陈旧近三个月而被拒绝；kernel.org 的索引签名有效且日期为当天。该主机探测不证明 runner 可达。五项受控 shell 回归覆盖回退、全部不可达、陈旧索引、更新/安装失败传播，均通过。最终双平台 CI 已通过，见下述结果。
+- [PR #46 检查](https://github.com/vukencc/Channel-Agent/actions/runs/43044028156)：Ubuntu 22.04 **2119 passed、42 skipped、5 deselected，207.65 秒**；Windows **583 passed、46 skipped，81.46 秒**，三个警告来自 jieba 依赖的转义语法。Linux runner 实际通过 kernel.org 获取 Ubuntu 签名的依赖，随后真实隔离探针通过。模型/语料集成下载未启用，未将 integration 跳过算作通过。
+- 本机 Windows 干净源码 `8a351e5` 构建的 0.5.0 exe：移除开发 Python PATH，**15/15 离线自检通过**，含 JSON Schema 资源、动态工具模板保存/导入导出；再开启真实 WSL，**16/16 通过**，错误集为空。后续提交仅改变测试、CI 和文档，应用源码未变化。本机包为发布前验收证据；正式发布资产由合并后标签工作流重新构建。
+- 三个 workspace wheel 均构建成功，已核对动态 Core 模块、Web Flow/Working 与成品自检脚本资源，未发现用户状态/凭据文件。
+
+正式 Windows ZIP（内含 `ChannelAgent.exe`）、Linux tar.gz 与 SHA256 见 [v0.5.0 发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.5.0)。发布工作流须重新通过双平台测试、双平台冻结自检和镜像构建后才上传资产；各成品内的 `self-check.json`、`manifest.json` 记录实际验收与构建信息，不以本机结果替代官方构建。
 
 ## 复跑命令
 
