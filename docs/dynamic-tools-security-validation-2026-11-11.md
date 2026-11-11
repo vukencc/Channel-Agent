@@ -30,7 +30,7 @@
 - 最终专项（禁用本机 `.env`，8 个文件）：**107 passed，69.17 秒**，含真实 worker 协议四项与源码/参数同时达到上限的组合用例。
 - 本机 Windows 原生：按工作流选择的 57 个文件，**572 passed、56 skipped，339.23 秒**；另显式启用真实 Windows→WSL：**8 passed，80.52 秒**。WSL 用例未因原生选择集跳过而被追认为已通过，而是独立实际执行。
 - PR 首轮 Windows CI：**583 passed、45 skipped，79.57 秒**。平台权限、可选依赖及显式 WSL 开关导致跳过数不同，集成模型/权重下载未启用。
-- PR 首轮 Linux CI 在 APT 系统包下载阶段因 Ubuntu 镜像 DNS 解析失败，尚未运行测试；已只重跑失败的作业，并将托管 runner 的 Ubuntu mirrorlist 替换为官方 HTTPS 仓库，保留签名校验、依赖安装失败退出及真实隔离探针。最终 CI 与冻结成品结果待补齐。
+- Linux CI 的 Azure mirrorlist 和直接 Ubuntu 主站两轮均在 APT 下载阶段因 DNS 失败，未运行代码测试。安装动作现先限时探测 Ubuntu 主站、kernel.org 和 Ubuntu 国家镜像，排除超过七天的安全索引；保留 Ubuntu GPG 签名、APT 有效期/TLS 校验及真实隔离探针。实测发现 Iceland 的已签名安全索引陈旧近三个月而被拒绝；kernel.org 的索引签名有效且日期为当天。该主机探测不证明 runner 可达。五项受控 shell 回归覆盖回退、全部不可达、陈旧索引、更新/安装失败传播，均通过。最终 CI 与冻结成品结果待补齐。
 
 ## 复跑命令
 

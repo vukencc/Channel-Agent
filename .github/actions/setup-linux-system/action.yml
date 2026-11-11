@@ -1,15 +1,36 @@
 name: Linux 系统依赖
-description: 使用 Ubuntu 官方 HTTPS 源安装必需隔离及 Qt 依赖
+description: 使用 Ubuntu 签名的 HTTPS 源安装必需隔离及 Qt 依赖
 runs:
   using: composite
   steps:
     - shell: bash
       run: |
-        # 托管 runner 的 Azure mirrorlist 曾连续无法解析；保留官方仓库签名校验。
-        for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-          if test -f "$source"; then
-            sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' "$source"
+        # 先限制网络探测时间；实际元数据和软件包仍由 APT 验证签名。
+        . /etc/os-release
+        mirror=""
+        probe=$(mktemp)
+        trap 'rm -f "$probe"' EXIT
+        for candidate in https://archive.ubuntu.com/ubuntu https://mirrors.edge.kernel.org/ubuntu https://is.archive.ubuntu.com/ubuntu; do
+          if curl --fail --silent --show-error --location --connect-timeout 5 --max-time 15 -o "$probe" "$candidate/dists/$VERSION_CODENAME-security/InRelease"; then
+            # 仅用日期排除过期镜像；此探测不代替 APT 的签名与有效期校验。
+            published=$(sed -n 's/^Date: //p' "$probe" | head -n 1)
+            if published_at=$(date -u -d "$published" +%s) && test -n "$published" && (( $(date -u +%s) - published_at <= 604800 )); then
+              mirror="$candidate"
+              break
+            fi
+            echo "Ubuntu mirror metadata is stale or invalid: $candidate" >&2
           fi
         done
-        sudo apt-get -o Acquire::Retries=3 update
-        sudo apt-get -o Acquire::Retries=3 install -y bubblewrap util-linux libegl1 libopengl0
+        if test -z "$mirror"; then
+          echo "No Ubuntu archive mirror is reachable" >&2
+          exit 1
+        fi
+        for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+          if test -f "$source"; then
+            sudo sed -i \
+              -e "s|mirror+file:/etc/apt/apt-mirrors.txt|$mirror|g" \
+              -e "s#https\?://\(azure\.archive\.\|security\.\|archive\.\)ubuntu\.com/ubuntu#$mirror#g" "$source"
+          fi
+        done
+        sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o APT::Update::Error-Mode=any update
+        sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y bubblewrap util-linux libegl1 libopengl0
