@@ -12,6 +12,15 @@ from PySide6.QtWidgets import (QLabel, QListWidget, QListWidgetItem,
                                QTextEdit, QSplitter, QVBoxLayout, QWidget)
 
 
+def _tool_lines(tools: list[dict[str, Any]], indent: str = '') -> list[str]:
+    lines = []
+    for tool in tools:
+        kind = '（基础锁定）' if tool.get('required') else '（自定义）' if tool.get('custom') else ''
+        description = str(tool.get('description') or '').strip() or '暂无描述'
+        lines.append(f"{indent}{tool.get('name', '')}{kind}：{description}")
+    return lines
+
+
 class WorkingPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -117,6 +126,8 @@ class WorkingPanel(QWidget):
                         if isinstance(value, (dict, list)):
                             value = json.dumps(value, ensure_ascii=False, indent=2)
                         lines.append(f'{label}：{value}')
+                if 'tools' in node:
+                    lines.append('\n'.join(['可调用工具：', *(_tool_lines(node.get('tools') or [], '  ') or ['  无'])]))
                 for child in children:
                     child_fields = [('状态', _status_text(child.get('status'))),
                                     ('任务概要', child.get('task_summary')), ('任务', child.get('task')),
@@ -125,6 +136,8 @@ class WorkingPanel(QWidget):
                     child_lines = [f"子 Agent：{child.get('title') or child.get('id') or '未命名'}"]
                     child_lines.extend(f'  {label}：{value}' for label, value in child_fields
                                        if value is not None and value != '')
+                    if 'tools' in child:
+                        child_lines.extend(['  可调用工具：', *(_tool_lines(child.get('tools') or [], '    ') or ['    无'])])
                     lines.append('\n'.join(child_lines))
                 validation = node.get('handoff_validation')
                 if validation:

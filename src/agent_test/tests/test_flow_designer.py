@@ -73,3 +73,62 @@ def test_designer_rejects_tools_empty_graph_and_redacts_model_errors(tmp_path):
         assert error.value.__suppress_context__
     finally:
         store.close()
+
+
+@pytest.mark.parametrize('positions', [None, [(0, 0)] * 5], ids=['missing', 'coincident'])
+def test_designer_lays_out_generated_nodes_with_no_usable_positions(tmp_path, positions):
+    import json
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    identifiers = ['classify', 'technical', 'service', 'operations', 'human']
+    nodes = [{'id': name, 'title': name, 'prompt': name} for name in identifiers]
+    if positions:
+        for node, (x, y) in zip(nodes, positions):
+            node.update(x=x, y=y)
+    edges = [{'source': a, 'target': b} for a, b in [
+        ('classify', 'technical'), ('classify', 'service'),
+        ('technical', 'operations'), ('service', 'human')]]
+    template = {'format': 'agent-flow', 'version': 1, 'title': 'Five roles',
+                'nodes': nodes, 'edges': edges}
+
+    async def model(*args, **kwargs):
+        return {'role': 'assistant', 'content': json.dumps({'reply': '设计完成', 'template': template})}
+
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        result = asyncio.run(design_flow(SessionManager(store, model=model),
+                                        [{'role': 'user', 'content': '设计五节点分流'}]))
+        arranged = {node['id']: node for node in result['template']['nodes']}
+        assert len({(n['x'], n['y']) for n in arranged.values()}) == 5
+        for edge in edges:
+            assert arranged[edge['source']]['x'] < arranged[edge['target']]['x']
+        for left in arranged.values():
+            for right in arranged.values():
+                if left is not right:
+                    assert abs(left['x'] - right['x']) >= 260 or abs(left['y'] - right['y']) >= 140
+        assert result['template']['edges'] == edges
+    finally:
+        store.close()
+
+
+def test_designer_preserves_explicit_distinct_coordinates(tmp_path):
+    import json
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    nodes = [{'id': 'a', 'title': 'A', 'prompt': 'A', 'x': -100, 'y': 320},
+             {'id': 'b', 'title': 'B', 'prompt': 'B', 'x': 480, 'y': 80}]
+    async def model(*args, **kwargs):
+        return {'role': 'assistant', 'content': json.dumps({'reply': '完成', 'template': {
+            'format': 'agent-flow', 'version': 1, 'title': '已有布局', 'nodes': nodes,
+            'edges': [{'source': 'a', 'target': 'b'}]}})}
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        result = asyncio.run(design_flow(SessionManager(store, model=model),
+                                        [{'role': 'user', 'content': '设计'}]))
+        assert [(n['x'], n['y']) for n in result['template']['nodes']] == [(-100, 320), (480, 80)]
+    finally:
+        store.close()

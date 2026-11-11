@@ -6,6 +6,15 @@
 
 ## 当前工作与 Git
 
+- 2026-11-11，0.5.0 交付基线：动态工具审查修复入口覆盖、审计失败仍执行、排队/确认期间执行已撤销旧工具，以及 WSL 完成故障误称拦截。[PR #46](https://github.com/vukencc/Channel-Agent/pull/46) 的双平台 CI 已通过：Linux 2119 passed、42 skipped、5 deselected；Windows 583 passed、46 skipped。最终安全专项 107 passed；本机原生 572 passed/56 skipped，真实 Windows→WSL 8 passed。实际 Windows exe 离线 15/15、自检含 WSL 16/16 通过。正式双平台包由标签工作流重建，最终状态见 [0.5.0 发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.5.0)。实现与边界见 [动态工具](dynamic-tools.md) 和 [安全验证报告](dynamic-tools-security-validation-2026-11-11.md)，保留此前两轮 Ubuntu DNS 安装失败记录。
+
+- 2026-11-11，使用真实设计助手重建五节点客服动态工具模板。经历可选结构化交接失败及业务规则缺失后，恢复原用例完整规则，以默认文本 Handoff 在第九轮全新项目完成：292.234 秒，30/30 模型回调、30 工具/结果配对，三个动态工具各一次，真实 RAG 两次；独立静态 **218/218**，六条语义复核通过。前八轮失败/业务未全过/取消记录保留，未追认结构化契约成功。[正式实测报告](agent-flow-dynamic-tools-validation-2026-11-11.md) · [可导入模板](../src/agent_test/scripts/cases/customer_feedback_dynamic.template.json)。
+- 本轮修复设计图缺省/全重合坐标、Working 提示层挡点击、新验收器的命令包装/Windows 路径/转人工空答复误判；结构化提示明确 Schema 并绑定新建及复用节点的系统提示，但真实格式可靠性仍是限制。补回原分类与分级规则、增加事实保真及发送后核对。Linux 全量 **2034 passed、39 skipped、5 deselected**，Windows 原生专项 **72 passed**，真实隔离探针通过。Web 1440/416 实时与 Qt 离屏/真实快照回放分开记录，两端实际文件 JSON 往返通过。独立证据在 `.cache/reports/dynamic-feedback-live-20261111-bdxmjv01/`，不修改用户原项目、会话、知识库与模板。
+
+- 2026-11-11，Flow 节点支持私有 `custom_tools`（参数 schema、同步 Python `main(arguments)`、网络请求标记），设计助手可现写实现，桌面与 Web 可编辑、选用及随 v1 JSON 导入导出。代码经既有 `run_command` 路径运行，部署须允许命令能力；仍遵守所选环境、权限、确认、审计、超时和取消。子会话只继承相同定义及父级能力，复用节点替换旧定义。Working 的节点与子 Agent 详情显示实际可调用工具与描述。[使用方法](agent-flow.md#节点自定义工具)。
+- 本轮修复了自定义工具 Debug 事件显示 `unknown_tool`、Unicode/引号传参触发系统命令长度限制、schema 重复完整校验造成 Working 同步读取变慢、无效 JSON 草稿的泛化报错和删除工具后残留选择。只缓存有界不可变 schema 的校验结论，授权仍随部署及祖先状态重新计算。16 工具×64 字段、同进程各五次测量，投影中位数由不使用缓存的 841.4ms 降至 11.5ms；这不是 Flow 端到端提速数据。
+- 验证：Linux 非集成全量 **1979 passed、39 skipped、5 deselected**，最后编辑器修订后聚焦 **69 passed**；Windows 原生专项 **25 passed、4 skipped**，其中真实 WSL 桥接 **8/8**，实际 Bubblewrap/prlimit 探针通过。实际 Chromium 1440/416 检查设计→保存→导出→重导入、无效草稿和 Working 工具详情；Qt 使用离屏检查。界面模型为受控回调，客服 Flow 的三个工具执行为真实 sandbox I/O。另以真实配置模型生成三个客服工具，再直接在 sandbox 调用生成实现，读反馈及两个本地队列均验证成功；这不等于真实模型自主跑完整业务 Flow，没有对外发送。证据在本地 `.cache/reports/dynamic-tools-20261111-d37vhcrr/`。单 Core 问题分析单独导出到本地忽略目录 `docs/dev/agent-core-design-review-2026-11-11.md`，未执行架构整改建议。
+
 - 2026-11-10，0.4.1 的客服验证使用原六条合成反馈和五节点流程。完整一轮 151.174 秒，五份交接通过，29/29 模型请求成功，两个真实子 Agent 的模型请求重叠 4.631 秒。整轮业务检查 52/53，服务节点定向复验 20/20。修复了 Working 的审批、停止状态、委派轮次隔离、标题脱敏与 Web 刷新恢复。[实测报告](agent-flow-working-validation-2026-11-10.md)。
 
 - 2026-11-10，桌面与 Web 新增只读 Working 区，显示当前 Flow 实例和本轮节点、模型、任务及子 Agent。按运行 ID 隔离复用会话的历史，摘录前脱敏。运行详情仍在原 Flow 查看。[使用指南](agent-flow.md#working-运行视图)。Linux 非集成回归 1946 passed、38 skipped、5 deselected，Windows 原生专项 24 passed。Chromium 检查 1440px 与 416px，Qt 使用离屏测试，两端都通过受控运行验证刷新与选择。
@@ -49,8 +58,8 @@
 - 原生 Qt 界面独立于浏览器；WebUI 提供同一 Core 的经典会话、Flow 画布、设计侧栏、节点工具/模型/思考设置与便携 JSON 导入导出。CLI 提供经典会话。
 - Flow 模板可以独立创建，运行须明确绑定项目和平台支持的有效工作区（Linux 路径或 Windows 本地盘路径）；创建项目可导入模板副本。节点独立会话共用该项目目录，按拓扑串行调度，分支箭头不等于条件路由或并行。所有运行入口须保留项目身份和路径保护，不能回退到应用源码目录。
 - 自动 Handoff 传递上游结束正文与项目上下文，属于 Agent 自报信息；节点 completed、工具退出 0 和业务验收通过是不同事实。节点失败、检查点、取消或未排空会阻断下游。
-- 经典 Agent 工具由框架管理。Flow 节点可收窄有效工具，`read_file`/`list_files` 基础锁定，部署及祖先能力上限同时约束 schema 和执行。提示词不构成文件权限隔离。
-- 设计助手没有执行工具，只创建新的未绑定模板，不覆盖当前图或运行节点。便携 JSON 不携带项目目录、运行身份、连接凭据或知识库；未知模型仅经显式继承选择清空引用。旧测试配方 `schema_version` 格式不能当作 `format=agent-flow/version=1` 的便携文件直接导入。
+- 经典 Agent 工具由框架管理。Flow 节点可收窄有效工具并定义自定义工具，`read_file`/`list_files` 基础锁定，部署及祖先能力上限同时约束 schema 和执行。自定义工具经 `run_command` 执行；部署必须允许该工具。提示词不构成文件权限隔离。
+- 设计助手没有执行工具，可生成包含自定义工具定义的新的未绑定模板，不覆盖当前图或运行节点；设计和导入不执行代码。便携 JSON 不携带项目目录、运行身份、连接凭据或知识库；未知模型仅经显式继承选择清空引用。旧测试配方 `schema_version` 格式不能当作 `format=agent-flow/version=1` 的便携文件直接导入。
 - Flow 的 local 命令通过 Bubblewrap 限制持久写入到项目，保留网络与 localhost，隔离不可用时拒绝；经典会话 local 语义不同。所有模式继续遵守选定权限、确认、审计和工具结果配对。
 - `prepare_context` 是模型调用前准备输入窗口，不代表已 Compact。结构化归档须满足独立的软/硬预算条件；无 `history_read` 时最新未交付完整工具批次受保护，不能容纳时在付费摘要和归档发布前进入检查点，不扩大预算或拆分工具配对。详见 [上下文管理](context-management.md)。
 - Debug 保持原上下两行标签与短竖箭头；所有子 Agent 行完整显示，服务端按根会话树隔离。右侧局部详情独立滚动，不强制滚到页面底部；全部 Agent 停止后时间轴冻结。不要擅自重设计主图。

@@ -1,12 +1,13 @@
 [project]
 name = "ai-agent-core"
-version = "0.4.1"
+version = "0.5.0"
 description = "Agent Loop、工具、会话与上下文运行内核"
 requires-python = ">=3.12"
 dependencies = [
     "fastembed>=0.8.1",
     "httpx>=0.28.1,<1",
     "jieba>=0.42.1",
+    "jsonschema>=4.26,<5",
     "numpy>=2.5.3",
     "openai>=2.15.0,<4",
     "pydantic>=2.13.0,<3",

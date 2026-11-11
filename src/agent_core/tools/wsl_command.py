@@ -11,7 +11,7 @@ import uuid
 
 from agent_core import config
 from agent_core.core.files import directory_identity, opened_path
-from agent_core.tools.sandbox import SandboxError, _context, audit, confirm, current_policy, sandbox_root
+from agent_core.tools.sandbox import SandboxError, _context, audit, confirm, current_policy, sandbox_root, execution_authority
 
 
 CONFIG_KEYS = '''COMMAND_CPU_SECONDS COMMAND_FILE_MB COMMAND_NETWORK
@@ -96,7 +96,7 @@ def execute_wsl_tool(operation: str, arguments: dict) -> str:
                 'LANG=C.UTF-8', 'PYTHONIOENCODING=utf-8', 'PYTHON_DOTENV_DISABLED=1',
                 'AI_AGENT_PROJECT_ROOT=/tmp/channel-agent-wsl-worker',
                 config.WINDOWS_WSL_PYTHON, '-B', '-u', script]
-        audit('wsl_tool_started', operation=operation, request_id=identifier)
+        audit('wsl_tool_started', strict=True, operation=operation, request_id=identifier)
         return _exchange(argv, request, context.cancelled if context else None)
 
 
@@ -142,6 +142,7 @@ def _exchange(argv: list[str], request: dict, cancelled) -> str:
     result = None
     failure = ''
     sent_cancel = False
+    execution_authorized = False
     ready = False
     maximum = max(config.COMMAND_TIMEOUT, config.ENVIRONMENT_PREPARE_TIMEOUT) + 6 * config.CONFIRM_TIMEOUT + 60
     deadline = time.monotonic() + maximum
@@ -174,15 +175,23 @@ def _exchange(argv: list[str], request: dict, cancelled) -> str:
                     send({'type': 'decision', 'request_id': record['request_id'], 'allowed': bool(allowed)})
                 elif event == 'audit' and ready and isinstance(record.get('entry'), dict):
                     entry = record['entry']
-                    audit('wsl_tool_audit', strict=True, request_id=request['id'], worker_event=entry)
-                    send({'type': 'audit_ack', 'event_id': record['event_id']})
+                    # Linux worker 在收到 command_started 的持久化确认前不能启动命令。
+                    # 此确认作为跨进程的授权提交点；不能把整段确认等待锁住。
+                    if entry.get('event') == 'command_started':
+                        with execution_authority():
+                            audit('wsl_tool_audit', strict=True, request_id=request['id'], worker_event=entry)
+                            execution_authorized = True
+                            send({'type': 'audit_ack', 'event_id': record['event_id']})
+                    else:
+                        audit('wsl_tool_audit', strict=True, request_id=request['id'], worker_event=entry)
+                        send({'type': 'audit_ack', 'event_id': record['event_id']})
                 elif event == 'result' and ready and isinstance(record.get('result'), str):
                     result = record['result']
                 elif event == 'error':
                     failure = record.get('error', 'WSL 执行失败')
                 else:
                     raise ValueError('无效协议事件')
-            except (ValueError, KeyError, TypeError, OSError):
+            except (ValueError, KeyError, TypeError, OSError, SandboxError):
                 failure = 'WSL 审计或协议处理失败'
                 if not sent_cancel:
                     try:
@@ -194,6 +203,8 @@ def _exchange(argv: list[str], request: dict, cancelled) -> str:
         if failure or process.returncode or result is None:
             audit('wsl_tool_failed', request_id=request['id'], returncode=process.returncode,
                   diagnostic=errors.decode('utf-8', errors='replace'))
+            if execution_authorized:
+                return '[失败] WSL 命令已获得执行授权，但审计或协议未能确认完成；可能有副作用，请核对产物，不要自动重试。'
             raise SandboxError(failure or 'WSL 执行器未能启动或完成，请检查 WINDOWS_WSL_PYTHON 的 Linux 依赖')
         audit('wsl_tool_finished', request_id=request['id'], cancelled=sent_cancel)
         return result

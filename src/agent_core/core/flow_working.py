@@ -1,6 +1,7 @@
 """只读投影当前 Flow 实例的运行元数据，不读取会话正文或项目文件。"""
 
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from agent_core import config
@@ -75,6 +76,7 @@ def _children(service: "FlowService", session: "Session", run_id: str,
         rows.append({
             "id": child.id, "title": child.record["title"], "status": status,
             "task": task["task"], "model": model, "phase": (child.phase or None) if turn else None,
+            "tools": service.manager.session_tools(child),
         })
     return rows, len(active) + len(ended), len(active)
 
@@ -127,6 +129,17 @@ def working_runs(service: "FlowService", *,
                     phase = session.phase or None
                     status = _runtime_status(status, session)
                 subagents, total_children, active_children = _children(service, session, run["id"], model_for)
+                tools = service.manager.session_tools(session)
+            else:
+                # 尚未启动的节点也按相同的部署目录和节点配置计算可调用工具。
+                from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES
+                configured_names = node.get("tool_names")
+                preview = SimpleNamespace(id="working-" + node_id, record={
+                    "flow_id": flow_id, "custom_tools": node.get("custom_tools", []),
+                    "tool_names": (None if configured_names is None else
+                                   list(dict.fromkeys([*configured_names, *REQUIRED_TOOL_NAMES]))),
+                })
+                tools = service.manager.session_tools(preview)
             model, model_calls, tool_calls = _model_details(metrics, model_for(profile))
             thinking_mode = node["thinking_mode"] or (None if profile in runtime_profiles else config.THINKING_MODE)
             effort = node["reasoning_effort"] or (None if profile in runtime_profiles else config.REASONING_EFFORT)
@@ -138,6 +151,7 @@ def working_runs(service: "FlowService", *,
                 "active_subagent_count": active_children, "subagents": subagents,
                 "handoff_validation": _copy_validation(result.get("handoff_validation")),
                 "model_calls": model_calls, "tool_calls": tool_calls,
+                "tools": tools,
             })
         rows.append({
             "run_id": run["id"], "flow_id": flow_id, "project_id": project_id,

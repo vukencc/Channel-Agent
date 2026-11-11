@@ -84,7 +84,7 @@ def test_configured_reuse_uses_current_contract(tmp_path, monkeypatch):
     seen = []
 
     async def model(history, *, session_id, emit):
-        seen.append((session_id, history[-1]["content"]))
+        seen.append((session_id, history[-1]["content"], history[0]["content"]))
         return {"role": "assistant", "content": '{"value":1}'}
 
     async def run():
@@ -101,8 +101,12 @@ def test_configured_reuse_uses_current_contract(tmp_path, monkeypatch):
             await service.tasks[project["flow_id"]]
             assert service.get(project["flow_id"])["run"]["nodes"]["a"]["handoff_validation"] == {"status": "passed"}
         assert seen[0][0] == seen[1][0]
-        assert "第二轮" in seen[1][1] and '"fields"' in seen[1][1]
-        assert seen[1][1].index("第二轮") < seen[1][1].index('"fields"')
+        assert all(item[2].startswith('A\n') and 'JSON Schema' in item[2] for item in seen)
+        schema = json.loads(seen[1][1].splitlines()[-1])
+        assert schema == {'type': 'object', 'properties': {'value': {'type': 'integer'}},
+                          'required': ['value'], 'additionalProperties': False}
+        assert "第二轮" in seen[1][1] and '"properties"' in seen[1][1]
+        assert seen[1][1].index("第二轮") < seen[1][1].index('"properties"')
         await manager.shutdown()
 
     try:

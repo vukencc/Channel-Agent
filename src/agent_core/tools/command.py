@@ -26,6 +26,7 @@ from agent_core.tools.sandbox import (
     cancellation_requested,
     command_memory_limit_mb,
     execution_environment,
+    execution_authority,
     isolated_command,
     sandbox_root,
     truncate,
@@ -127,7 +128,7 @@ def run_command(command: str, reason: str = "", network: bool = False,
                 isolated = isolated_command(argv, network_socket=proxy.path, **isolation_options)
             execute_options = ({'timeout': timeout, 'file_limit_mb': limits['file_limit_mb']}
                                if limits is not None else {})
-            audit('command_started', resource_profile=resource_profile, runtime_profile=runtime_profile,
+            audit('command_started', strict=True, resource_profile=resource_profile, runtime_profile=runtime_profile,
                   timeout_seconds=timeout, network=network, **(limits or {}))
             result = _execute(command, reason, argv, isolated, **execute_options)
             result += _network_diagnostics(proxy)
@@ -158,7 +159,7 @@ def _run_local_command(command: str, reason: str, network: bool,
         if not ask_permission('run_command', plan, reason, command=command, force_confirmation=True):
             return '[已取消] 用户未确认（拒绝或确认超时），命令未执行。'
         validate_local_execution()
-        audit('command_started', execution_environment='local', timeout_seconds=timeout,
+        audit('command_started', strict=True, execution_environment='local', timeout_seconds=timeout,
               working_directory=str(root), network='host')
         return _execute(command, reason, argv, argv, timeout=timeout,
                         environment=local_process_environment(), check_quota=False,
@@ -208,19 +209,21 @@ def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None,
             if context is not None and context.flow_workspace_scope:
                 from agent_core.tools.execution_environment import flow_local_command
                 isolated, environment = flow_local_command(argv, environment or {}, context.protected_paths)
-                audit('command_scope', scope='flow_workspace', execution_environment='local')
+                audit('command_scope', strict=True, scope='flow_workspace', execution_environment='local')
         process_options = {'env': environment} if environment is not None else {}
         tree = None
-        proc = subprocess.Popen(
-            isolated,
-            shell=False,
-            cwd=root,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-            **process_options,
-        )
+        # 与父会话的能力更新互斥；确认与工作区排队之后重新校验，不能执行旧定义。
+        with execution_authority():
+            proc = subprocess.Popen(
+                isolated,
+                shell=False,
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                **process_options,
+            )
         try:
             # Popen 成功后立即进入清理范围，/proc 追踪初始化失败也不能泄漏宿主进程。
             if execution_mode == 'local':
@@ -308,8 +311,11 @@ def _execute(command, reason, argv, isolated, *, timeout=None, on_output=None,
     except SandboxError as exc:
         audit("quota_exceeded", action="run_command", reason=str(exc))
         return f"[配额超限] {exc}；已保留文件，请检查部分输出。"
-    audit("executed", action="run_command", command=command,
-          exit_code=proc.returncode, reason=reason, execution_environment=execution_mode)
+    try:
+        audit("executed", strict=True, action="run_command", command=command,
+              exit_code=proc.returncode, reason=reason, execution_environment=execution_mode)
+    except OSError:
+        return '[失败] 命令已执行，但完成审计写入失败；可能有副作用，请核对产物，不要自动重试。'
 
     stdout = truncate(stdout)
     stderr = truncate(stderr)

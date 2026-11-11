@@ -15,7 +15,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from agent_core.core.files import opened_path, fsync_directory
-from agent_core.core.flow_handoff import HandoffContract, validate_handoff
+from agent_core.core.custom_tools import CustomToolSpec, validate_custom_tools
+from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
 from agent_core.core.flow_working import working_runs
 from agent_core.core.log import get_logger
 from agent_core.core.session_service import open_session
@@ -41,6 +42,7 @@ class Node(BaseModel):
     handoff_contract: HandoffContract | None = None
     model_profile: str | None = Field(default=None, max_length=200)
     tool_names: list[str] | None = Field(default=None, max_length=256)
+    custom_tools: list[CustomToolSpec] = Field(default_factory=list, max_length=16)
     reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] | None = None
     thinking_mode: Literal['auto', 'enabled', 'disabled'] | None = None
     reuse_session: bool = Field(default=False, strict=True)
@@ -110,7 +112,11 @@ def _validate_node_tools(value):
     from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES, flow_tool_catalog
     available = {item['name'] for item in flow_tool_catalog()['tools']}
     for node in value['nodes']:
-        if node['tool_names'] is not None and not (set(node['tool_names']) | set(REQUIRED_TOOL_NAMES)) <= available:
+        node['custom_tools'] = validate_custom_tools(node.get('custom_tools', []))
+        custom_names = {item['name'] for item in node['custom_tools']}
+        if custom_names and 'run_command' not in available:
+            raise ValueError('部署未启用 run_command，不能使用自定义工具')
+        if node['tool_names'] is not None and not (set(node['tool_names']) | set(REQUIRED_TOOL_NAMES)) <= available | custom_names:
             raise ValueError('节点工具超出部署模型工具目录，或缺少基础工具')
 
 
@@ -567,6 +573,8 @@ class FlowService:
             raise
 
     def _node_session(self, value, node, path, identity, settings):
+        prompt = node['prompt'] + (handoff_output_instruction(node['handoff_contract'])
+                                   if node['handoff_contract'] is not None else '')
         reuse = value["project_id"] and node["reuse_session"]
         binding = value["session_bindings"].get(node["id"]) if reuse else None
         session = self.manager.sessions.get(binding)
@@ -577,10 +585,10 @@ class FlowService:
             workspace = self.manager.workspaces.owner_binding(session)
             if workspace.owner_id == session.id and workspace.path == path and workspace.identity == identity:
                 self.manager.set_execution_environment(session, settings["execution_environment"])
-                session.record["messages"][0] = {"role": "system", "content": node["prompt"]}
+                session.record["messages"][0] = {"role": "system", "content": prompt}
                 session.record["title"] = node["title"]
                 return session, True
-        session = open_session(self.manager, node["title"], prompt=node["prompt"], workspace_path=path,
+        session = open_session(self.manager, node["title"], prompt=prompt, workspace_path=path,
                                execution_environment=settings["execution_environment"])
         if reuse:
             session.record["flow_project_id"] = value["project_id"]
@@ -615,6 +623,7 @@ class FlowService:
                 self.manager.project_reservation_nodes[identity] = session.id
                 self.manager.set_permission_policy(session, settings["permission_policy"])
                 self.manager.set_model_profile(session, node["model_profile"] or settings["model_profile"])
+                self.manager.set_custom_tools(session, node.get('custom_tools', []))
                 if node['tool_names'] is not None:
                     from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES
                     self.manager.set_tool_names(session, list(dict.fromkeys([*node['tool_names'], *REQUIRED_TOOL_NAMES])))
@@ -664,8 +673,7 @@ class FlowService:
                     + "\n" + introduction
                     + "\n当前节点：" + node["title"] + "\n当前节点任务：\n" + node["prompt"]
                     + ("\n只执行当前节点的职责；后续任务留在交接中。"
-                       + "\n最终交接必须只输出符合以下契约的 JSON 对象，所有字段必填，不得添加其他字段：\n"
-                       + json.dumps(node["handoff_contract"], ensure_ascii=True, separators=(",", ":"))
+                       + handoff_output_instruction(node["handoff_contract"])
                        if node["handoff_contract"] is not None else
                        "\n只执行当前节点的职责；后续任务留在交接中。最后总结已改动、验证、未完成事项和风险。")
                 ), flow_id=value["id"])

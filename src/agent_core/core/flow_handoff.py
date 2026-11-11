@@ -84,6 +84,18 @@ def _exact_float(token: str) -> float:
         raise ValueError("number precision") from None
 
 
+def handoff_output_instruction(contract: dict) -> str:
+    """将配置契约转成结果对象的约束，避免模型把 fields 配置层当作输出层。"""
+    fields = {name: {key: value for key, value in spec.items() if value is not None}
+              for name, spec in contract['fields'].items()}
+    schema = {'type': 'object', 'properties': fields, 'required': list(fields),
+              'additionalProperties': False}
+    return ('\n最终交接只输出一个业务结果 JSON 对象，顶层字段必须且仅为：'
+            + json.dumps(list(fields), ensure_ascii=True) + '。所有字段必填，不添加包装层。'
+            + '\n下面是输出约束的 JSON Schema，请按它填写实际业务值：\n'
+            + json.dumps(schema, ensure_ascii=True, separators=(',', ':')))
+
+
 def validate_handoff(text: str, contract: dict) -> tuple[str, dict | None]:
     def failed(code, message):
         return "", {"status": "failed", "code": code, "message": message}

@@ -63,7 +63,7 @@ def fork_record(store, source: dict, through: int | None = None, *, attachment_r
     record['execution_environment'] = environment
     if flow_workspace_scope or source.get('flow_id') or source.get('flow_workspace_scope'):
         record['flow_workspace_scope'] = True
-    for field in ('model_profile', 'tool_names', 'reasoning_effort', 'thinking_mode', 'permission_policy', 'budget_overrides'):
+    for field in ('model_profile', 'tool_names', 'reasoning_effort', 'thinking_mode', 'permission_policy', 'budget_overrides', 'custom_tools'):
         if field in source:
             record[field] = copy.deepcopy(source[field])
     if inherited_tool_names is not _UNSET:

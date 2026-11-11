@@ -8,6 +8,7 @@ from agent_core.core.session_limits import limit as session_limit
 
 
 active_tool_names = ContextVar('active_tool_names', default='default')
+active_tool_schemas = ContextVar('active_tool_schemas', default=None)
 
 
 def filter_schemas(available: list[dict], names: list[str] | None) -> list[dict]:
@@ -91,18 +92,26 @@ def effective_tool_names(names: list[str] | None) -> list[str] | None:
     if deployment is None:
         return names
     allowed = set(deployment)
+    schemas = active_tool_schemas.get()
+    if schemas is not None and 'run_command' in allowed:
+        from agent_core.tools import TOOL_REGISTRY
+        allowed.update(row['function']['name'] for row in schemas
+                       if row['function']['name'] not in TOOL_REGISTRY)
     return [name for name in names if name in allowed]
 
 
 def selected_schemas(available: list[dict]) -> list[dict]:
     names = active_tool_names.get()
+    available = active_tool_schemas.get() or available
     return bounded_schemas(available, effective_tool_names(None if names == 'default' else names))
 
 
 @contextmanager
-def model_tools(names: list[str] | None):
+def model_tools(names: list[str] | None, schemas: list[dict] | None = None):
     token = active_tool_names.set(names)
+    schema_token = active_tool_schemas.set(schemas)
     try:
         yield
     finally:
+        active_tool_schemas.reset(schema_token)
         active_tool_names.reset(token)
