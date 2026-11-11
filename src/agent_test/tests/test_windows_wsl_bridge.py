@@ -55,6 +55,32 @@ def test_actual_wsl_confirmation_denial_does_not_write(bridge):
     assert not (root / 'denied.txt').exists()
 
 
+def test_actual_wsl_custom_tool_preserves_unicode_and_confirmation(bridge):
+    from agent_core.core.custom_tools import custom_registry
+
+    root, context = bridge
+    tool = custom_registry([{
+        'name': 'write_feedback', 'description': '保存合成反馈',
+        'parameters': {'type': 'object', 'properties': {'text': {'type': 'string'}},
+                       'required': ['text'], 'additionalProperties': False},
+        'code': 'from pathlib import Path\ndef main(arguments):\n'
+                '    Path("feedback.txt").write_text(arguments["text"], encoding="utf-8")\n'
+                '    return {"length": len(arguments["text"])}\n',
+    }])['write_feedback']
+    text = '😀' * 12000
+    with tool_context(context):
+        result = tool.run(json.dumps({'text': text}, ensure_ascii=False))
+    assert '[退出码] 0' in result and '12000' in result, result
+    assert (root / 'feedback.txt').read_text(encoding='utf-8') == text
+    (root / 'feedback.txt').unlink()
+    context.permission_policy = 'standard'
+    context.confirm = lambda *_: False
+    with tool_context(context):
+        result = tool.run('{"text":"denied"}')
+    assert '取消' in result or '未确认' in result, result
+    assert not (root / 'feedback.txt').exists()
+
+
 def test_actual_wsl_audit_failure_blocks_side_effect(bridge, monkeypatch):
     from agent_core.tools import sandbox
     root, context = bridge

@@ -66,6 +66,21 @@ function flowCancelConnectionOnEscape(event, cancel) {
   if (event.key !== "Escape" || !cancel) return false;
   event.preventDefault(); cancel(); return true;
 }
+function flowCustomToolsDraft(text) {
+  if (!text.trim()) return [];
+  try {
+    const value = JSON.parse(text), object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+    if (Array.isArray(value) && new Set(value.map((row) => row?.name)).size === value.length && value.every((row) => object(row) && typeof row.name === "string" && /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(row.name) && typeof row.description === "string" && row.description.length > 0 && object(row.parameters) && row.parameters.type === "object" && typeof row.code === "string" && row.code.length > 0 && (row.network === undefined || typeof row.network === "boolean"))) return value;
+  } catch (_) {}
+  return text;
+}
+function flowSetCustomTools(node, text, catalog) {
+  node.custom_tools = flowCustomToolsDraft(text);
+  if (Array.isArray(node.custom_tools) && node.tool_names != null) {
+    const available = new Set([...catalog.tools.map((tool) => tool.name), ...node.custom_tools.map((tool) => tool.name)]);
+    node.tool_names = node.tool_names.filter((name) => available.has(name));
+  }
+}
 function flowContractDraft(text) {
   if (!text.trim()) return null;
   try {
@@ -88,6 +103,9 @@ function flowContractDraft(text) {
 }
 function flowContractInvalid(flow) {
   return (flow.nodes || []).some((node) => typeof node.handoff_contract === "string");
+}
+function flowCustomToolsInvalid(flow) {
+  return (flow.nodes || []).some((node) => typeof node.custom_tools === "string");
 }
 function flowDefinition(flow) {
   const { id, title, project_id, workspace_path, handoff, execution_environment, permission_policy, model_profile, nodes, edges, revision } = flow;
@@ -116,7 +134,7 @@ function flowDesignerTrim(history) {
   }
   return rows;
 }
-if (typeof module !== "undefined" && module.exports) module.exports = { flowCanConnect, flowProjectInfo, flowCanvasBounds, flowExpandDragCanvas, flowCancelConnectionOnEscape, flowContractDraft, flowContractInvalid, flowDefinition, flowMergeProject, flowDisplayTitle, flowDesignerReply, flowDesignerTrim };
+if (typeof module !== "undefined" && module.exports) module.exports = { flowCanConnect, flowProjectInfo, flowCanvasBounds, flowExpandDragCanvas, flowCancelConnectionOnEscape, flowContractDraft, flowContractInvalid, flowCustomToolsDraft, flowSetCustomTools, flowDefinition, flowMergeProject, flowDisplayTitle, flowDesignerReply, flowDesignerTrim };
 if (typeof window !== "undefined") (() => {
   let bridge, active = null, selected = null, selectedEdge = null, generation = 0, revision = -1, epoch = null;
   let cancelConnection = null, cancelNodeDrag = null;
@@ -226,6 +244,7 @@ if (typeof window !== "undefined") (() => {
     const id = active, f = current(); if (!f || pending) return;
     if ((kind === "run" || kind === "queue") && !f.project_id) return;
     if ((kind === "save" || kind === "run") && flowContractInvalid(f)) { error("结构化交接契约无效，请修正或清空后重试。"); return; }
+    if ((kind === "save" || kind === "run") && flowCustomToolsInvalid(f)) { error("动态工具定义无效，请修正或清空后重试。"); return; }
     const inputText = runInputs.get(id) || "";
     if (kind === "delete" && !window.confirm("删除此 Flow？项目文件与节点会话会保留。")) return;
     const requestedEpoch = epoch;
@@ -346,6 +365,19 @@ if (typeof window !== "undefined") (() => {
         const inherit = el("label", "flow-tool-choice"), toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.checked = node.tool_names == null; toggle.disabled = locked(); inherit.append(toggle, document.createTextNode("继承默认工具")); tools.append(inherit);
         toggle.addEventListener("change", () => { node.tool_names = toggle.checked ? null : [...catalog.required_tool_names]; mark(); draw(); });
         catalog.tools.forEach((tool) => { const label = el("label", "flow-tool-choice"), check = document.createElement("input"); check.type = "checkbox"; const required = tool.required || catalog.required_tool_names.includes(tool.name); check.checked = required || node.tool_names == null || node.tool_names.includes(tool.name); check.disabled = locked() || required || node.tool_names == null; label.title = tool.description || ""; label.append(check, document.createTextNode(tool.name + (required ? "（基础）" : ""))); tools.append(label); check.addEventListener("change", () => { const values = new Set(node.tool_names || []); if (check.checked) values.add(tool.name); else values.delete(tool.name); node.tool_names = [...values]; mark(); }); });
+        const customLabel = el("label", "flow-field", "动态工具定义（JSON 数组）"), customEdit = document.createElement("textarea"), customHint = el("p", "field-hint", "Python 代码须定义 main(arguments)，返回可序列化的 JSON。"), customError = el("p", "inline-error"), customChoices = el("div", "flow-custom-tool-choices");
+        customEdit.setAttribute("aria-label", "动态工具定义（JSON 数组）"); customEdit.disabled = locked();
+        customEdit.placeholder = '[{"name":"example","description":"说明","parameters":{"type":"object","properties":{}},"code":"def main(arguments):\\n    return {}","network":false}]';
+        customEdit.value = typeof node.custom_tools === "string" ? node.custom_tools : JSON.stringify(node.custom_tools || [], null, 2);
+        function renderCustomChoices() {
+          customChoices.replaceChildren(); customError.hidden = typeof node.custom_tools !== "string"; customError.textContent = customError.hidden ? "" : "定义无效，请修正。";
+          for (const tool of Array.isArray(node.custom_tools) ? node.custom_tools : []) {
+            const label = el("label", "flow-tool-choice"), check = document.createElement("input"); check.type = "checkbox"; check.checked = node.tool_names == null || node.tool_names.includes(tool.name); check.disabled = locked() || node.tool_names == null; label.title = tool.description || ""; label.append(check, document.createTextNode(tool.name + "（自定义）")); customChoices.append(label);
+            check.addEventListener("change", () => { const values = new Set(node.tool_names || []); if (check.checked) values.add(tool.name); else values.delete(tool.name); node.tool_names = [...values]; mark(); });
+          }
+        }
+        customEdit.addEventListener("input", () => { flowSetCustomTools(node, customEdit.value, catalog); renderCustomChoices(); mark(); });
+        customLabel.append(customEdit); tools.append(customLabel, customHint, customError, customChoices); renderCustomChoices();
         body.append(tools);
         const choices = f.nodes.filter((n) => n.id !== node.id);
         const select = document.createElement("select"); choices.forEach((n) => { const o = el("option", "", n.title); o.value = n.id; select.append(o); }); select.disabled = locked() || !choices.length;
@@ -515,6 +547,7 @@ if (typeof window !== "undefined") (() => {
   }
   async function exportDraft() {
     if (flowContractInvalid(current())) { error("结构化交接契约无效，请修正或清空后重试。"); return; }
+    if (flowCustomToolsInvalid(current())) { error("动态工具定义无效，请修正或清空后重试。"); return; }
     try {
       const data = await bridge.api("/api/flows/export", { method: "POST", body: { definition: flowDefinition(current()) } });
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));

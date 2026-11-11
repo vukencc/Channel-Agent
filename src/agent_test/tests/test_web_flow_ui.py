@@ -71,6 +71,22 @@ assert.equal(node.handoff_contract, null);
 ''')
 
 
+def test_custom_tool_removal_after_invalid_draft_clears_stale_selection(tmp_path):
+    run_flow_js(tmp_path, r'''
+const {flowSetCustomTools} = api;
+const node = {custom_tools: [], tool_names: ['read_file', 'removed_tool']};
+const catalog = {tools: [{name:'read_file'}]};
+flowSetCustomTools(node, '[{', catalog);
+assert.equal(node.custom_tools, '[{');
+assert.deepEqual(node.tool_names, ['read_file', 'removed_tool']);
+flowSetCustomTools(node, '[]', catalog);
+assert.deepEqual(node.tool_names, ['read_file']);
+node.tool_names = null;
+flowSetCustomTools(node, '[]', catalog);
+assert.equal(node.tool_names, null);
+''')
+
+
 def test_designer_dock_keeps_canvas_after_generation_and_ignores_late_reply(tmp_path):
     # 受控 DOM 与异步接口，仅验证 UI 状态；不代表浏览器布局或模型执行。
     run_flow_js(tmp_path, r'''

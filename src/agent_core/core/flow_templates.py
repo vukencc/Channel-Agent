@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from agent_core import config
 from agent_core.core.flows import Edge, Definition, _order
 from agent_core.core.flow_handoff import HandoffContract
+from agent_core.core.custom_tools import CustomToolSpec, validate_custom_tools
 from agent_core.core.tool_settings import model_catalog
 from agent_core.tools import all_schemas
 
@@ -36,6 +37,7 @@ class PortableNode(BaseModel):
     handoff_contract: HandoffContract | None = None
     model_profile: str | None = Field(default=None, max_length=200)
     tool_names: list[str] | None = Field(default=None, max_length=256)
+    custom_tools: list[CustomToolSpec] = Field(default_factory=list, max_length=16)
     reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] | None = None
     thinking_mode: Literal['auto', 'enabled', 'disabled'] | None = None
     reuse_session: bool = Field(default=False, strict=True)
@@ -74,8 +76,12 @@ def validate_template(payload, manager, *, missing_models='error'):
         path = node['handoff_file']
         if path and (PurePosixPath(path).is_absolute() or PureWindowsPath(path).drive or PureWindowsPath(path).is_absolute() or '..' in PurePosixPath(path.replace('\\', '/')).parts):
             raise ValueError('交接文件必须为项目内相对路径')
+        node['custom_tools'] = validate_custom_tools(node['custom_tools'])
+        available = {item['name'] for item in flow_tool_catalog()['tools']}
+        if node['custom_tools'] and 'run_command' not in available:
+            raise ValueError('部署未启用 run_command，不能使用自定义工具')
+        available |= {item['name'] for item in node['custom_tools']}
         if node['tool_names'] is not None:
-            available = {item['name'] for item in flow_tool_catalog()['tools']}
             if not set(node['tool_names']) | set(REQUIRED_TOOL_NAMES) <= available:
                 raise ValueError('节点工具超出部署模型工具目录')
     for item in [value, *value['nodes']]:

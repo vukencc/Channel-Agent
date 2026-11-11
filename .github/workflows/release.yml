@@ -100,6 +100,17 @@ jobs:
             'src/agent_test/tests/test_workspace_picker_ui.py',
             'src/agent_test/tests/test_web_workspace_layout.py',
             'src/agent_test/tests/test_context_archive_debug.py',
+            'src/agent_test/tests/test_custom_tools_runtime.py',
+            'src/agent_test/tests/test_flow_custom_tools.py',
+            'src/agent_test/tests/test_custom_tools_adversarial.py',
+            'src/agent_test/tests/test_custom_tools_authority.py',
+            'src/agent_test/tests/test_dynamic_wsl_authority.py',
+            'src/agent_test/tests/test_custom_tool_entry_contract.py',
+            'src/agent_test/tests/test_working_tool_display.py',
+            'src/agent_test/tests/test_working_tooltip_pointer.py',
+            'src/agent_test/tests/test_dynamic_feedback_validation.py',
+            'src/agent_test/tests/test_flow_designer.py',
+            'src/agent_test/tests/test_packaged_dynamic_smoke.py',
             'src/agent_test/tests/test_packaged_smoke.py'
           )
           uv run --no-sync pytest -m 'not integration' -q @tests

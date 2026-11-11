@@ -8,6 +8,7 @@ import threading
 import time
 import sys
 from contextvars import copy_context
+from contextlib import contextmanager
 from functools import partial
 from dataclasses import dataclass, field
 from typing import Callable
@@ -31,7 +32,7 @@ from agent_core.core.tool_settings import filter_schemas, bounded_schemas, model
 from agent_core.core.budgets import BudgetLedger, BudgetExceeded, budget_scope
 from agent_core.rag.assess import assess_rag
 from agent_core.tools import TOOL_REGISTRY
-from agent_core.tools.sandbox import ToolContext, tool_context, CancellationFlag, audit
+from agent_core.tools.sandbox import ToolContext, tool_context, CancellationFlag, audit, SandboxError, execution_authority
 
 logger = get_logger(__name__)
 
@@ -97,6 +98,7 @@ class SessionManager:
         self.project_reservations: dict[tuple[int, int], str] = {}
         self.project_reservation_nodes: dict[tuple[int, int], str] = {}
         self._concurrency_lock = threading.Lock()
+        self._tool_authority_lock = threading.RLock()
         self._active_model_calls = 0
         self._active_model_sessions = {}
         self._active_tools = {}
@@ -506,11 +508,24 @@ class SessionManager:
         except ValueError as exc:
             return f'工具未执行：{exc}'
         name = call['function']['name']
-        tool = TOOL_REGISTRY.get(name)
+        tool = TOOL_REGISTRY.get(name) or self._session_custom_registry(session).get(name)
         if evidence is not None:
             evidence['source'] = 'not_executed'
         if tool is None:
             return f'未知工具: {name}'
+        @contextmanager
+        def authority_guard():
+            with self._tool_authority_lock:
+                names = self._effective_session_tools(session)
+                current = TOOL_REGISTRY.get(name) or self._session_custom_registry(session).get(name)
+                if (self.sessions.get(session.id) is not session or session.deleting
+                        or (names is not None and name not in names)
+                        or current is None
+                        or getattr(current, 'definition', None) != getattr(tool, 'definition', None)):
+                    raise SandboxError('工具授权或定义已改变，拒绝执行排队中的旧工具')
+                if tool_cancelled.is_set():
+                    raise SandboxError('工具已取消，尚未执行')
+                yield
         loop = asyncio.get_running_loop()
         directory = self.store.directory(session.id)
         tool_cancelled = CancellationFlag(session.cancelled)
@@ -536,7 +551,8 @@ class SessionManager:
                                   tool_call_id=call['id'], job_manager=self.command_jobs, agent_tasks=self.agent_tasks, event_loop=loop, permission_policy=self.permission_override or session.record.get('permission_policy'), session_id=session.id,
                                   root_identity=self.workspaces.identity(session), execution_environment=self.execution_environment(session),
                                   flow_workspace_scope=self.flow_workspace_scope(session),
-                                  protected_paths=tuple(self.workspaces.protected_paths()))
+                                  protected_paths=tuple(self.workspaces.protected_paths()),
+                                  execution_guard=authority_guard)
             with tool_context(context), session_service_context(self, session.id, loop):
                 names = self._effective_session_tools(session)
                 if names is not None and name not in names:
@@ -545,6 +561,11 @@ class SessionManager:
                 if session.cancelled.is_set():
                     return '[已取消] 工具尚未执行。'
                 def run_tool():
+                    try:
+                        with execution_authority():
+                            pass
+                    except SandboxError as exc:
+                        return f'[拒绝] {exc}'
                     try:
                         with operation_span('tool.execute', name=name) as span:
                             result = tool.run(call['function']['arguments'])
@@ -734,7 +755,8 @@ class SessionManager:
                 # 使用本轮准备上下文时绑定的连接快照，不能在请求前切到另一容量。
                 endpoint = (active_endpoint.get() if active_profile.get() == profile
                             else self.model_registry.resolve(profile))
-                with model_profile(profile, endpoint), model_tools(names), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
+                schemas = self._session_schemas(session) if session else None
+                with model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
                     with operation_span('model.request'):
                         return await self.model(history, **kwargs)
             finally:
@@ -749,6 +771,8 @@ class SessionManager:
 
     def _effective_session_tools(self, session, *, include_current=True):
         names = effective_tool_names(None)
+        if names is not None and 'run_command' in names:
+            names = list(names) + list(self._session_custom_registry(session))
         active = set()
         visited = set()
         pending = [(session, False)]
@@ -793,20 +817,85 @@ class SessionManager:
                         return []
                 else:
                     pending.append((parent, False))
+        if names is not None:
+            known = set(TOOL_REGISTRY) | set(self._session_custom_registry(session))
+            names = [name for name in names if name in known]
         return names
+
+    def _session_custom_registry(self, session):
+        from agent_core.core.custom_tools import custom_registry, validate_custom_tools
+        if config.MODEL_TOOL_NAMES is not None and 'run_command' not in config.MODEL_TOOL_NAMES:
+            return {}
+        try:
+            definitions = validate_custom_tools(session.record.get('custom_tools', []))
+            remaining = {item['name']: item for item in definitions}
+            pending = [session]
+            seen = set()
+            while pending:
+                current = pending.pop()
+                if current.id in seen:
+                    return {}
+                seen.add(current.id)
+                inherited = current.record.get('inherited_custom_tools')
+                if inherited is not None:
+                    inherited = {item['name']: item for item in validate_custom_tools(inherited)}
+                    remaining = {name: item for name, item in remaining.items() if inherited.get(name) == item}
+                branch = current.record.get('branch') or {}
+                if not isinstance(branch, dict):
+                    return {}
+                for identifier in {current.record.get('delegated_from'), branch.get('parent_id')} - {None, ''}:
+                    parent = self.sessions.get(identifier)
+                    if parent is None:
+                        if inherited is None:
+                            return {}
+                        continue
+                    parent_defs = {item['name']: item for item in validate_custom_tools(parent.record.get('custom_tools', []))}
+                    remaining = {name: item for name, item in remaining.items() if parent_defs.get(name) == item}
+                    pending.append(parent)
+            return custom_registry(list(remaining.values()))
+        except (ValueError, TypeError, KeyError):
+            return {}
+
+    def _session_schemas(self, session):
+        return [*TOOL_SCHEMAS, *(tool.schema for tool in self._session_custom_registry(session).values())]
+
+    def session_tools(self, session):
+        from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES
+        custom = self._session_custom_registry(session)
+        schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
+        return [{'name': row['function']['name'], 'description': row['function'].get('description', ''),
+                 'required': bool(session.record.get('flow_id')) and row['function']['name'] in REQUIRED_TOOL_NAMES,
+                 'custom': row['function']['name'] in custom} for row in schemas]
+
+    def set_custom_tools(self, session, values):
+        from agent_core.core.custom_tools import validate_custom_tools
+        if session.busy or getattr(self, '_tool_ceiling_archive', False):
+            raise ValueError('请等待会话空闲后修改自定义工具')
+        if not session.record.get('flow_id'):
+            raise ValueError('仅 Flow 根会话可配置自定义工具')
+        if session.record.get('delegated_from') or (session.record.get('branch') or {}).get('parent_id'):
+            raise ValueError('子会话不能修改自定义工具')
+        definitions = validate_custom_tools(values)
+        if definitions and config.MODEL_TOOL_NAMES is not None and 'run_command' not in config.MODEL_TOOL_NAMES:
+            raise ValueError('部署未启用 run_command')
+        with self._tool_authority_lock:
+            session.record['custom_tools'] = definitions
+        self.save(session)
 
     def set_tool_names(self, session, names: list[str] | None):
         if getattr(self, '_tool_ceiling_archive', False):
             raise ValueError('会话归档期间不能修改工具子集')
         if session.busy:
             raise ValueError('请等待当前任务结束再切换工具子集')
-        schemas = filter_schemas(TOOL_SCHEMAS, names)
-        if names is not None and config.MODEL_TOOL_NAMES is not None and not set(names) <= set(config.MODEL_TOOL_NAMES):
+        schemas = filter_schemas(self._session_schemas(session), names)
+        deployment = set(config.MODEL_TOOL_NAMES or []) | set(self._session_custom_registry(session))
+        if names is not None and config.MODEL_TOOL_NAMES is not None and not set(names) <= deployment:
             raise ValueError('会话工具超出部署 MODEL_TOOL_NAMES 上限')
         ceiling = self._effective_session_tools(session, include_current=False)
         if names is not None and ceiling is not None and not set(names) <= set(ceiling):
             raise ValueError('子会话工具超出父会话上限')
-        session.record['tool_names'] = None if names is None else [row['function']['name'] for row in schemas]
+        with self._tool_authority_lock:
+            session.record['tool_names'] = None if names is None else [row['function']['name'] for row in schemas]
         self.save(session)
 
     def set_permission_policy(self, session, policy: str | None):
@@ -919,6 +1008,7 @@ class SessionManager:
                     snapshots.append((candidate, self._effective_session_tools(candidate)))
             for candidate, ceiling in snapshots:
                 candidate.record['inherited_tool_names'] = copy.deepcopy(ceiling)
+                candidate.record['inherited_custom_tools'] = [copy.deepcopy(item) for item in candidate.record.get('custom_tools', []) if item['name'] in self._session_custom_registry(candidate)]
                 await wait_for_io_completion(self.save(candidate))
             worker = asyncio.get_running_loop().run_in_executor(
                 self.store.writer, self.store.delete_sessions, [target.id for target in reversed(targets)])
@@ -1151,7 +1241,7 @@ class SessionManager:
                     budget_text += work_progress_context(session.record)
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
-                schemas = bounded_schemas(TOOL_SCHEMAS, self._effective_session_tools(session))
+                schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
                 budget_text += '\n' + delegation_guide([schema['function']['name'] for schema in schemas],
                                                        session.record.get('delegated_from'), concise=round_index > 0)
                 extra_chars = len(memory_text) - len(memory) + len(FILE_WORKFLOW_GUIDE) + 1 + len(budget_text)
@@ -1262,7 +1352,7 @@ class SessionManager:
                 async def execute_call(call, index):
                     name = call['function']['name']
                     started = time.monotonic()
-                    observed_name = name if name in TOOL_REGISTRY else 'unknown_tool'
+                    observed_name = name if name in TOOL_REGISTRY or name in self._session_custom_registry(session) else 'unknown_tool'
                     if self.observer.enabled:
                         self.observer.event('tool.started', session_id=session.id, batch_id=batch_id,
                             turn_id=session.record['last_run']['turn_id'], tool_call_id=call['id'],

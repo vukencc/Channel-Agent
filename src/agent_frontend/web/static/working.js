@@ -2,6 +2,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = String(text); return node; };
+  const makeTip = () => { const tip = el("div", "working-tip"); tip.setAttribute("role", "tooltip"); tip.style.pointerEvents = "none"; return tip; };
   let bridge, active = false, rows = [], selected = null, timer = null, pending = null, generation = 0;
   let detailPane, detailSnapshot;
   let refreshMessage = "正在更新运行状态…";
@@ -11,6 +12,11 @@
   const structure = (runs) => JSON.stringify(runs.map((r) => [r.run_id, (r.nodes || []).map((n) => n.id)]));
   function field(container, label, content) {
     const group = el("div", "working-field"); group.append(el("dt", "", label), el("dd", "", value(content))); container.append(group);
+  }
+  function toolField(container, tools) {
+    if (!Array.isArray(tools)) return;
+    const descriptions = tools.map((tool) => `${tool.name || ""}${tool.required ? "（基础锁定）" : tool.custom ? "（自定义）" : ""}：${String(tool.description || "").trim() || "暂无描述"}`);
+    field(container, "可调用工具", descriptions.join("\n") || "无");
   }
   function updateNode(button, tip, node) {
     button.replaceChildren(el("strong", "", node.title || node.id), el("span", "working-status", status(node.status)));
@@ -36,6 +42,7 @@
     const validation = node.handoff_validation;
     const handoff = validation?.status === "passed" ? "格式校验通过，业务结果需另行核验" : validation?.message;
     [["Flow", run.title], ["运行 ID", run.run_id], ["状态", status(node.status)], ["阶段", node.phase], ["任务", node.task], ["任务概览", node.task_summary], ["模型", node.model], ["模型预设", node.model_profile], ["思考模式", node.thinking_mode], ["推理强度", node.reasoning_effort], ["开始时间", node.started_at], ["会话 ID", node.session_id], ["模型调用", node.model_calls], ["工具调用", node.tool_calls], ["交接验收", handoff]].forEach(([label, content]) => field(list, label, content));
+    toolField(list, node.tools);
     pane.append(list, el("h3", "", `子 Agent (${node.active_subagent_count ?? 0}/${node.subagent_count ?? 0} 活跃)`));
     if ((node.subagent_count ?? 0) > (node.subagents || []).length) {
       pane.append(el("p", "working-muted", `显示 ${(node.subagents || []).length} / ${node.subagent_count} 个子 Agent，其余未显示。`));
@@ -44,6 +51,7 @@
       const card = el("section", "working-subagent"), subfields = el("dl", "working-fields");
       card.append(el("strong", "", sub.title || sub.id));
       [["状态", status(sub.status)], ["阶段", sub.phase], ["任务概览", sub.task_summary], ["任务", sub.task], ["模型", sub.model]].forEach(([label, content]) => field(subfields, label, content));
+      toolField(subfields, sub.tools);
       card.append(subfields); pane.append(card);
     }
     pane.scrollTop = scroll;
@@ -63,7 +71,7 @@
         const wrap = el("div", "working-node-wrap"), button = el("button", "working-node"); button.type = "button";
         button.setAttribute("aria-pressed", String(selected?.run === run.run_id && selected?.node === node.id));
         button.dataset.run = run.run_id; button.dataset.node = node.id;
-        const tip = el("div", "working-tip"); tip.setAttribute("role", "tooltip"); tip.id = `working-tip-${list.querySelectorAll(".working-tip").length}-${nodes.children.length}`; button.setAttribute("aria-describedby", tip.id);
+        const tip = makeTip(); tip.id = `working-tip-${list.querySelectorAll(".working-tip").length}-${nodes.children.length}`; button.setAttribute("aria-describedby", tip.id);
         updateNode(button, tip, node);
         wrap.addEventListener("pointerenter", () => positionTip(button, tip));
         button.addEventListener("focus", () => positionTip(button, tip));

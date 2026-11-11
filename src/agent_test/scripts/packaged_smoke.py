@@ -162,6 +162,65 @@ def _check_flow_template(root: Path) -> None:
         store.close()
 
 
+def _check_dynamic_tools(root: Path) -> None:
+    """校验真实 schema 资源及便携定义往返，不运行工具源码。"""
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import ValidationError
+    from agent_core.core.custom_tools import CustomToolSpec
+    from agent_core.core.flows import FlowService
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    definition = {
+        'name': 'packaged_probe', 'description': '打包动态工具验收',
+        'parameters': {'type': 'object', 'properties': {'count': {'type': 'integer', 'minimum': 1}},
+                       'required': ['count'], 'additionalProperties': False},
+        'code': "raise RuntimeError('验收不得执行源码')\ndef main(arguments):\n    return arguments\n",
+        'network': False,
+    }
+    spec = CustomToolSpec.model_validate(definition)
+    invalid = {**definition, 'parameters': {'type': 'object', 'properties': {
+        'count': {'type': 'integer', 'minimum': 'invalid'}}}}
+    try:
+        CustomToolSpec.model_validate(invalid)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError('动态工具 schema 校验未拒绝无效定义')
+    validator = Draft202012Validator(spec.parameters)
+    validator.validate({'count': 1})
+    try:
+        validator.validate({'count': 0})
+    except ValidationError:
+        pass
+    else:
+        raise RuntimeError('动态工具参数校验未拒绝无效数据')
+
+    state, workspace = root / 'dynamic-flow-state', root / 'dynamic-flow-workspace'
+    store = SessionStore(state, workspace_root=workspace)
+    try:
+        service = FlowService(SessionManager(store))
+        flow = service.create(title='动态工具打包验收')
+        flow['nodes'] = [{'id': 'probe', 'title': '验收', 'prompt': '不执行模型',
+                          'x': 0, 'y': 0, 'custom_tools': [definition],
+                          'tool_names': ['packaged_probe']}]
+        saved = service.save(flow)
+        payload = service.export_template(saved['id'])
+        path = root / 'dynamic-flow.template.json'
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+        imported = service.import_template(json.loads(path.read_text(encoding='utf-8')))
+        identifier = imported['id']
+    finally:
+        store.close()
+    store = SessionStore(state, workspace_root=workspace)
+    try:
+        node = FlowService(SessionManager(store)).get(identifier)['nodes'][0]
+        _require(node['custom_tools'] == [spec.model_dump()])
+        _require('packaged_probe' in node['tool_names'])
+    finally:
+        store.close()
+
+
 def _tool_context(root: Path, audit_path: Path, confirm: Callable[..., bool]):
     from agent_core.tools.sandbox import ToolContext
     root.mkdir(parents=True, exist_ok=True)
@@ -283,6 +342,7 @@ def _import_check(name: str) -> Check:
 def _capabilities() -> dict[str, Check]:
     checks = {'config_root': _check_config_root, 'web_debug_resources': _check_web_debug,
               'qt_runtime': _check_qt, 'flow_template': _check_flow_template,
+              'dynamic_tools': _check_dynamic_tools,
               'native_file_tools': _check_file_tools, 'numpy': _check_numpy,
               'torch_cpu': _check_torch, 'onnxruntime_cpu': _check_onnxruntime,
               'fastembed': _import_check('fastembed'), 'transformers': _import_check('transformers'),

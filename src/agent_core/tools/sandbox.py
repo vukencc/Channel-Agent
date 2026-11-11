@@ -5,6 +5,7 @@
 from contextvars import ContextVar
 from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from threading import Event
 
@@ -72,6 +73,7 @@ class ToolContext:
     execution_environment: str | None = None
     flow_workspace_scope: bool = False
     protected_paths: tuple[Path, ...] = ()
+    execution_guard: Callable[[], AbstractContextManager] | None = None
 
 
 _context: ContextVar[ToolContext | None] = ContextVar("tool_context", default=None)
@@ -89,6 +91,17 @@ def tool_context(context: ToolContext):
 def cancellation_requested() -> bool:
     context = _context.get()
     return bool(context and context.cancelled.is_set())
+
+
+@contextmanager
+def execution_authority():
+    """仅在不可逆执行边界持有授权锁；等待确认或工作区时不能持有。"""
+    context = _context.get()
+    if context is not None and context.execution_guard is not None:
+        with context.execution_guard():
+            yield
+    else:
+        yield
 
 
 def execution_environment() -> str:
@@ -314,7 +327,7 @@ def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[st
         return False
     if policy == 'full_access':
         audit('confirm', action=action, detail=detail, reason=reason, allowed=True,
-              decision_source='full_access')
+              decision_source='full_access', strict=True)
         return True
     if policy == 'smart' and not force_confirmation:
         from agent_core.core.permissions import evaluate_operation_risk
@@ -322,7 +335,7 @@ def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[st
         if not risk.requires_confirmation:
             allowed = not cancellation_requested()
             audit('confirm', action=action, detail=detail, reason=reason, allowed=allowed,
-                  decision_source='smart_safe' if allowed else 'cancelled')
+                  decision_source='smart_safe' if allowed else 'cancelled', strict=allowed)
             return allowed
     if policy == 'trusted' and not force_confirmation:
         try:
@@ -332,11 +345,11 @@ def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[st
             return False
         if rule is not None:
             audit('confirm', action=action, detail=detail, reason=reason, allowed=True,
-                  decision_source='trusted_rule', rule=rule)
+                  decision_source='trusted_rule', rule=rule, strict=True)
             return True
 
     allowed = confirm(prompt, config.CONFIRM_TIMEOUT)
-    audit("confirm", action=action, detail=detail, reason=reason, allowed=allowed)
+    audit("confirm", action=action, detail=detail, reason=reason, allowed=allowed, strict=allowed)
     return allowed
 
 

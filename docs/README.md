@@ -13,6 +13,7 @@
 
 - [原生桌面 GUI](desktop.md)：不依赖浏览器的窗口、模型设置与会话操作。
 - [Agent Flow](agent-flow.md)：原生及 Web 画布、项目继承、交接和运行状态。
+- [节点动态工具](dynamic-tools.md)：定义、命令能力边界与安全验证矩阵。
 - [四 Agent 售后工单手动用例](agent-flow-support-manual.md)：完整节点配置、可选模板导入与待用户执行的操作步骤，未运行或测试。
 
 - [CLI 指南](cli.md)：多会话操作、命令、持久化与确认。
@@ -47,6 +48,7 @@
 
 以下记录保留当时的执行和问题，不代表当前质量或性能。
 
+- [客服反馈分流与动态工具实测](agent-flow-dynamic-tools-validation-2026-11-11.md)：真实设计、业务工具、两端 JSON 往返及格式失败与修复记录。
 - [客服反馈分流与 Working 实测](agent-flow-working-validation-2026-11-10.md)：真实模型委派、运行耗时、桌面与 Web 检查及状态显示修复。
 - [Agent Flow 验证记录](agent-flow-validation.md)：多流程测试、修复与验证边界。
 - [Web Flow 画布与三个 Agent 验证](agent-flow-canvas-validation-2026-10-31.md)：实时拖线、节点裁剪、测试计划、实际步骤与真实模型执行问题。

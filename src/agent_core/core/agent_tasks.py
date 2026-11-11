@@ -55,9 +55,10 @@ class AgentTasks:
         if not math.isfinite(delay_seconds) or not 0 <= delay_seconds <= 86400:
             raise ValueError('延时必须在 0..86400 秒之间')
         parent_tools = self.manager._effective_session_tools(parent)
-        allowed = set(TOOL_REGISTRY if parent_tools is None else parent_tools)
+        available = set(TOOL_REGISTRY) | set(self.manager._session_custom_registry(parent))
+        allowed = set(available if parent_tools is None else parent_tools)
         if tool_names is None:
-            tool_names = list(TOOL_REGISTRY if parent_tools is None else parent_tools)
+            tool_names = list(available if parent_tools is None else parent_tools)
         if not isinstance(tool_names, list) or not all(isinstance(name, str) for name in tool_names) or not set(tool_names) <= allowed:
             raise ValueError('子代理工具必须为父会话工具子集')
         endpoint = self.manager.model_registry.resolve(parent.record.get('model_profile'))
@@ -99,6 +100,8 @@ class AgentTasks:
             permission_policy=self.manager.permission_override or parent.record.get('permission_policy') or config.TOOL_PERMISSION_POLICY,
             model_profile=parent.record.get('model_profile'), tool_names=list(dict.fromkeys(tool_names)),
             budget_overrides=limits, memory_namespace='session')
+        child.record['custom_tools'] = [copy.deepcopy(item) for item in parent.record.get('custom_tools', []) if item['name'] in allowed and item['name'] in tool_names]
+        child.record['inherited_custom_tools'] = copy.deepcopy(child.record['custom_tools'])
         record = {'id': identifier, 'owner': parent.id, 'child_id': child.id, 'status': 'queued',
                   'workspace_mode': workspace_mode, 'workspace_id': child.record['workspace_owner_id'],
                   'created_at': time.time(), 'due_at': time.time() + delay_seconds, 'task': task, 'error': '', 'result': ''}

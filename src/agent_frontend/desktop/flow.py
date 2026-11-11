@@ -5,6 +5,7 @@ import copy
 import math
 import os
 import json
+import re
 from pathlib import PurePosixPath, PureWindowsPath
 import sys
 import uuid
@@ -42,6 +43,24 @@ def _contract_draft(text: str):
         value = json.loads(text)
         HandoffContract.model_validate(value)
         if isinstance(value, dict):
+            return value
+    except (ValueError, TypeError):
+        pass
+    return text
+
+
+def _custom_tools_draft(text: str):
+    if not text.strip():
+        return []
+    try:
+        value = json.loads(text)
+        if isinstance(value, list) and len({row.get('name') for row in value if isinstance(row, dict) and isinstance(row.get('name'), str)}) == len(value) and all(
+            isinstance(row, dict) and isinstance(row.get('name'), str)
+            and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,63}', row['name'])
+            and isinstance(row.get('description'), str) and bool(row['description']) and isinstance(row.get('parameters'), dict)
+            and row['parameters'].get('type') == 'object' and isinstance(row.get('code'), str) and bool(row['code'])
+            and isinstance(row.get('network', False), bool) for row in value
+        ):
             return value
     except (ValueError, TypeError):
         pass
@@ -382,6 +401,16 @@ class FlowPanel(QWidget):
         self.tools_mode.addItem('自定义工具', 'custom')
         self.tools_layout.addWidget(self.tools_mode)
         self.tool_checks = {}
+        self.custom_tool_checks = {}
+        self.custom_tools_label = _label('动态工具定义（JSON 数组）')
+        self.custom_tools_edit = QTextEdit()
+        self.custom_tools_edit.setAcceptRichText(False)
+        self.custom_tools_edit.setPlaceholderText('[{"name":"example","description":"说明","parameters":{"type":"object","properties":{}},"code":"def main(arguments):\\n    return {}","network":false}]')
+        self.custom_tools_hint = _label('Python 代码须定义 main(arguments)，返回可序列化的 JSON。')
+        self.tools_layout.addWidget(self.custom_tools_label)
+        self.tools_layout.addWidget(self.custom_tools_edit)
+        self.tools_layout.addWidget(self.custom_tools_hint)
+        self.custom_tools_edit.textChanged.connect(self._custom_tools_changed)
         self.node_form.insertWidget(self.node_form.count() - 1, self.tools_container)
         self.tools_container.hide()
         self.tools_toggle.toggled.connect(self.tools_container.setVisible)
@@ -687,8 +716,43 @@ class FlowPanel(QWidget):
             names = data.get('tool_names')
             self.tools_mode.setCurrentIndex(0 if names is None else 1)
             for name, check in self.tool_checks.items():
-                check.setChecked(bool(check.property('required')) or (names is not None and name in names))
+                check.setChecked(bool(check.property('required')) or names is None or name in names)
                 check.setEnabled(names is not None and not check.property('required') and not self.running)
+            definitions = data.get('custom_tools', [])
+            self.custom_tools_edit.setPlainText(definitions if isinstance(definitions, str) else json.dumps(definitions or [], ensure_ascii=False, indent=2))
+            self.custom_tools_hint.setText('定义无效，请修正。' if isinstance(definitions, str) else 'Python 代码须定义 main(arguments)，返回可序列化的 JSON。')
+            self._refresh_custom_checks(definitions, names)
+
+    def _refresh_custom_checks(self, definitions, names) -> None:
+        for check in self.custom_tool_checks.values():
+            self.tools_layout.removeWidget(check)
+            check.deleteLater()
+        self.custom_tool_checks = {}
+        if not isinstance(definitions, list):
+            return
+        for row in definitions:
+            if not isinstance(row, dict) or not isinstance(row.get('name'), str):
+                continue
+            name = row['name']
+            check = QCheckBox(name + '（自定义）')
+            check.setToolTip(str(row.get('description') or ''))
+            check.setChecked(names is None or name in names)
+            check.setEnabled(names is not None and not self.running and bool(self._selected))
+            check.toggled.connect(self._tools_changed)
+            self.tools_layout.addWidget(check)
+            self.custom_tool_checks[name] = check
+
+    def _custom_tools_changed(self) -> None:
+        if self._loading or self.running or self._selected not in self.nodes:
+            return
+        value = _custom_tools_draft(self.custom_tools_edit.toPlainText())
+        self.custom_tools_hint.setText('定义无效，请修正。' if isinstance(value, str) else 'Python 代码须定义 main(arguments)，返回可序列化的 JSON。')
+        names = self.nodes[self._selected].data.get('tool_names')
+        if isinstance(value, list) and names is not None:
+            known = set(self.tool_checks) | {item['name'] for item in value}
+            self._field_changed('tool_names', [name for name in names if name in known], True)
+        self._field_changed('custom_tools', value, True)
+        self._refresh_custom_checks(value, self.nodes[self._selected].data.get('tool_names'))
 
     def set_tool_catalog(self, catalog: dict) -> None:
         rows = catalog.get('tools', [])
@@ -713,9 +777,19 @@ class FlowPanel(QWidget):
 
     def _tools_changed(self, *_args) -> None:
         custom = self.tools_mode.currentData() == 'custom'
+        if not custom:
+            for check in (*self.tool_checks.values(), *self.custom_tool_checks.values()):
+                blocker = QSignalBlocker(check)
+                check.setChecked(True)
+                del blocker
         for check in self.tool_checks.values():
             check.setEnabled(custom and not check.property('required') and not self.running and bool(self._selected))
-        names = [name for name, check in self.tool_checks.items() if check.isChecked()] if custom else None
+        for check in self.custom_tool_checks.values():
+            check.setEnabled(custom and not self.running and bool(self._selected))
+        selected_names = (self.nodes[self._selected].data.get('tool_names') or []) if self._selected in self.nodes else []
+        known = set(self.tool_checks) | set(self.custom_tool_checks)
+        names = ([name for name in selected_names if name not in known] +
+                 [name for name, check in {**self.tool_checks, **self.custom_tool_checks}.items() if check.isChecked()]) if custom else None
         self._field_changed('tool_names', names, True)
 
     def _import_file(self) -> None:
@@ -744,6 +818,9 @@ class FlowPanel(QWidget):
     def _contract_valid(self) -> bool:
         if any(isinstance(node.get('handoff_contract'), str) for node in self._flow.get('nodes', [])):
             QMessageBox.warning(self, '契约无效', '结构化交接契约无效，请修正或清空后重试。')
+            return False
+        if any(isinstance(node.get('custom_tools'), str) for node in self._flow.get('nodes', [])):
+            QMessageBox.warning(self, '动态工具无效', '动态工具定义无效，请修正或清空后重试。')
             return False
         return True
 
@@ -879,8 +956,11 @@ class FlowPanel(QWidget):
                 else:
                     field.setEnabled(enabled)
         self.tools_mode.setEnabled(not running and bool(self._selected))
+        self.custom_tools_edit.setReadOnly(running or not bool(self._selected))
         for check in self.tool_checks.values():
             check.setEnabled(not running and bool(self._selected) and self.tools_mode.currentData() == 'custom' and not check.property('required'))
+        for check in self.custom_tool_checks.values():
+            check.setEnabled(not running and bool(self._selected) and self.tools_mode.currentData() == 'custom')
         self._refresh_projects()
         self._show_result()
 

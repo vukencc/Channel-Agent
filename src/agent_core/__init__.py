@@ -1,3 +1,3 @@
 """AI Agent Startup：多会话流式 Agent、工具沙箱与混合 RAG。"""
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"

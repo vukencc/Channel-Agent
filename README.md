@@ -33,7 +33,7 @@ WebUI 默认监听本机 `127.0.0.1:8765`。默认权限策略为 `smart`；无�
 [阶段状态](docs/project-status.md)说明已验证内容与质量边界。
 
 - 原生桌面和 WebUI 均可使用经典 Agent 与可视化 Flow：[桌面 GUI](docs/desktop.md)、[Agent Flow](docs/agent-flow.md)
-- 经典 Agent 工具自动管理、Flow 节点工具配置与重复入口简化：[工具设计](docs/tool-design.md)
+- 经典 Agent 工具自动管理；Flow 节点可定义并选择私有 Python 工具，运行经所选命令环境和权限策略：[工具设计](docs/tool-design.md)、[动态工具](docs/dynamic-tools.md)
 
 - 多会话 CLI、子 Agent 与父子消息：[CLI 指南](docs/cli.md)、[会话工具](docs/session-tools.md)
 - 本机浏览器界面与只读运行调试：[WebUI 指南](docs/web-ui.md)、[DEBUG 运行调试](docs/debug-runtime.md)
