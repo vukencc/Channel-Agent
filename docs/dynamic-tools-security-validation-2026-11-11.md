@@ -9,7 +9,7 @@
 | 维度 | 用例与断言 |
 | --- | --- |
 | 定义边界 | 全部内置名保留、重复名、16/17 项、32,000 UTF-8 字节、入口绑定/签名、无注册副作用。 |
-| Schema/参数 | 深度/节点/属性/序列化体积、循环数据、类型/多余字段/非有限值、64 KiB 相邻边界及 Unicode 实际传递。 |
+| Schema/参数 | 深度/节点/属性/序列化体积、循环数据、类型/多余字段/非有限值、64 KiB 相邻边界及 Unicode 实际传递；源码和参数同时达到上限时真实执行，防止单 argv 组合超限。 |
 | 权限/继承 | 部署关闭命令、节点未选择、父级收窄、同名源码替换、子级篡改、孤立/分支/真实委派及两轮复用。 |
 | 执行隔离 | 真实项目外绝对/相对路径、符号链接、硬链接和网络负例；检查无敏感内容泄漏、外部文件不变。本机监听端口作为网络阳性对照。 |
 | 并发撤权 | 跨线程持有真实工作区锁，在工具等待期间撤销或替换父定义；分别覆盖启用/关闭 command_jobs。Smart 确认等待中也改变定义，断言无旧代码副作用且不死锁。 |
@@ -27,7 +27,22 @@
 
 - 本地 Linux 非集成全量：**2108 passed、39 skipped、5 deselected，128.25 秒**；该次之后新增的 WSL 协议用例另行记录。
 - 真实 `ci_sandbox_probe`：Bubblewrap + prlimit 实际隔离通过。
-- Windows 原生/WSL、最终 CI 和冻结成品结果：待补齐，尚未计为通过。
+- 最终专项（禁用本机 `.env`，8 个文件）：**107 passed，69.17 秒**，含真实 worker 协议四项与源码/参数同时达到上限的组合用例。
+- 本机 Windows 原生：按工作流选择的 57 个文件，**572 passed、56 skipped，339.23 秒**；另显式启用真实 Windows→WSL：**8 passed，80.52 秒**。WSL 用例未因原生选择集跳过而被追认为已通过，而是独立实际执行。
+- PR 首轮 Windows CI：**583 passed、45 skipped，79.57 秒**。平台权限、可选依赖及显式 WSL 开关导致跳过数不同，集成模型/权重下载未启用。
+- PR 首轮 Linux CI 在 APT 系统包下载阶段因 Ubuntu 镜像 DNS 解析失败，尚未运行测试；已只重跑失败的作业，并将托管 runner 的 Ubuntu mirrorlist 替换为官方 HTTPS 仓库，保留签名校验、依赖安装失败退出及真实隔离探针。最终 CI 与冻结成品结果待补齐。
+
+## 复跑命令
+
+从 Linux 仓库根目录，隔离状态/审计/缓存并将 Linux Node 加入 PATH：
+
+```bash
+PYTHON_DOTENV_DISABLED=1 COMMAND_EXECUTION_ENVIRONMENT=sandbox QT_QPA_PLATFORM=offscreen \
+uv run --no-sync pytest -m 'not integration' -q
+uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe
+```
+
+最终专项为 `test_custom_tools_adversarial.py`、`test_custom_tools_authority.py`、`test_dynamic_wsl_authority.py`、`test_custom_tools_runtime.py`、`test_custom_tools_end_to_end.py`、`test_flow_custom_tools.py`、`test_custom_tool_entry_contract.py`、`test_packaged_dynamic_smoke.py`。Windows 选择集见 `.github/workflows/tests.yml`；真实 WSL 用例须设置 `RUN_WINDOWS_WSL_TESTS=1` 与可用的 `TEST_WINDOWS_WSL_PYTHON`，单独运行 `test_windows_wsl_bridge.py`。不使用 Windows uv 操作 WSL `.venv`。
 
 ## 适用范围
 

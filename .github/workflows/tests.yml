@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: '3.12'
           enable-cache: true
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux libegl1 libopengl0
+      - uses: ./.github/actions/setup-linux-system
       - run: uv sync --locked --extra web --extra desktop
       - name: 验证真实隔离能力，不静默跳过
         run: uv run python -m agent_test.scripts.ci_sandbox_probe

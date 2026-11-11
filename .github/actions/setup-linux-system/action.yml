@@ -1,0 +1,15 @@
+name: Linux 系统依赖
+description: 使用 Ubuntu 官方 HTTPS 源安装必需隔离及 Qt 依赖
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        # 托管 runner 的 Azure mirrorlist 曾连续无法解析；保留官方仓库签名校验。
+        for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+          if test -f "$source"; then
+            sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' "$source"
+          fi
+        done
+        sudo apt-get -o Acquire::Retries=3 update
+        sudo apt-get -o Acquire::Retries=3 install -y bubblewrap util-linux libegl1 libopengl0

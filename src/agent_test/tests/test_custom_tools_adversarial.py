@@ -214,3 +214,19 @@ def test_command_audit_failure_preserves_execution_truth(sandbox_env, monkeypatc
     assert failed_event in recorded
     if entry == "custom":
         assert "custom_tool_execution" in recorded
+
+
+@pytest.mark.skipif(os.name == "nt", reason="真实 Linux sandbox；原生 Windows 桥接另验")
+def test_combined_maximum_code_and_arguments_fit_real_command(sandbox_env, monkeypatch):
+    # 两项各自合法仍须共同适配 Linux 单 argv 限额，防止包装增长造成合法输入无法执行。
+    monkeypatch.setattr(config, "TOOL_PERMISSION_POLICY", "full_access")
+    code = 'def main(arguments): return len(arguments["v"])\n#'
+    code += "x" * (32000 - len(code.encode("utf-8")))
+    arguments = '{"v":"' + "x" * (65536 - 8) + '"}'
+    assert len(code.encode("utf-8")) == 32000
+    assert len(arguments.encode("utf-8")) == 65536
+    parameters = {"type": "object", "properties": {"v": {"type": "string"}},
+                  "required": ["v"], "additionalProperties": False}
+    result = custom_registry([definition(code=code, parameters=parameters)])["adversarial_probe"].run(arguments)
+    assert "[退出码] 0" in result, result
+    assert "[stdout]\n65528" in result, result
