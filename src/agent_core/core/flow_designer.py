@@ -2,13 +2,38 @@
 import asyncio
 import json
 
+import openai
+
 from agent_core import config
-from agent_core.core.budgets import budget_scope
+from agent_core.core.budgets import BudgetExceeded, budget_scope
 from agent_core.core.flow_templates import REASONING_EFFORTS, PortableTemplate, flow_tool_catalog, validate_template
-from agent_core.core.llm import ModelResponseError
+from agent_core.core.llm import ModelResponseError, RuntimeModelRequestError
 from agent_core.core.model_settings import model_profile as profile_scope, model_thinking
 from agent_core.core.session_limits import limits_scope
 from agent_core.core.tool_settings import model_tools
+
+
+def _provider_error_message(exc: Exception) -> str:
+    """只读取 SDK 状态码，不展示服务端响应或请求细节。"""
+    if isinstance(exc, RuntimeModelRequestError):
+        exc = exc.__context__
+    if isinstance(exc, openai.APITimeoutError):
+        return '设计模型请求超时，请稍后重试或缩小需求'
+    if isinstance(exc, openai.APIConnectionError):
+        return '设计模型连接失败，请检查网络、代理和模型服务后重试'
+    if isinstance(exc, openai.APIStatusError):
+        status = exc.status_code
+        if status in (400, 422):
+            return '模型服务拒绝请求参数，请检查模型及所选推理强度是否受支持'
+        if status in (401, 403):
+            return '模型服务拒绝授权，请检查 API 密钥及访问权限'
+        if status == 404:
+            return '模型服务未找到地址或模型，请检查服务地址与模型名称'
+        if status == 429:
+            return '模型服务触发请求或额度限制，请检查额度并稍后重试'
+        if 500 <= status < 600:
+            return '模型服务暂时不可用，请检查服务状态并稍后重试'
+    return '设计模型请求失败，请检查模型地址、密钥和所选推理强度是否受服务支持，或稍后重试'
 
 
 def _layout_generated_template(template: dict, *, missing_positions: bool = False) -> None:
@@ -52,10 +77,16 @@ async def design_flow(manager, messages: list[dict], *, model_profile=None, reas
                     response = await manager.model(history, session_id=None, emit=lambda *_: None)
     except asyncio.CancelledError:
         raise
+    except BudgetExceeded:
+        raise ValueError('设计请求受费用预算或请求速率限制，请检查预算、模型单价及速率设置后重试') from None
+    except TimeoutError:
+        raise ValueError('设计模型请求超时，请稍后重试或缩小需求') from None
+    except ConnectionError:
+        raise ValueError('设计模型连接失败，请检查网络、代理和模型服务后重试') from None
     except ModelResponseError:
         raise ValueError('设计模型未返回完整可用内容，请精简模板或调整输出配置后重试') from None
-    except Exception:
-        raise ValueError('设计模型请求失败，请检查模型配置或稍后重试') from None
+    except Exception as exc:
+        raise ValueError(_provider_error_message(exc)) from None
     try:
         if response.get('tool_calls'):
             raise ValueError('设计模型不能调用工具')

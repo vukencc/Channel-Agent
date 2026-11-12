@@ -8,14 +8,22 @@ from PySide6.QtWidgets import QBoxLayout, QComboBox, QHBoxLayout, QLabel, QLineE
 
 class FlowDesigner(QWidget):
     command = Signal(str, dict)
+    close_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.history = []
         self.busy = False
         self.request_id = None
+        self.default_model_available = True
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel('Flow 设计助手'))
+        header = QHBoxLayout()
+        header.addWidget(QLabel('Flow 设计助手'), 1)
+        self.close_button = QPushButton('关闭')
+        self.close_button.setAccessibleName('关闭设计助手')
+        self.close_button.clicked.connect(self.close_requested.emit)
+        header.addWidget(self.close_button)
+        layout.addLayout(header)
         self.choices = QHBoxLayout()
         self.model = QComboBox()
         self.effort = QComboBox()
@@ -40,21 +48,38 @@ class FlowDesigner(QWidget):
         self.stop = QPushButton('停止')
         buttons.addWidget(self.send)
         buttons.addWidget(self.stop)
+        self.clear_history = QPushButton('清空对话')
+        self.clear_history.setAccessibleName('清空设计助手对话')
+        self.clear_history.clicked.connect(self.reset_history)
+        buttons.addWidget(self.clear_history)
         layout.addLayout(buttons)
         self.send.clicked.connect(self.submit)
         self.input.returnPressed.connect(self.submit)
         self.stop.clicked.connect(self.cancel)
         self._refresh()
 
-    def set_models(self, models):
+    def set_models(self, models, default_model_available=True):
+        choices = [(str(row.get('name') or row['id']), row['id']) for row in models
+                   if isinstance(row, dict) and isinstance(row.get('id'), str) and row['id']
+                   and (not row.get('read_only') or row.get('has_api_key'))]
+        catalog = (tuple(choices), bool(default_model_available))
+        if catalog == getattr(self, '_model_catalog', None):
+            return
+        self._model_catalog = catalog
         current = self.model.currentData()
+        self.default_model_available = default_model_available
         self.model.blockSignals(True)
         self.model.clear()
-        self.model.addItem('默认模型', None)
-        for row in models:
-            self.model.addItem(str(row.get('name') or row['id']), row['id'])
-        self.model.setCurrentIndex(max(0, self.model.findData(current)))
+        if default_model_available:
+            self.model.addItem('默认模型', None)
+        for label, identifier in choices:
+            self.model.addItem(label, identifier)
+        index = self.model.findData(current) if current is not None else -1
+        self.model.setCurrentIndex(index if index >= 0 else (0 if self.model.count() else -1))
         self.model.blockSignals(False)
+        self.model.setPlaceholderText('请先配置模型')
+        self.input.setPlaceholderText('描述想要设计的流程' if self.model.count() else '请先配置模型')
+        self._refresh()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -62,7 +87,9 @@ class FlowDesigner(QWidget):
         self.choices.setDirection(direction)
 
     def _refresh(self):
-        self.send.setEnabled(not self.busy)
+        self.send.setText('生成中…' if self.busy else '发送')
+        self.send.setEnabled(not self.busy and (self.default_model_available or self.model.count() > 0))
+        self.send.setToolTip('请先在模型管理中配置连接' if not self.default_model_available and not self.model.count() else '')
         self.stop.setEnabled(self.busy)
 
     def _remember(self, role: str, content: str) -> None:
@@ -72,7 +99,7 @@ class FlowDesigner(QWidget):
 
     def submit(self):
         text = self.input.text().strip()
-        if not text or self.busy:
+        if not text or self.busy or (not self.default_model_available and not self.model.count()):
             return
         self.input.clear()
         self._remember('user', text)
@@ -89,6 +116,12 @@ class FlowDesigner(QWidget):
             self.request_id = None
             self._refresh()
 
+    def reset_history(self):
+        self.cancel()
+        self.history.clear()
+        self.transcript.clear()
+        self.input.clear()
+
     def accept_result(self, result):
         if not self.busy or result.get('request_id') != self.request_id:
             return
@@ -96,7 +129,9 @@ class FlowDesigner(QWidget):
         self.request_id = None
         self._refresh()
         if result.get('error') or result.get('cancelled'):
-            self.transcript.insertPlainText('设计未完成。\n')
+            error = result.get('error')
+            error = error.strip() if isinstance(error, str) else ''
+            self.transcript.insertPlainText(('设计未完成：' + error if error else '设计未完成。') + '\n')
             return
         reply = str(result.get('reply') or '')
         template = result.get('template')

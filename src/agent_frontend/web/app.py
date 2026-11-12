@@ -475,7 +475,8 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
 
     @app.get('/api/models')
     async def models():
-        return {'models': app.state.manager.model_registry.list_public(), 'default_model': config.MODEL}
+        return {'models': app.state.manager.model_registry.list_public(), 'default_model': config.MODEL,
+                'default_model_available': bool(config.MODEL and config.BASE_URL and config.API_KEY)}
 
     @app.post('/api/models', status_code=201)
     async def add_model(arguments: ModelSettings):

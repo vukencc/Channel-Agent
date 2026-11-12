@@ -284,9 +284,10 @@ def test_narrow_designer_keeps_canvas_visible():
     app.processEvents()
     assert panel.inspector.isVisible()
     assert not panel.designer.isVisible()
-    assert panel.designer_button.isChecked()
+    assert not panel.designer_button.isChecked()
     panel._toggle_inspector()
-    assert panel.designer.isVisible()
+    assert not panel.designer.isVisible()
+    assert panel.canvas.isVisible()
     panel.close()
 
 

@@ -47,6 +47,7 @@ svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.5;stroke
 /* 工作区与会话。 */
 .workspace{height:100dvh;display:flex;flex-direction:column;overflow:hidden;min-height:460px}
 .titlebar{flex-shrink:0;background:var(--rail);display:flex;align-items:center;height:52px;padding:0 18px;gap:18px;border-bottom:1px solid #303741}
+body.flow-active .titlebar,body.working-active .titlebar{display:none}
 .brand{display:flex;align-items:center;text-decoration:none;color:var(--text);white-space:nowrap;flex-shrink:0;font-size:13px;font-weight:600;gap:10px}
 .brand-icon{width:27px;height:27px;display:grid;place-items:center;font-size:16px;font-weight:650;letter-spacing:0;color:var(--accent);background:#a5c4f40d;border:1px solid #a5c4f42b;border-radius:8px}
 .brand-local{border-radius:3px;font-size:10px;letter-spacing:.6px;border:0;padding:0;color:var(--muted);margin-left:3px}
@@ -540,6 +541,9 @@ dialog::backdrop{background:#080c1380;backdrop-filter:blur(3px)}
   .message-content{font-size:15px}
 }
 @media(max-width:760px){
+  body.flow-active .titlebar,body.working-active .titlebar{display:flex;height:36px}
+  body.flow-active .titlebar>*:not(#mobile-sidebar),body.working-active .titlebar>*:not(#mobile-sidebar){display:none}
+  body.flow-active .sidebar,body.working-active .sidebar{top:36px}
   .workspace{min-height:360px}
   .titlebar{height:48px;padding:0 10px;gap:10px}
   .brand{font-size:12px;gap:8px}

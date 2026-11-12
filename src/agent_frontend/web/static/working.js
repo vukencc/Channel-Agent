@@ -4,7 +4,7 @@
   const el = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = String(text); return node; };
   const makeTip = () => { const tip = el("div", "working-tip"); tip.setAttribute("role", "tooltip"); tip.style.pointerEvents = "none"; return tip; };
   let bridge, active = false, rows = [], selected = null, timer = null, pending = null, generation = 0;
-  let detailPane, detailSnapshot;
+  let detailPane, detailSnapshot, detailOpen = false;
   let refreshMessage = "正在更新运行状态…";
   const view = () => $("working-view");
   const value = (v) => v == null || v === "" ? "—" : typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
@@ -20,7 +20,7 @@
   }
   function updateNode(button, tip, node) {
     button.replaceChildren(el("strong", "", node.title || node.id), el("span", "working-status", status(node.status)));
-    tip.replaceChildren(el("strong", "", node.title || node.id), el("div", "", `子 Agent：${node.active_subagent_count ?? 0}/${node.subagent_count ?? 0} 活跃`), el("div", "", `任务：${value(node.task_summary)}`), el("div", "", `模型：${value(node.model)}`));
+    tip.replaceChildren(el("strong", "", node.title || node.id), el("div", "", `状态：${status(node.status)}`), el("div", "", `子 Agent：${node.active_subagent_count ?? 0}/${node.subagent_count ?? 0} 活跃`), el("div", "", `任务：${String(value(node.task_summary || node.task)).slice(0, 160)}`), el("div", "", `模型：${value(node.model)}`), el("div", "", `工具：${(node.tools || []).map((tool) => tool.name).join("、") || "无"}`));
   }
   function positionTip(button, tip) {
     const rect = button.getBoundingClientRect(), width = Math.min(280, window.innerWidth - 20);
@@ -35,7 +35,7 @@
     const snapshot = JSON.stringify([run?.run_id, run?.title, node]);
     if (pane === detailPane && snapshot === detailSnapshot) return;
     detailPane = pane; detailSnapshot = snapshot;
-    const scroll = pane.scrollTop; pane.replaceChildren(el("h2", "", "节点详情"));
+    const scroll = pane.scrollTop; const heading = el("div", "working-detail-heading"), close = el("button", "button subtle", "关闭"); close.type = "button"; close.addEventListener("click", () => { detailOpen = false; pane.hidden = true; }); heading.append(el("h2", "", "节点详情"), close); pane.replaceChildren(heading);
     if (!node) { pane.append(el("p", "working-muted", "选择节点查看只读详情。")); return; }
     pane.append(el("h3", "", node.title || node.id));
     const list = el("dl", "working-fields");
@@ -59,8 +59,9 @@
   function render() {
     if (!active) return;
     const root = view(), header = el("header", "working-header"), layout = el("div", "working-layout"), list = el("div", "working-runs"), pane = el("aside", "working-detail");
+    pane.hidden = !detailOpen;
     const notice = el("p", "working-refresh-notice", refreshMessage); notice.setAttribute("role", "status"); notice.hidden = !refreshMessage;
-    header.append(el("div", "", "WORKING"), el("h1", "", "运行中的 Flow"), el("p", "working-muted", "查看当前运行的节点与子 Agent。"), notice);
+    header.append(el("h1", "", "运行中的 Flow"), notice);
     if (!rows.length) list.append(el("p", "working-empty", refreshMessage ? "等待运行状态更新。" : "当前没有运行中的 Flow。"));
     for (const run of rows) {
       const section = el("section", "working-run"), heading = el("div", "working-run-heading");
@@ -75,7 +76,11 @@
         updateNode(button, tip, node);
         wrap.addEventListener("pointerenter", () => positionTip(button, tip));
         button.addEventListener("focus", () => positionTip(button, tip));
-        button.addEventListener("click", () => { selected = { run: run.run_id, node: node.id }; root.querySelectorAll(".working-node").forEach((n) => n.setAttribute("aria-pressed", String(n === button))); details(); });
+        const select = () => { selected = { run: run.run_id, node: node.id }; root.querySelectorAll(".working-node").forEach((n) => n.setAttribute("aria-pressed", String(n === button))); details(); };
+        const showDetails = () => { select(); detailOpen = true; pane.hidden = false; };
+        button.addEventListener("click", select);
+        button.addEventListener("contextmenu", (event) => { event.preventDefault(); showDetails(); });
+        button.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); showDetails(); } });
         wrap.append(button, tip); nodes.append(wrap);
       }
       section.append(nodes); list.append(section);
@@ -124,7 +129,7 @@
       if (pending === controller) { pending = null; if (active && ticket === generation) timer = setTimeout(refresh, 2000); }
     }
   }
-  function hide() { active = false; generation++; clearTimeout(timer); if (pending) { pending.abort(); pending = null; } rows = []; selected = null; detailPane = null; detailSnapshot = null; refreshMessage = "正在更新运行状态…"; document.body.classList.remove("working-active"); view().hidden = true; $("working-open").classList.remove("active"); }
+  function hide() { active = false; generation++; clearTimeout(timer); if (pending) { pending.abort(); pending = null; } rows = []; selected = null; detailPane = null; detailSnapshot = null; detailOpen = false; refreshMessage = "正在更新运行状态…"; document.body.classList.remove("working-active"); view().hidden = true; $("working-open").classList.remove("active"); }
   function init(options) {
     bridge = options;
     view().tabIndex = -1;

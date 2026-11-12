@@ -49,6 +49,8 @@
 
 以下记录保留当时的执行和问题，不代表当前质量或性能。
 
+- [Flow 界面易用性验证（2026-11-12）](flow-ui-usability-validation-2026-11-12.md)：设计助手、详情和工具栏的修订与验证边界。
+
 - [客服反馈分流与动态工具实测](agent-flow-dynamic-tools-validation-2026-11-11.md)：真实设计、业务工具、两端 JSON 往返及格式失败与修复记录。
 - [客服反馈分流与 Working 实测](agent-flow-working-validation-2026-11-10.md)：真实模型委派、运行耗时、桌面与 Web 检查及状态显示修复。
 - [Agent Flow 验证记录](agent-flow-validation.md)：多流程测试、修复与验证边界。

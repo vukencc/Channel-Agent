@@ -92,7 +92,7 @@ def test_save_revision_never_rolls_back_and_narrow_inspector():
     assert panel.draft()['nodes'][0]['prompt'] == '<img src="file:///private">'
     panel.inspector_button.click()
     assert panel.inspector.isVisible()
-    assert not panel.canvas.isVisible()
+    assert panel.canvas.isVisible()
     panel.inspector_button.click()
     assert panel.canvas.isVisible()
     panel.close()

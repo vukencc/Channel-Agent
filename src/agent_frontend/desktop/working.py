@@ -5,10 +5,11 @@ import html
 import json
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from .flow import _status_text
+from .theme import icon
 
-from PySide6.QtWidgets import (QLabel, QListWidget, QListWidgetItem,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
                                QTextEdit, QSplitter, QVBoxLayout, QWidget)
 
 
@@ -21,7 +22,29 @@ def _tool_lines(tools: list[dict[str, Any]], indent: str = '') -> list[str]:
     return lines
 
 
+class WorkingList(QListWidget):
+    details_requested = Signal(object)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            item = self.itemAt(event.position().toPoint())
+            if item:
+                self.setCurrentItem(item)
+                self.details_requested.emit(item)
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Menu or (event.key() == Qt.Key.Key_F10 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            if self.currentItem():
+                self.details_requested.emit(self.currentItem())
+            return
+        super().keyPressEvent(event)
+
+
 class WorkingPanel(QWidget):
+    sidebar_toggle_requested = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self._rows: list[dict[str, Any]] = []
@@ -31,28 +54,41 @@ class WorkingPanel(QWidget):
         layout.setContentsMargins(18, 16, 18, 16)
         heading = QLabel('正在运行的 Flow')
         heading.setObjectName('title')
-        layout.addWidget(heading)
+        header = QHBoxLayout()
+        self.sidebar_button = QPushButton()
+        self.sidebar_button.setIcon(icon('menu', size=16))
+        self.sidebar_button.setAccessibleName('显示/隐藏导航栏 · Ctrl+B')
+        self.sidebar_button.clicked.connect(self.sidebar_toggle_requested.emit)
+        header.addWidget(self.sidebar_button)
+        header.addWidget(heading, 1)
+        layout.addLayout(header)
         self.empty = QLabel('当前没有运行中的 Flow')
         self.empty.setObjectName('muted')
         layout.addWidget(self.empty)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.listing = QListWidget()
+        self.listing = WorkingList()
         self.listing.setMouseTracking(True)
-        self.listing.itemClicked.connect(self._select)
-        self.listing.itemActivated.connect(self._select)
+        self.listing.details_requested.connect(self._select)
         self.splitter.addWidget(self.listing)
-        detail = QWidget()
-        detail_layout = QVBoxLayout(detail)
+        self.detail = QWidget()
+        detail_layout = QVBoxLayout(self.detail)
         detail_layout.setContentsMargins(12, 0, 0, 0)
         label = QLabel('节点详情')
         label.setObjectName('section')
-        detail_layout.addWidget(label)
+        detail_header = QHBoxLayout()
+        detail_header.addWidget(label, 1)
+        self.close_detail = QPushButton('关闭')
+        self.close_detail.setAccessibleName('关闭节点详情')
+        self.close_detail.clicked.connect(self.detail.hide)
+        detail_header.addWidget(self.close_detail)
+        detail_layout.addLayout(detail_header)
         self.details = QTextEdit()
         self.details.setAcceptRichText(False)
         self.details.setReadOnly(True)
         self.details.setPlaceholderText('选择节点查看详情')
         detail_layout.addWidget(self.details)
-        self.splitter.addWidget(detail)
+        self.splitter.addWidget(self.detail)
+        self.detail.hide()
         self.splitter.setSizes([550, 350])
         layout.addWidget(self.splitter, 1)
 
@@ -79,7 +115,8 @@ class WorkingPanel(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, key)
                 summary = node.get('task_summary') or node.get('task') or '暂无任务概要'
                 model = node.get('model') or node.get('model_profile') or '未指定'
-                item.setToolTip('<qt>' + html.escape(f"子 Agent：{node.get('active_subagent_count', 0)} 活跃 / {node.get('subagent_count', 0)} 总数\n任务：{summary}\n模型：{model}").replace('\n', '<br>') + '</qt>')
+                tools = ', '.join(str(tool.get('name', '')) for tool in node.get('tools') or []) or '无'
+                item.setToolTip('<qt>' + html.escape(f"状态：{_status_text(node.get('status'))}\n子 Agent：{node.get('active_subagent_count', 0)} 活跃 / {node.get('subagent_count', 0)} 总数\n任务：{str(summary)[:160]}\n模型：{model}\n工具：{tools}").replace('\n', '<br>') + '</qt>')
                 self.listing.addItem(item)
                 if key == self._selection:
                     selected = item
@@ -92,12 +129,14 @@ class WorkingPanel(QWidget):
         else:
             self._selection = None
             self.details.clear()
+            self.detail.hide()
 
     def _select(self, item: QListWidgetItem) -> None:
         key = item.data(Qt.ItemDataRole.UserRole)
         if key:
             self._selection = tuple(key)
             self._show_detail(self._selection)
+            self.detail.show()
 
     def _show_detail(self, key: tuple[str, str]) -> None:
         for run in self._rows:

@@ -2,6 +2,93 @@ import asyncio
 import pytest
 
 
+@pytest.mark.parametrize(('kind', 'expected'), [('timeout', '超时'), ('connection', '连接')])
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_designer_reports_sdk_transport_errors(tmp_path, kind, expected, wrapped):
+    import httpx
+    import openai
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.llm import RuntimeModelRequestError
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    async def model(*args, **kwargs):
+        request = httpx.Request('POST', 'https://example.invalid/private')
+        failure = (openai.APITimeoutError(request) if kind == 'timeout'
+                   else openai.APIConnectionError(request=request))
+        try:
+            raise failure
+        except openai.APIError:
+            if wrapped:
+                raise RuntimeModelRequestError('safe wrapper') from None
+            raise
+
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        with pytest.raises(ValueError, match=expected) as error:
+            asyncio.run(design_flow(SessionManager(store, model=model),
+                                    [{'role': 'user', 'content': '设计流程'}]))
+        assert 'example.invalid' not in str(error.value)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(('status', 'expected'), [
+    (400, '参数'), (422, '参数'), (401, '密钥'), (403, '密钥'),
+    (404, '地址'), (429, '限制'), (500, '服务'), (503, '服务'),
+])
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_designer_reports_provider_status_without_response_body(tmp_path, status, expected, wrapped):
+    import httpx
+    import openai
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.llm import RuntimeModelRequestError
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    async def model(*args, **kwargs):
+        response = httpx.Response(status, request=httpx.Request('POST', 'https://example.invalid'),
+                                  text='private provider body')
+        try:
+            raise openai.APIStatusError('private provider body', response=response, body='private provider body')
+        except openai.APIStatusError:
+            if wrapped:
+                raise RuntimeModelRequestError('safe wrapper') from None
+            raise
+
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        with pytest.raises(ValueError, match=expected) as error:
+            asyncio.run(design_flow(SessionManager(store, model=model),
+                                    [{'role': 'user', 'content': '设计流程'}], reasoning_effort='xhigh'))
+        assert 'private' not in str(error.value)
+        assert error.value.__suppress_context__
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(('failure', 'message'), [
+    (TimeoutError('private timeout'), '超时'),
+    (ConnectionError('private endpoint'), '连接'),
+])
+def test_designer_reports_safe_request_failure_category(tmp_path, failure, message):
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    async def model(*args, **kwargs):
+        raise failure
+
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        with pytest.raises(ValueError, match=message) as error:
+            asyncio.run(design_flow(SessionManager(store, model=model),
+                                    [{'role': 'user', 'content': '设计流程'}]))
+        assert 'private' not in str(error.value)
+    finally:
+        store.close()
+
+
 def test_designer_rejects_invalid_messages():
     from agent_core.core.flow_designer import design_flow
     with pytest.raises(ValueError):

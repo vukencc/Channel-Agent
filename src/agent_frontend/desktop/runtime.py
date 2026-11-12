@@ -217,8 +217,9 @@ class RuntimeBridge(QObject):
             return
         except Exception as exc:
             if generation == self._design_generation and not self._closing:
-                self.error.emit(self._clean(str(exc)) if isinstance(exc, ValueError) else f'设计未完成（{type(exc).__name__}）。')
-                self.finished.emit('flow_design', json.dumps({'error': True, 'request_id': arguments.get('request_id')}))
+                message = self._clean(str(exc)) if isinstance(exc, ValueError) else f'设计未完成（{type(exc).__name__}），请检查配置后重试。'
+                self.error.emit(message)
+                self.finished.emit('flow_design', json.dumps({'error': message, 'request_id': arguments.get('request_id')}, ensure_ascii=False))
 
     async def _materialize(self, identifier: str | None) -> None:
         if identifier is None:
@@ -290,6 +291,7 @@ class RuntimeBridge(QObject):
                              'flows': flows, 'projects': projects, 'selected_flow': selected_flow,
                              'flow_tools': flow_tool_catalog(),
                              'models': manager.model_registry.list_public(), 'default_model': config.MODEL,
+                             'default_model_available': bool(config.MODEL and config.BASE_URL and config.API_KEY),
                              'runtime': manager.concurrency_status(),
                              'load_errors': len(self._store.errors) + (len(self._projects.errors) if self._projects else 0)}), ensure_ascii=False)
         if payload != self._last_payload:
