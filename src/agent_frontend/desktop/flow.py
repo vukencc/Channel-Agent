@@ -447,8 +447,8 @@ class FlowPanel(QWidget):
         body.addWidget(self.inspector_panel)
         self.inspector_panel.hide()
         self.designer = FlowDesigner()
-        self.designer.setMinimumWidth(210)
-        self.designer.setMaximumWidth(340)
+        self.designer.setMinimumWidth(340)
+        self.designer.setMaximumWidth(400)
         self.designer.hide()
         body.addWidget(self.designer)
         self.designer.command.connect(self.command.emit)
@@ -515,7 +515,8 @@ class FlowPanel(QWidget):
         self.canvas.scene().selectionChanged.connect(self._selection_changed)
 
     def _toggle_designer(self, visible: bool) -> None:
-        self.designer.setMaximumWidth(230 if self.width() < 750 else 340)
+        self.designer.setMinimumWidth(210 if self.width() < 750 else 340)
+        self.designer.setMaximumWidth(230 if self.width() < 750 else 400)
         if visible:
             self.inspector_panel.hide()
         self.designer.setVisible(visible)
@@ -1347,7 +1348,8 @@ class FlowPanel(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self.designer.setMaximumWidth(230 if event.size().width() < 750 else 340)
+        self.designer.setMinimumWidth(210 if event.size().width() < 750 else 340)
+        self.designer.setMaximumWidth(230 if event.size().width() < 750 else 400)
         self.inspector_panel.setMaximumWidth(240 if event.size().width() < 750 else 340)
         self.status.setVisible(event.size().width() >= 650)
         self._sync_toolbar()

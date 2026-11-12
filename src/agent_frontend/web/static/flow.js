@@ -148,7 +148,7 @@ if (typeof window !== "undefined") (() => {
   let catalog = { tools: [], required_tool_names: [], reasoning_efforts: [], thinking_modes: [] };
   let designerController = null, designerRequestId = null, designerGeneration = 0, designerHistory = [], designerVisible = false, designerModel = "", designerEffort = "", designerDraft = "", inspectorVisible = false;
   let scale = 1, pickerGeneration = 0, selectionVersion = 0, summaries = [], projects = [], pending = false, lastError = "", fitReset = false;
-  let designerError = "";
+  let designerError = "", designerPendingImport = null;
   let designerModelTouched = false, designerModels = [], designerModelsLoading = false, designerCreated = null, modelCatalogGeneration = 0;
   let designerDefaultAvailable = null, designerRecords = [];
   const runInputs = new Map(), drafts = new Map(), dirty = new Set(), projectDirty = new Set(), requestVersions = new Map(), inspectorModes = new Map(), refreshDeferred = new Set();
@@ -597,6 +597,7 @@ if (typeof window !== "undefined") (() => {
   }
   function stopDesigner() {
     designerGeneration++;
+    designerPendingImport = null; designerError = "";
     if (designerRequestId) bridge.api("/api/flow-designer/cancel", { method: "POST", keepalive: true, body: { request_id: designerRequestId } }).catch(() => bridge.toast("无法确认设计请求已停止，请检查服务连接。", "error"));
     designerRequestId = null;
     if (designerController) designerController.abort(); designerController = null;
@@ -647,34 +648,45 @@ if (typeof window !== "undefined") (() => {
     if (!designerVisible) return;
     const root = $("flow-view"), layout = root.querySelector(".flow-layout"), old = layout?.querySelector(".flow-designer-panel"), panel = el("aside", "flow-designer-panel"), header = el("header", "flow-designer-header"), history = el("div", "flow-designer-history"), input = document.createElement("textarea"), controls = el("div", "flow-designer-controls"), models = document.createElement("select"), effort = document.createElement("select"), problem = el("p", "inline-error");
     if (!layout) return;
+    const previousHistory = old?.querySelector(".flow-designer-history");
+    const follow = !previousHistory || previousHistory.scrollHeight - previousHistory.clientHeight - previousHistory.scrollTop < 8;
+    const previousScroll = previousHistory?.scrollTop || 0;
     problem.textContent = designerError; problem.hidden = !designerError; problem.setAttribute("role", "alert");
-    header.append(el("h2", "", "对话设计 Flow"), button("清空", () => { stopDesigner(); designerHistory = []; designerDraft = ""; designerError = ""; designerCreated = null; drawDesigner(); }), button("关闭", () => { designerVisible = false; if (active && current()) render(); else panel.remove(); }));
-    designerHistory.forEach((item) => { history.append(el("p", "flow-designer-message " + item.role, (item.role === "user" ? "你：" : "助手：") + item.display)); if (item.warning) history.append(el("p", "field-hint", item.warning)); });
+    header.append(el("h2", "", "对话设计 Flow"), button("清空", () => { stopDesigner(); designerHistory = []; designerDraft = ""; designerError = ""; designerPendingImport = null; designerCreated = null; drawDesigner(); }), button("关闭", () => { designerVisible = false; if (active && current()) render(); else panel.remove(); }));
+    designerHistory.forEach((item) => { const message = el("article", "flow-designer-message " + item.role); message.append(el("strong", "flow-designer-role", item.role === "user" ? "你" : "助手"), el("div", "flow-designer-text", item.display)); history.append(message); if (item.warning) history.append(el("p", "field-hint", item.warning)); });
+    if (!designerHistory.length) history.append(el("p", "flow-designer-empty", "描述你的目标，助手会帮你设计和调整流程。"));
+    if (designerController) { const status = el("p", "flow-designer-status", "正在设计流程…"); status.setAttribute("role", "status"); history.append(status); }
     const choices = [...(designerDefaultAvailable ? [["", "默认模型"]] : []), ...designerChoices()];
     choices.forEach(([value, label]) => { const o = el("option", "", label); o.value = value; models.append(o); });
     [["", "默认强度"], ...catalog.reasoning_efforts.map((v) => [v, v])].forEach(([value, label]) => { const o = el("option", "", label); o.value = value; effort.append(o); });
     models.dataset.flowModel = "designer"; effort.dataset.flowDesignerEffort = "true"; models.setAttribute("aria-label", "设计模型"); effort.setAttribute("aria-label", "设计推理强度"); models.value = designerModel; effort.value = designerEffort; models.addEventListener("change", () => { designerModel = models.value; designerModelTouched = true; }); effort.addEventListener("change", () => { designerEffort = effort.value; });
     input.placeholder = "描述需要的流程，或继续调整上一版"; input.maxLength = 16000; input.value = designerDraft; input.addEventListener("input", () => { designerDraft = input.value; }); input.setAttribute("aria-label", "设计需求");
-    const send = button(designerController ? "生成中…" : "发送", async () => {
-      const text = input.value.trim(); if (!text || designerController || !designerCanSend(models.value)) return;
-      designerError = ""; designerHistory.push({ role: "user", display: text, content: text }); designerHistory = flowDesignerTrim(designerHistory); designerDraft = "";
-      const ticket = ++designerGeneration, controller = new AbortController(), requestId = crypto.randomUUID().replaceAll("-", ""); designerController = controller; designerRequestId = requestId; drawDesigner();
+    const runRequest = async (retry = false) => {
+      const retryImport = retry && designerPendingImport;
+      const text = input.value.trim(); if ((!retry && !text) || designerController || (!retryImport && !designerCanSend(models.value))) return;
+      designerError = ""; if (!retry) { designerPendingImport = null; designerHistory.push({ role: "user", display: text, content: text }); designerHistory = flowDesignerTrim(designerHistory); designerDraft = ""; }
+      const ticket = ++designerGeneration, controller = new AbortController(), requestId = retryImport ? retryImport.requestId : crypto.randomUUID().replaceAll("-", ""); designerController = controller; designerRequestId = requestId; drawDesigner();
       try {
-        const response = await bridge.api("/api/flow-designer/chat", { method: "POST", signal: controller.signal, body: { messages: designerHistory.map(({role, content}) => ({role, content})), model_profile: models.value || null, reasoning_effort: effort.value || null, request_id: requestId } });
-        if (ticket !== designerGeneration) return;
-        designerHistory.push(flowDesignerReply(response.reply, response.template)); designerHistory = flowDesignerTrim(designerHistory);
-        if (response.template && ticket === designerGeneration) {
-          const created = await bridge.api("/api/flows/import", { method: "POST", signal: controller.signal, body: { template: response.template, missing_models: "error" } });
-          if (ticket === designerGeneration) { designerController = null; designerRequestId = null; if (designerVisible) openCreated(created, { preserveDesigner: true }); else { drafts.set(created.id, created); summaries = [...summaries.filter((x) => x.id !== created.id), { id: created.id, title: created.title, project_id: created.project_id }]; designerCreated = created; renderList(); } return; }
+        if (!retryImport) {
+          const response = await bridge.api("/api/flow-designer/chat", { method: "POST", signal: controller.signal, body: { messages: designerHistory.map(({role, content}) => ({role, content})), model_profile: models.value || null, reasoning_effort: effort.value || null, request_id: requestId } });
+          if (ticket !== designerGeneration) return;
+          designerHistory.push(flowDesignerReply(response.reply, response.template)); designerHistory = flowDesignerTrim(designerHistory);
+          if (response.template) designerPendingImport = { template: response.template, requestId };
+        }
+        if (designerPendingImport && ticket === designerGeneration) {
+          const created = await bridge.api("/api/flows/import", { method: "POST", signal: controller.signal, body: { template: designerPendingImport.template, missing_models: "error", request_id: requestId } });
+          if (ticket === designerGeneration) { designerPendingImport = null; designerController = null; designerRequestId = null; if (designerVisible) openCreated(created, { preserveDesigner: true }); else { drafts.set(created.id, created); summaries = [...summaries.filter((x) => x.id !== created.id), { id: created.id, title: created.title, project_id: created.project_id }]; designerCreated = created; renderList(); } return; }
         }
       } catch (e) { if (e.name !== "AbortError" && ticket === designerGeneration) { designerError = String(e.message || "设计请求失败，请检查模型配置后重试。"); } }
       finally { if (ticket === designerGeneration) { designerController = null; designerRequestId = null; drawDesigner(); } }
-    }, "button primary");
+    };
+    const send = button(designerController ? "生成中…" : "发送", () => runRequest(), "button primary");
     const guidance = el("p", "field-hint", "请先在模型管理中配置可用模型。");
     const updateSend = () => { const usable = designerCanSend(models.value); send.disabled = Boolean(designerController) || !usable; guidance.hidden = designerModelsLoading || usable; };
-    models.addEventListener("change", updateSend); updateSend(); const stop = button("停止", () => { stopDesigner(); drawDesigner(); }); stop.disabled = !designerController;
+    models.addEventListener("change", updateSend); updateSend(); const stop = button("停止", () => { stopDesigner(); drawDesigner(); }); stop.hidden = !designerController; send.hidden = Boolean(designerController);
     if (designerCreated) controls.append(button("打开生成的 Flow", () => { const created = designerCreated; designerCreated = null; openCreated(created, { preserveDesigner: true }); }));
-    controls.append(models, effort, send, stop); panel.append(header, history, input, controls, guidance, problem); if (old) old.replaceWith(panel); else layout.append(panel); history.scrollTop = history.scrollHeight;
+    if (designerError && designerHistory.length) problem.append(document.createTextNode(" "), button(designerPendingImport ? "重试导入" : "重试", () => runRequest(true)));
+    const composer = el("div", "flow-designer-composer"); controls.append(models, effort, send, stop); composer.append(input, controls); panel.append(header, history, problem, guidance, composer); if (old) old.replaceWith(panel); else layout.append(panel); history.scrollTop = follow ? history.scrollHeight : previousScroll;
   }
   function init(options) {
     bridge = options; $("flow-refresh").addEventListener("click", refreshList);

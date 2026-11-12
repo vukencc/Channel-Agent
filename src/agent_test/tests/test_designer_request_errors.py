@@ -81,3 +81,24 @@ def test_bridge_reports_budget_failure_with_selected_options(tmp_path):
         assert 'private' not in results[0]['error']
     finally:
         store.close()
+
+
+def test_designer_proxy_error_does_not_echo_exception_details(tmp_path):
+    import pytest
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.model_transport import ModelProxyError
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    async def fail(*args, **kwargs):
+        raise ModelProxyError('private proxy credentials https://private.invalid')
+
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        with pytest.raises(ValueError, match='系统代理') as error:
+            asyncio.run(design_flow(SessionManager(store, model=fail),
+                                   [{'role': 'user', 'content': '设计流程'}]))
+        assert 'private' not in str(error.value)
+        assert error.value.__suppress_context__
+    finally:
+        store.close()

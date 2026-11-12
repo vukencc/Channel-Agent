@@ -62,6 +62,7 @@ class FlowRun(Arguments):
 class FlowImport(Arguments):
     template: dict
     missing_models: Literal['error', 'inherit'] = 'error'
+    request_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
 class FlowExport(Arguments):
@@ -119,6 +120,7 @@ class ModelSettings(Arguments):
     parameters: ModelParameters | None = None
     context_tokens: int | None = Field(default=None, ge=512, le=2097152, strict=True)
     response_reserve_tokens: int | None = Field(default=None, ge=0, le=2097151, strict=True)
+    proxy_mode: Literal['environment', 'windows_system'] = 'environment'
 
 
 class Decision(Arguments):
@@ -425,7 +427,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                 'api_key': arguments.api_key,
                 'parameters': (arguments.parameters.model_dump(exclude_none=True)
                                if arguments.parameters is not None else None),
-                **{key: getattr(arguments, key) for key in ('context_tokens', 'response_reserve_tokens')
+                **{key: getattr(arguments, key) for key in ('context_tokens', 'response_reserve_tokens', 'proxy_mode')
                    if key in arguments.model_fields_set}}
 
     async def model_io(function, *args, **kwargs):
@@ -525,7 +527,8 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     @app.post('/api/flows/import', status_code=201)
     async def import_flow(arguments: FlowImport):
         try:
-            result = app.state.flows.import_template(arguments.template, missing_models=arguments.missing_models)
+            result = app.state.flows.import_template(arguments.template, missing_models=arguments.missing_models,
+                                                    request_id=arguments.request_id)
         except ValidationError:
             raise HTTPException(422, '模板格式无效') from None
         except ValueError as exc:

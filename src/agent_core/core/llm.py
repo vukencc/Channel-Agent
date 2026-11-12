@@ -15,6 +15,7 @@ import httpx
 
 import openai
 from openai import AsyncOpenAI
+from openai import _base_client
 
 from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, context_budget_metadata
@@ -56,7 +57,8 @@ _route = ContextVar('model_route', default=None)
 
 
 def endpoint_client(endpoint):
-    if not endpoint.get('base_url') and not endpoint.get('api_key_env') and 'api_key' not in endpoint:
+    if (endpoint.get('proxy_mode', 'environment') == 'environment' and
+            not endpoint.get('base_url') and not endpoint.get('api_key_env') and 'api_key' not in endpoint):
         return get_client()
     base_url = config.validate_http_url(
         endpoint.get('base_url') or config.BASE_URL,
@@ -69,6 +71,21 @@ def endpoint_client(endpoint):
         key = os.getenv(endpoint['api_key_env']) if endpoint.get('api_key_env') else config.API_KEY
     if not key:
         raise ValueError('备用模型 api_key_env 未配置')
+    if endpoint.get('proxy_mode', 'environment') == 'windows_system':
+        from agent_core.core.model_transport import system_http_client
+        http_client = system_http_client(base_url)
+        try:
+            return AsyncOpenAI(api_key=key, base_url=base_url, http_client=http_client,
+                               default_headers={'x-opencode-session': str(uuid.uuid4())},
+                               max_retries=0, timeout=config.TIMEOUT)
+        except BaseException:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(http_client.aclose())
+            else:
+                loop.create_task(http_client.aclose())
+            raise
     if 'api_key' in endpoint:
         config.validate_proxy_environment()
         return AsyncOpenAI(api_key=key, base_url=base_url,
@@ -110,6 +127,8 @@ class RuntimeModelRequestError(RuntimeError):
 
 
 _TRANSPORT_ERRORS = (httpx.NetworkError, httpx.RemoteProtocolError, httpx.ProxyError)
+_SDK_HTTPX = getattr(_base_client, 'httpx2', httpx)
+_TRANSPORT_BASES = (httpx.TransportError, _SDK_HTTPX.TransportError, OSError)
 
 
 def _transport_error_type(exc: BaseException) -> str:
@@ -119,7 +138,7 @@ def _transport_error_type(exc: BaseException) -> str:
         if exc is None or id(exc) in visited:
             break
         visited.add(id(exc))
-        if isinstance(exc, (httpx.TransportError, OSError)):
+        if isinstance(exc, _TRANSPORT_BASES):
             return type(exc).__name__
         exc = exc.__cause__ or exc.__context__
     return 'unknown'

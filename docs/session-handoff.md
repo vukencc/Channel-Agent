@@ -6,6 +6,8 @@
 
 ## 当前工作与 Git
 
+- 2026-11-12，本轮修复设计助手连接诊断与对话布局。真实 Windows 负/正向对照确认用户持久 `ALL_PROXY` 指向拒绝连接的本地代理，系统固定代理下相同模型与 `xhigh` 短请求成功；新增每连接显式 `proxy_mode=environment|windows_system`，默认及旧记录不变，不改系统或用户数据。设计助手保留安全连接阶段，角色、错误与多行输入分区，模型设置在底部，支持保留新草稿的原请求重试。最终全量、原生实际设计和成品仍在验收，见[本轮记录](designer-chat-validation-2026-11-12.md)。
+
 - 2026-11-12，新增[工作区共享记忆](workspace-memory.md)，实现 `9c9cd39`、多轮刷新覆盖 `4fe8d46`，对应 [PR #49](https://github.com/vukencc/Channel-Agent/pull/49)。同一实际工作区通过 `.channelagent/memory.json` 共享有界项目说明、进度和经验；每个正常模型轮次读取，私有终态成功保存后更新，原始会话保持私有。只读不写入、不请求提炼；取消和发布不确定不会误称完成，Flow 下游等待前节点提交。
 - 工作区记忆验证：真实两节点 Flow 及新状态目录的新会话继承项目事实（3 次主请求、3 次辅助请求，初版 `8fd4540`）；后续取消、预算及平台补丁分别回归。Windows/WSL 同工作区并行 12 条更新零丢失。最新代码 [CI 43174301650](https://github.com/vukencc/Channel-Agent/actions/runs/43174301650) 双端成功（Linux 2234 passed、47 skipped、5 deselected；Windows 702 passed、47 skipped），真实隔离探针通过。本机 Windows 原选择集 688 passed、60 skipped，原 20 秒退出断言不变；此前一次冷导入超时未复现，不追认为已修复。失败过程与验证边界见[正式记录](workspace-memory-validation-2026-11-12.md)。
 - 本轮 Windows 成品位于 `D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-073109\ChannelAgent.exe`，基于干净源码 `9c9cd39`，126 模块一致性及 15/15 离线自检通过，独立核对两个新模块、ZIP CRC 和 SHA256 通过。本轮未发布新标签；原有用户配置、项目、会话和知识库未修改。以下既有交付和测量保持历史事实。
