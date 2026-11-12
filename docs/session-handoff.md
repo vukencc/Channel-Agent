@@ -6,6 +6,9 @@
 
 ## 当前工作与 Git
 
+- 2026-11-12，追加设计助手取消固定总时限，进行中的 [PR #51](https://github.com/vukencc/Channel-Agent/pull/51)。`cd58187` 通过请求局部策略解除入口、模型及连接阶段的总 wall；普通 Agent 90 秒、网络空闲、预算、停止/清空取消仍保留。原 588 字符五节点四工具客服需求逐字固定，Windows 原生 `xhigh` 在 164.497 秒触及现有 48,000 合计输出字符上限（48,001 推理字符、0 正文），尚未生成或导入模板，未降强度、简化或盲目重试。已向用户询问是否允许设计助手独立有界生成预算，确认前不扩大现有保护。正式过程、失败与后续平台结果见[长请求验证](designer-long-running-validation-2026-11-12.md)。下面本地 exe 为上一轮成品，尚不包含本项修复。
+- 上项最终 Native 六文件专项 **99 passed（63.97 秒）**。`b9aef69` 的 [CI 43221367781](https://github.com/vukencc/Channel-Agent/actions/runs/43221367781) 双端通过（Linux 2338 / Windows 806 passed）；此后仅调整受控流的 Windows 实际计时及阶段断言，没有修改产品时限。本机 Linux 全量仍记录 **1 failed、2344 passed**：共享记忆合法原子替换后旧 FD 链接数为 0，被既有硬链接检查拒绝。已确定性复现为早于本轮的 P2，未修改该模块或放松边界；报告有独立 TODO，CI 通过不冲销失败。
+
 - 2026-11-12，设计助手连接与布局修复对应 [PR #50](https://github.com/vukencc/Channel-Agent/pull/50)，Python 功能源码 `499421c`。用户持久 `ALL_PROXY` 指向拒绝连接的本地代理，新 adapter 显式选 `windows_system` 后同模型/`xhigh` 短请求 4.187 秒成功，原代理环境未改；旧配置默认不变。五节点四动态工具的 `xhigh`、独立 `medium` 设计均在原 90 秒内仅思考、未生成模板，不能算完整设计通过。消息与输入分区、底部模型、失败重试和仅重试缓存导入已完成；稳定导入 ID 与磁盘核验防止重复模板。取消/切换清缓存，隐藏保留。最后 Web 窄屏 CSS 把历史区从约 60px 提升到 235px。
 - 本轮验证：Linux 本机 2325 passed；最终源码 `f3f1912` 的 [CI 43202693425](https://github.com/vukencc/Channel-Agent/actions/runs/43202693425) Linux 2321 passed、Windows 789 passed，真实隔离探针通过。Windows GBK 新增专项 92 passed；本机整组 1 failed、775 passed、60 skipped，唯一为此前已记录的原 20 秒导入超时，独立一次原两个退出用例均通过但不追认为修复。完整失败与真实/受控边界见[本轮记录](designer-chat-validation-2026-11-12.md)。
 - 最新 Windows 成品为 `D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-105359\ChannelAgent.exe`，干净来源 `f3f1912`；127 应用模块与 11 静态文件源码一致、15/15 实际离线自检、ZIP CRC/SHA256 全通过。打开新构建后，在原模型连接高级参数显式选择 Windows 系统代理即可绕开失效环境代理，地址不改时空密钥保留原值；没有自动改用户模型或系统配置。
