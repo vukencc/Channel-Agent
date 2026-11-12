@@ -92,6 +92,7 @@ def _append_second(store):
 def test_windows_snapshot_publish_does_not_ignore_readonly(tmp_path):
     import stat
     store = _initial_store(tmp_path)
+    assert store.directory.stat().st_file_attributes & stat.FILE_ATTRIBUTE_HIDDEN
     os.chmod(store.path, stat.S_IREAD)
     try:
         with pytest.raises(WorkspaceMemoryCommitUncertain):

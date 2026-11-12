@@ -142,6 +142,20 @@ def directory_identity(path: Path) -> tuple[int, int]:
         return _identity(msvcrt.get_osfhandle(fd))
 
 
+def hide_directory(path: Path) -> None:
+    """在保持安全祖先句柄时设置隐藏属性，保留已有属性。"""
+    with opened_path(path, path, directory=True) as fd:
+        info = _FileInfo()
+        if not _info(msvcrt.get_osfhandle(fd), ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not info.attributes & 0x2:
+            change = _kernel.SetFileAttributesW
+            change.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+            change.restype = wintypes.BOOL
+            if not change(str(path), info.attributes | 0x2):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+
 def atomic_replace(source: Path, target: Path, *, replace_open: bool = False) -> None:
     """以已打开的文件句柄原子替换同一目录内的目标。"""
     source, target = Path(source), Path(target)

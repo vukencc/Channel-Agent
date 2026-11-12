@@ -241,7 +241,7 @@ class WorkspaceMemoryStore:
     def _append_windows(self, delta: WorkspaceMemoryDelta, record: ProgressRecord,
                         cancelled: threading.Event, audit: Callable[..., None]) -> Snapshot | None:
         # Windows 句柄阻止祖先目录重命名或删除，直到整个操作结束。
-        from .windows_files import directory_identity
+        from .windows_files import directory_identity, hide_directory
 
         lock = self.directory / ".write-lock"
         with opened_path(self.root, self.root, directory=True, expected_identity=self.expected_identity):
@@ -250,6 +250,7 @@ class WorkspaceMemoryStore:
             except FileExistsError:
                 pass
             with opened_path(self.root, self.directory, directory=True, expected_identity=self.expected_identity):
+                hide_directory(self.directory)
                 deadline = time.monotonic() + 3
                 while True:
                     if cancelled.is_set():
