@@ -137,8 +137,12 @@ def test_hanging_auxiliary_is_bounded_and_falls_back(tmp_path, monkeypatch):
         async with runtime(tmp_path, answer, monkeypatch, summary=summarize) as (manager, prompts):
             session = manager.create(workspace_path=str(project))
             manager.submit(session, '当前工作请求')
-            await asyncio.wait_for(asyncio.shield(session.task), 1)
+            await asyncio.wait_for(started.wait(), 5)
+            # 辅助调用的取消期限独立测量，不把输入提交和终态写盘计入辅助模型耗时。
+            await asyncio.wait_for(cancelled.wait(), 1)
+            await asyncio.wait_for(asyncio.shield(session.task), 5)
             assert started.is_set() and cancelled.is_set()
+            assert len(prompts) == 1
             assert session.record['status'] == 'idle'
             data = json.loads(memory_path(project).read_text(encoding='utf-8'))
             assert not data['lessons'] and not data['project']
