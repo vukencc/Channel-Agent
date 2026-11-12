@@ -40,6 +40,21 @@ DEFAULT_MODEL_DEADLINE = object()
 active_model_deadline = ContextVar('active_model_deadline', default=DEFAULT_MODEL_DEADLINE)
 
 
+# None 表示动态继承当前会话的普通输出上限。
+active_total_output_chars = ContextVar('active_total_output_chars', default=None)
+
+
+@contextmanager
+def model_total_output_chars(limit: int):
+    if type(limit) is not int or not 1 <= limit <= 1048576:
+        raise ValueError('模型总输出字符上限必须为 1..1048576 的整数')
+    token = active_total_output_chars.set(limit)
+    try:
+        yield
+    finally:
+        active_total_output_chars.reset(token)
+
+
 @contextmanager
 def model_deadline(timeout: float | None):
     token = active_model_deadline.set(timeout)

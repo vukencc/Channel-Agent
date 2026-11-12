@@ -4,10 +4,11 @@ import json
 
 import openai
 
+from agent_core import config
 from agent_core.core.budgets import BudgetExceeded, budget_scope
 from agent_core.core.flow_templates import REASONING_EFFORTS, PortableTemplate, flow_tool_catalog, validate_template
 from agent_core.core.llm import ModelResponseError, RuntimeModelRequestError
-from agent_core.core.model_settings import model_deadline, model_profile as profile_scope, model_thinking
+from agent_core.core.model_settings import model_deadline, model_profile as profile_scope, model_thinking, model_total_output_chars
 from agent_core.core.model_transport import ModelProxyError
 from agent_core.core.session_limits import limits_scope
 from agent_core.core.tool_settings import model_tools
@@ -92,7 +93,7 @@ async def design_flow(manager, messages: list[dict], *, model_profile=None, reas
 
     history = [{'role': 'system', 'content': '你是 Flow 设计助手。仅返回 JSON 对象 {"reply":字符串,"template":便携模板或null}。信息不足时询问并返回 null。模板 format 为 agent-flow，version 为 1；节点禁止 workspace_path。不要包含工作区或凭据。节点可定义 custom_tools，Python 代码提供 main(arguments)，使用标准库或项目依赖完成真实 I/O；不得嵌入凭据。没有外部 API 时不要声称已发送回复，可写项目 outbox 并说明。设计与导入不会执行代码。模板 schema：' + json.dumps(PortableTemplate.model_json_schema(), ensure_ascii=False) + '\n可用工具：' + json.dumps(flow_tool_catalog(), ensure_ascii=False)}] + messages
     try:
-        with profile_scope(model_profile, endpoint), model_tools([]), model_thinking(reasoning_effort), model_deadline(None), budget_scope(manager.budget_ledger, 'flow-designer'), limits_scope({'model_profile': model_profile}, endpoint=endpoint):
+        with profile_scope(model_profile, endpoint), model_tools([]), model_thinking(reasoning_effort), model_deadline(None), model_total_output_chars(config.FLOW_DESIGNER_TOTAL_OUTPUT_CHARS), budget_scope(manager.budget_ledger, 'flow-designer'), limits_scope({'model_profile': model_profile}, endpoint=endpoint):
             async with manager.slots:
                 response = await manager.model(history, session_id=None, emit=observe)
     except asyncio.CancelledError:

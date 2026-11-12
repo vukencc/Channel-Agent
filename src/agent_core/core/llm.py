@@ -23,7 +23,8 @@ from agent_core.core.log import get_logger
 from agent_core.core.context import estimate_tokens, request_tokens
 from agent_core.core.messages import PackMessage
 from agent_core.core.model_settings import (DEFAULT_MODEL_DEADLINE, active_endpoint, active_model_deadline,
-                                            active_profile, active_reasoning_effort, active_thinking_mode)
+                                            active_profile, active_reasoning_effort, active_thinking_mode,
+                                            active_total_output_chars)
 from agent_core.core.tool_settings import selected_schemas
 from agent_core.core.budgets import BudgetExceeded, active_budget, reserve_request, settle_request
 from agent_core.tools import all_schemas
@@ -251,6 +252,11 @@ def selected_model():
     return selected_profile().get('model', config.MODEL)
 
 
+def effective_total_output_chars() -> int:
+    limit = active_total_output_chars.get()
+    return session_limit('MODEL_OUTPUT_CHARS') if limit is None else limit
+
+
 def reserved_cost(history, schemas, endpoint, options):
     if active_budget.get() is None:
         return None
@@ -259,7 +265,7 @@ def reserved_cost(history, schemas, endpoint, options):
     output_price = endpoint.get('output_cost_per_million', config.OUTPUT_COST_PER_MILLION if primary else 0)
     if input_price <= 0 or output_price <= 0:
         return None
-    output_tokens = options.get('max_tokens', session_limit('MODEL_OUTPUT_CHARS'))
+    output_tokens = options.get('max_tokens', effective_total_output_chars())
     return (request_tokens(history, schemas) * input_price + output_tokens * output_price) / 1e6
 
 
@@ -471,7 +477,8 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                     if tc.function and tc.function.arguments:
                         call['arguments'].append(tc.function.arguments)
                         metrics['argument_chars'] += len(tc.function.arguments)
-                if sum(metrics[key] for key in ('content_chars', 'reasoning_chars', 'argument_chars')) > session_limit('MODEL_OUTPUT_CHARS'):
+                if (metrics['content_chars'] + metrics['argument_chars'] > session_limit('MODEL_OUTPUT_CHARS') or
+                        sum(metrics[key] for key in ('content_chars', 'reasoning_chars', 'argument_chars')) > effective_total_output_chars()):
                     raise ModelResponseError('模型单次输出超过字符上限，未执行工具；请拆分为小步骤。')
                 if emit and elapsed - progress_at >= .25:
                     if delta.tool_calls:
