@@ -318,6 +318,7 @@ def test_designer_output_character_cap_is_not_disabled(controlled_designer, monk
     with pytest.raises(ValueError, match='未返回完整可用内容'):
         asyncio.run(design_flow(manager, [{'role': 'user', 'content': '完整设计'}],
                                 model_profile=profile, reasoning_effort='xhigh'))
+    assert streams[0].reasoning_elapsed_s is not None
     assert streams[0].closed and clients[0].is_closed()
     assert manager.budget_ledger.state['pending'] == {}
     assert not (manager.store.root / 'flows').exists()

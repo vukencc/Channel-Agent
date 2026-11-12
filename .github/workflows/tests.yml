@@ -111,6 +111,7 @@ jobs:
             'src/agent_test/tests/test_designer_import_retry.py',
             'src/agent_test/tests/test_designer_connection_diagnostics.py',
             'src/agent_test/tests/test_designer_long_running.py',
+            'src/agent_test/tests/test_designer_generation_budget.py',
             'src/agent_test/tests/test_designer_chat_ui.py',
             'src/agent_test/tests/test_model_transport.py',
             'src/agent_test/tests/test_runtime_model_proxy_mode.py',
