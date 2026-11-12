@@ -41,16 +41,20 @@ class RuntimeModelSnapshot:
     parameters: Mapping = field(default_factory=lambda: MappingProxyType({}))
     context_tokens: int | None = None
     response_reserve_tokens: int | None = None
+    proxy_mode: str = 'environment'
 
     def endpoint(self) -> dict:
-        return {'model': self.model, 'base_url': self.base_url, 'api_key': self.api_key}
+        return {'model': self.model, 'base_url': self.base_url, 'api_key': self.api_key,
+                'proxy_mode': self.proxy_mode}
 
     def options(self) -> dict:
         return _thaw(self.parameters)
 
 
 def _validate_fields(*, name, model, base_url, api_key, parameters=None,
-                     context_tokens=None, response_reserve_tokens=None) -> dict:
+                     context_tokens=None, response_reserve_tokens=None, proxy_mode='environment') -> dict:
+    if proxy_mode not in ('environment', 'windows_system'):
+        raise ValueError('代理来源必须是继承环境或 Windows 系统代理')
     for value, label, maximum in ((name, '名称', 120), (model, '模型 ID', 200)):
         if not isinstance(value, str) or not value.strip() or len(value) > maximum or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ValueError(f'模型{label}无效')
@@ -81,7 +85,7 @@ def _validate_fields(*, name, model, base_url, api_key, parameters=None,
         raise ValueError('模型上下文容量必须大于输出预留/max_tokens') from None
     return {'name': name.strip(), 'model': model.strip(), 'base_url': base_url.rstrip('/'),
             'api_key': api_key, 'parameters': options, 'context_tokens': context_tokens,
-            'response_reserve_tokens': response_reserve_tokens}
+            'response_reserve_tokens': response_reserve_tokens, 'proxy_mode': proxy_mode}
 
 
 class RuntimeModelRegistry:
@@ -258,7 +262,8 @@ class RuntimeModelRegistry:
                 'base_url': entry['base_url'], 'has_api_key': bool(entry['api_key']),
                 'parameters': deepcopy(entry.get('parameters', {})), 'read_only': False,
                 'context_tokens': entry.get('context_tokens'),
-                'response_reserve_tokens': entry.get('response_reserve_tokens')}
+                'response_reserve_tokens': entry.get('response_reserve_tokens'),
+                'proxy_mode': entry.get('proxy_mode', 'environment')}
 
     def list_public(self) -> list[dict]:
         with self._lock:
@@ -266,7 +271,8 @@ class RuntimeModelRegistry:
                      'base_url': self._public_default_url(), 'has_api_key': bool(config.API_KEY),
                      'parameters': deepcopy(profile.get('parameters', {})), 'read_only': True,
                      'context_tokens': profile.get('context_tokens'),
-                     'response_reserve_tokens': profile.get('response_reserve_tokens')}
+                     'response_reserve_tokens': profile.get('response_reserve_tokens'),
+                     'proxy_mode': 'environment'}
                     for name, profile in config.MODEL_PROFILES.items()]
             return rows + [self._public(identifier, entry) for identifier, entry in self._entries.items()]
 
@@ -292,12 +298,15 @@ class RuntimeModelRegistry:
                                         base_url=entry['base_url'], api_key=entry['api_key'],
                                         parameters=_freeze(deepcopy(entry['parameters'])),
                                         context_tokens=entry.get('context_tokens'),
-                                        response_reserve_tokens=entry.get('response_reserve_tokens'))
+                                        response_reserve_tokens=entry.get('response_reserve_tokens'),
+                                        proxy_mode=entry.get('proxy_mode', 'environment'))
 
     def add(self, *, name: str, model: str, base_url: str, api_key: str = '', parameters: dict | None = None,
-            context_tokens: int | None = None, response_reserve_tokens: int | None = None) -> dict:
+            context_tokens: int | None = None, response_reserve_tokens: int | None = None,
+            proxy_mode: str = 'environment') -> dict:
         entry = _validate_fields(name=name, model=model, base_url=base_url, api_key=api_key, parameters=parameters,
-                                 context_tokens=context_tokens, response_reserve_tokens=response_reserve_tokens)
+                                 context_tokens=context_tokens, response_reserve_tokens=response_reserve_tokens,
+                                 proxy_mode=proxy_mode)
         with self._lock:
             identifier = 'runtime-' + uuid.uuid4().hex
             entries = {**self._entries, identifier: entry}
@@ -313,7 +322,7 @@ class RuntimeModelRegistry:
 
     def update(self, identifier: str, *, name: str, model: str, base_url: str,
                api_key: str = '', parameters: dict | None = None,
-               context_tokens=_UNSET, response_reserve_tokens=_UNSET) -> dict:
+               context_tokens=_UNSET, response_reserve_tokens=_UNSET, proxy_mode=_UNSET) -> dict:
         with self._lock:
             self._editable(identifier)
             previous = self._entries[identifier]
@@ -321,7 +330,8 @@ class RuntimeModelRegistry:
                                      api_key=previous['api_key'] if api_key == '' else api_key,
                                      parameters=previous['parameters'] if parameters is None else parameters,
                                      context_tokens=previous.get('context_tokens') if context_tokens is _UNSET else context_tokens,
-                                     response_reserve_tokens=previous.get('response_reserve_tokens') if response_reserve_tokens is _UNSET else response_reserve_tokens)
+                                     response_reserve_tokens=previous.get('response_reserve_tokens') if response_reserve_tokens is _UNSET else response_reserve_tokens,
+                                     proxy_mode=previous.get('proxy_mode', 'environment') if proxy_mode is _UNSET else proxy_mode)
             if api_key == '' and previous['api_key'] and entry['base_url'] != previous['base_url']:
                 raise ValueError('修改服务地址时必须明确填写该服务的 API 密钥')
             entries = {**self._entries, identifier: entry}

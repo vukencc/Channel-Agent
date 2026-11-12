@@ -157,6 +157,12 @@ class ModelDialog(QDialog):
         self.parameters.setPlainText(json.dumps(row.get('parameters', {}), ensure_ascii=False, indent=2))
         self.parameters.setMinimumHeight(110)
         self.parameters.setMaximumHeight(160)
+        self.proxy_mode = ChoiceBox()
+        self.proxy_mode.addItem('继承环境（默认）', 'environment')
+        self.proxy_mode.addItem('Windows 系统代理', 'windows_system')
+        self.proxy_mode.setCurrentIndex(max(0, self.proxy_mode.findData(row.get('proxy_mode', 'environment'))))
+        self.proxy_mode.setAccessibleName('模型连接代理来源')
+        self.proxy_mode.setToolTip('显式选择系统代理时覆盖环境代理，保留排除规则及证书校验；仅适用于运行在 Windows 的应用。')
         for label, field in [('连接名称', self.name), ('模型 ID', self.model), ('服务地址', self.base_url), ('API 密钥', self.api_key)]:
             form.addRow(_label(label), field)
         fields.addLayout(form)
@@ -169,10 +175,10 @@ class ModelDialog(QDialog):
         advanced_form = _form()
         advanced.setLayout(advanced_form)
         advanced_form.setContentsMargins(0, 0, 0, 0)
-        for label, field in [('上下文 token', self.capacity), ('回复预留 token', self.reserve), ('采样参数 JSON', self.parameters)]:
+        for label, field in [('代理来源', self.proxy_mode), ('上下文 token', self.capacity), ('回复预留 token', self.reserve), ('采样参数 JSON', self.parameters)]:
             advanced_form.addRow(_label(label), field)
         advanced_button.toggled.connect(advanced.setVisible)
-        advanced_button.setChecked(bool(row.get('context_tokens') or row.get('response_reserve_tokens') or row.get('parameters')))
+        advanced_button.setChecked(bool(row.get('context_tokens') or row.get('response_reserve_tokens') or row.get('parameters') or row.get('proxy_mode', 'environment') != 'environment'))
         advanced.setVisible(advanced_button.isChecked())
         fields.addWidget(advanced_button)
         fields.addWidget(advanced)
@@ -191,7 +197,7 @@ class ModelDialog(QDialog):
                                    'base_url': self.base_url.text(), 'api_key': self.api_key.text(),
                                    'context_tokens': int(self.capacity.text()) if self.capacity.text().strip() else None,
                                    'response_reserve_tokens': int(self.reserve.text()) if self.reserve.text().strip() else None,
-                                   'parameters': parameters}
+                                   'parameters': parameters, 'proxy_mode': self.proxy_mode.currentData()}
         except (ValueError, TypeError):
             self.error_label.setText('容量应为整数，采样参数应为 JSON 对象。')
             self.error_label.show()

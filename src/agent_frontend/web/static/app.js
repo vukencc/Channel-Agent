@@ -1107,7 +1107,7 @@
     state.defaultModel = typeof data.default_model === "string" ? data.default_model : null;
     state.defaultModelAvailable = data.default_model_available ?? Boolean(data.default_model);
     // The public library intentionally contains no API key values.
-    state.modelLibrary = (data.models || []).map((item) => ({ id: item.id, name: item.name, model: item.model, base_url: item.base_url, context_tokens: item.context_tokens, response_reserve_tokens: item.response_reserve_tokens, has_api_key: Boolean(item.has_api_key), read_only: Boolean(item.read_only), editable: !item.read_only && item.editable !== false && !item.builtin && !item.built_in, source: item.source }));
+    state.modelLibrary = (data.models || []).map((item) => ({ id: item.id, name: item.name, model: item.model, base_url: item.base_url, context_tokens: item.context_tokens, response_reserve_tokens: item.response_reserve_tokens, proxy_mode: item.proxy_mode || "environment", has_api_key: Boolean(item.has_api_key), read_only: Boolean(item.read_only), editable: !item.read_only && item.editable !== false && !item.builtin && !item.built_in, source: item.source }));
     renderModels();
     window.FlowUI?.refreshModels?.();
   }
@@ -1129,7 +1129,7 @@
       }); actions.append(select);
       if (model.editable) {
         const edit = element("button", "text-button", "编辑"); edit.type = "button";
-        edit.addEventListener("click", () => { resetModelForm(); state.editingModel = model.id; $("model-name").value = model.name || ""; $("model-id").value = model.model || ""; $("model-base-url").value = model.base_url || ""; $("model-context-tokens").value = model.context_tokens ?? ""; $("model-response-reserve").value = model.response_reserve_tokens ?? ""; setText("model-form-title", "编辑模型"); setText("model-key-hint", "留空保留现有密钥；修改服务地址须重新输入对应密钥。"); $("model-name").focus(); });
+        edit.addEventListener("click", () => { resetModelForm(); state.editingModel = model.id; $("model-name").value = model.name || ""; $("model-id").value = model.model || ""; $("model-base-url").value = model.base_url || ""; $("model-context-tokens").value = model.context_tokens ?? ""; $("model-response-reserve").value = model.response_reserve_tokens ?? ""; $("model-proxy-mode").value = model.proxy_mode || "environment"; setText("model-form-title", "编辑模型"); setText("model-key-hint", "留空保留现有密钥；修改服务地址须重新输入对应密钥。"); $("model-name").focus(); });
         const remove = element("button", "text-button danger-hover", "删除"); remove.type = "button"; remove.addEventListener("click", () => deleteModel(model, remove));
         actions.append(edit, remove);
       }
@@ -1151,7 +1151,8 @@
       const id = state.editingModel;
       const body = { name: $("model-name").value.trim(), model: $("model-id").value.trim(), base_url: $("model-base-url").value.trim(), api_key: $("model-api-key").value,
         context_tokens: $("model-context-tokens").value ? Number($("model-context-tokens").value) : null,
-        response_reserve_tokens: $("model-response-reserve").value ? Number($("model-response-reserve").value) : null };
+        response_reserve_tokens: $("model-response-reserve").value ? Number($("model-response-reserve").value) : null,
+        proxy_mode: $("model-proxy-mode").value };
       const saved = await jsonApi(id ? `/api/models/${encodeURIComponent(id)}` : "/api/models", { method: id ? "PUT" : "POST", body });
       $("model-api-key").value = "";
       await loadModels(); await refreshModelOptions(saved.id); resetModelForm(); toast("模型已保存，可在会话中选择。");

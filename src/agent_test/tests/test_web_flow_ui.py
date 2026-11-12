@@ -121,7 +121,8 @@ const bridge={enter(){},models:()=>[],toast(){},api(path,options){
  return Promise.resolve(original);
 }};
 function find(node,text){if(node.textContent===text)return node;for(const child of node.children||[]){const found=find(child,text);if(found)return found;}return null}
-function send(){h.drawDesigner();const panel=layout.querySelector('.flow-designer-panel'),input=panel.children.find(x=>x.tag==='textarea');input.value='设计';input.listeners.input();return find(panel,'发送').click()}
+function findTag(node,tag){if(node.tag===tag)return node;for(const child of node.children||[]){const found=findTag(child,tag);if(found)return found;}return null}
+function send(){h.drawDesigner();const panel=layout.querySelector('.flow-designer-panel'),input=findTag(panel,'textarea');input.value='设计';input.listeners.input();return find(panel,'发送').click()}
 (async()=>{
  h.setup(bridge,original);
  let pending=send();resolveChat({reply:'已设计',template:{format:'agent-flow'}});await pending;

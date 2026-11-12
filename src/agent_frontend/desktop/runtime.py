@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import sys
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,6 +59,7 @@ class RuntimeBridge(QObject):
         self._commands: set[asyncio.Task] = set()
         self._design_task: asyncio.Task | None = None
         self._design_generation = 0
+        self._design_pending_import: dict | None = None
         self._secrets: set[str] = set()
 
     @property
@@ -183,7 +186,9 @@ class RuntimeBridge(QObject):
             self._cancel_design()
             return
         if action == 'flow_design':
-            self._cancel_design()
+            pending = self._design_pending_import
+            self._cancel_design(keep_import=bool(pending and
+                arguments.get('retry_import_request_id') == pending['request_id']))
             generation = self._design_generation
             task = asyncio.create_task(self._design(arguments, generation))
             self._design_task = task
@@ -194,23 +199,40 @@ class RuntimeBridge(QObject):
         self._commands.add(task)
         task.add_done_callback(self._commands.discard)
 
-    def _cancel_design(self) -> None:
+    def _cancel_design(self, *, keep_import: bool = False) -> None:
         self._design_generation += 1
         if self._design_task and not self._design_task.done():
             self._design_task.cancel()
         self._design_task = None
+        if not keep_import:
+            self._design_pending_import = None
 
     async def _design(self, arguments: dict, generation: int) -> None:
+        stage = 'request'
+        import_request_id = None
         try:
             from agent_core.core.flow_designer import design_flow
-            result = await design_flow(self._manager, arguments['messages'], model_profile=arguments.get('model_profile'), reasoning_effort=arguments.get('reasoning_effort'))
+            retry = arguments.get('retry_import_request_id')
+            if retry is not None:
+                pending = self._design_pending_import
+                if not pending or retry != pending['request_id']:
+                    raise ValueError('待导入的设计结果已失效，请重新发送设计需求')
+                result = copy.deepcopy(pending['result'])
+                import_request_id = pending['request_id']
+            else:
+                result = await design_flow(self._manager, arguments['messages'], model_profile=arguments.get('model_profile'), reasoning_effort=arguments.get('reasoning_effort'))
             async with self._mutations:
                 if self._closing or generation != self._design_generation:
                     return
                 if result.get('template') is not None:
-                    flow = self._flows.import_template(result['template'])
+                    stage = 'import'
+                    import_request_id = import_request_id or arguments.get('request_id') or uuid.uuid4().hex
+                    self._design_pending_import = {'request_id': import_request_id, 'result': copy.deepcopy(result)}
+                    import_key = hashlib.sha256(str(import_request_id).encode()).hexdigest()[:32]
+                    flow = self._flows.import_template(result['template'], request_id=import_key)
                     self._selected_flow = flow['id']
                     self._audit('flow_design_import', flow_id=flow['id'])
+                self._design_pending_import = None
                 self.finished.emit('flow_design', json.dumps(self._clean({'reply': result.get('reply', ''), 'template': result.get('template'), 'request_id': arguments.get('request_id')}), ensure_ascii=False))
                 self._dirty = True
         except asyncio.CancelledError:
@@ -219,7 +241,10 @@ class RuntimeBridge(QObject):
             if generation == self._design_generation and not self._closing:
                 message = self._clean(str(exc)) if isinstance(exc, ValueError) else f'设计未完成（{type(exc).__name__}），请检查配置后重试。'
                 self.error.emit(message)
-                self.finished.emit('flow_design', json.dumps({'error': message, 'request_id': arguments.get('request_id')}, ensure_ascii=False))
+                payload = {'error': message, 'request_id': arguments.get('request_id')}
+                if stage == 'import' and self._design_pending_import is not None:
+                    payload.update(error_stage='import', retry_import_request_id=import_request_id)
+                self.finished.emit('flow_design', json.dumps(payload, ensure_ascii=False))
 
     async def _materialize(self, identifier: str | None) -> None:
         if identifier is None:

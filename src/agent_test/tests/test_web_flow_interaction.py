@@ -25,14 +25,15 @@ class Element {
  querySelector(selector){return selector==='.flow-designer-panel'?this.children.find(x=>x.className==='flow-designer-panel')||null:null}
 }
 const layout=new Element('div'),root=new Element('section');root.querySelector=s=>s==='.flow-layout'?layout:null;root.querySelectorAll=()=>[];
-global.document={createElement:tag=>new Element(tag),getElementById:id=>id==='flow-view'?root:null,body:new Element('body')};
+global.document={createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),getElementById:id=>id==='flow-view'?root:null,body:new Element('body')};
 global.window={};vm.runInThisContext(source);
 let resolveChat, cancelled=0, request, registry=[{id:'env',read_only:true,has_api_key:false},{id:'local',read_only:false,has_api_key:false}];
 const bridge={models:()=>registry,toast(){},api(path,options){if(path.endsWith('/cancel')){cancelled++;return Promise.resolve({})}if(path==='/api/models')return Promise.resolve({default_model_available:false,models:registry});request=options.body;return new Promise(resolve=>resolveChat=resolve)}};
 function find(node,text){if(node.textContent===text)return node;for(const child of node.children||[]){const result=find(child,text);if(result)return result;}return null}
+function findTag(node,tag){if(node.tag===tag)return node;for(const child of node.children||[]){const result=findTag(child,tag);if(result)return result;}return null}
 (async()=>{
  const h=window.harness;h.setup(bridge);h.drawDesigner();let panel=layout.querySelector('.flow-designer-panel');
- let input=panel.children.find(x=>x.tag==='textarea');input.value='旧需求';input.listeners.input();
+ let input=findTag(panel,'textarea');input.value='旧需求';input.listeners.input();
  const pending=find(panel,'发送').click();panel=layout.querySelector('.flow-designer-panel');
  assert.ok(find(panel,'生成中…'),'请求期间显示生成状态');
  const clear=find(panel,'清空');assert.ok(clear,'清空按钮可用');clear.click();
@@ -40,17 +41,45 @@ function find(node,text){if(node.textContent===text)return node;for(const child 
  assert.equal(cancelled,1);assert.deepEqual(h.state().history,[]);assert.equal(h.state().draft,'');
  panel=layout.querySelector('.flow-designer-panel');find(panel,'关闭').click();h.openDesigner();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(h.state().model,'local','无环境默认时显式选择可用运行时模型');
- panel=layout.querySelector('.flow-designer-panel');input=panel.children.find(x=>x.tag==='textarea');input.value='新需求';input.listeners.input();
+ panel=layout.querySelector('.flow-designer-panel');input=findTag(panel,'textarea');input.value='新需求';input.listeners.input();
  const hiddenPending=find(panel,'发送').click();assert.equal(request.model_profile,'local');
  registry=[];h.refreshModels();assert.equal(h.state().model,'');assert.equal(request.model_profile,'local','已发送请求保持原模型');
  panel=layout.querySelector('.flow-designer-panel');find(panel,'关闭').click();resolveChat({reply:'完成'});await hiddenPending;
  assert.equal(cancelled,1,'隐藏不取消请求');assert.equal(h.state().history.at(-1).display,'完成');assert.equal(h.state().active,'source');
- h.openDesigner();await new Promise(resolve=>setImmediate(resolve));assert.ok(find(layout,'助手：完成'));
- panel=layout.querySelector('.flow-designer-panel');input=panel.children.find(x=>x.tag==='textarea');input.value='无模型';input.listeners.input();
+ h.openDesigner();await new Promise(resolve=>setImmediate(resolve));assert.ok(find(layout,'助手'));assert.ok(find(layout,'完成'));
+ panel=layout.querySelector('.flow-designer-panel');input=findTag(panel,'textarea');input.value='无模型';input.listeners.input();
  const noModelSend=find(panel,'发送');assert.ok(noModelSend.disabled,'无可用模型时禁止发送');assert.ok(find(panel,'请先在模型管理中配置可用模型。'));
  const prior=request;await noModelSend.click();assert.equal(request,prior,'无模型不得发起请求');
 })().catch(e=>{console.error(e);process.exitCode=1});
 ''', encoding="utf-8")
+    result = subprocess.run([node, str(script), str(asset)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_designer_retries_import_without_repeating_chat(tmp_path):
+    node = shutil.which('node')
+    assert node
+    asset = Path(__file__).resolve().parents[2] / 'agent_frontend/web/static/flow.js'
+    script = tmp_path / 'designer_import.cjs'
+    script.write_text(r'''
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+let source=fs.readFileSync(process.argv[2],'utf8').replace('function render() {','function render() { return;');
+source=source.replace('window.FlowUI = {',`window.harness={setup(b){bridge=b;active='source';drafts.set(active,{id:active,title:'草稿',nodes:[],edges:[]});designerVisible=true;designerDefaultAvailable=true},drawDesigner,openDesigner,stopDesigner,open,setPending(){designerPendingImport={template:{format:'agent-flow'},requestId:'a'.repeat(32)};designerError='导入失败'},state:()=>({history:designerHistory,draft:designerDraft,pending:designerPendingImport,error:designerError})}; window.FlowUI = {`);
+class Element {constructor(tag){this.tag=tag;this.children=[];this.listeners={};this.classList={add(){},remove(){}};this.dataset={};this.value='';} append(...items){for(const item of items){item.parent=this;this.children.push(item)}} replaceWith(item){const i=this.parent.children.indexOf(this);this.parent.children[i]=item;item.parent=this.parent} replaceChildren(...items){this.children=[];this.append(...items)} addEventListener(name,fn){this.listeners[name]=fn} setAttribute(){} click(){return this.listeners.click?.({})} querySelector(s){return s==='.flow-designer-panel'?this.children.find(x=>x.className===s.slice(1))||null:null}}
+const layout=new Element('div'),root=new Element('section');root.querySelector=s=>s==='.flow-layout'?layout:null;
+global.document={createElement:t=>new Element(t),createTextNode:t=>({textContent:t}),getElementById:id=>id==='flow-view'?root:null,body:new Element('body')};global.window={};global.requestAnimationFrame=()=>{};vm.runInThisContext(source);
+let chats=0, imports=[];const template={format:'agent-flow'};
+const bridge={enter(){},models:()=>[],toast(){},api:async(path,options)=>{if(path==='/api/flow-designer/chat'){chats++;return {reply:'完成',template}} if(path==='/api/flows/import'){imports.push(options.body);if(imports.length<3)throw Error('导入失败');return {id:'new',title:'生成',nodes:[],edges:[]}} return {}}};
+function find(node,text){if(node.textContent===text)return node;for(const c of node.children||[]){const r=find(c,text);if(r)return r}return null}
+function tag(node,t){if(node.tag===t)return node;for(const c of node.children||[]){const r=tag(c,t);if(r)return r}return null}
+(async()=>{const h=window.harness;h.setup(bridge);h.drawDesigner();let panel=layout.querySelector('.flow-designer-panel'),input=tag(panel,'textarea');input.value='设计';input.listeners.input();await find(panel,'发送').click();
+panel=layout.querySelector('.flow-designer-panel');const saved=h.state().pending;find(panel,'关闭').click();assert.equal(h.state().pending,saved);h.openDesigner();await new Promise(r=>setImmediate(r));h.drawDesigner();assert.ok(find(layout,'重试导入'));
+for(let i=0;i<2;i++){panel=layout.querySelector('.flow-designer-panel');input=tag(panel,'textarea');input.value='新草稿';input.listeners.input();assert.ok(find(panel,'重试导入'));await find(panel,'重试导入').click();assert.equal(h.state().history.length,2);assert.equal(h.state().draft,'新草稿')}
+assert.equal(chats,1);assert.equal(imports.length,3);assert.match(imports[0].request_id,/^[0-9a-f]{32}$/);assert.deepEqual(imports.map(x=>x.request_id),[imports[0].request_id,imports[0].request_id,imports[0].request_id]);assert.deepEqual(imports.map(x=>x.template),[template,template,template]);
+h.setPending();h.stopDesigner();assert.equal(h.state().pending,null);assert.equal(h.state().error,'');h.drawDesigner();assert.equal(find(layout,'重试导入'),null);assert.equal(find(layout,'重试'),null);
+h.setPending();await h.open('other');assert.equal(h.state().pending,null);assert.equal(h.state().error,'');
+})().catch(e=>{console.error(e);process.exitCode=1});
+''', encoding='utf-8')
     result = subprocess.run([node, str(script), str(asset)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
 

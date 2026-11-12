@@ -260,12 +260,26 @@ class FlowService:
                 node.pop('handoff_contract', None)
         return validated
 
-    def import_template(self, payload, *, missing_models='error'):
+    def import_template(self, payload, *, missing_models='error', request_id=None):
         from agent_core.core.flow_templates import validate_template
         value = validate_template(payload, self.manager, missing_models=missing_models)
         value = {key: val for key, val in value.items() if key not in {'format', 'version'}}
-        value = Definition.model_validate({**value, 'id': uuid.uuid4().hex, 'revision': 0}).model_dump()
+        if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r'[a-f0-9]{32}', request_id)):
+            raise ValueError('导入请求标识无效')
+        # 同一设计结果重试使用稳定文件身份；发布后异常也不能另建一份副本。
+        identifier = (hashlib.sha256(('flow-designer-import:' + request_id).encode()).hexdigest()[:32]
+                      if request_id is not None else uuid.uuid4().hex)
+        value = Definition.model_validate({**value, 'id': identifier, 'revision': 0}).model_dump()
+        if request_id is not None and identifier in self.records:
+            self._verify_link_file(identifier)
+            previous = self.get(identifier)
+            if (previous.get('project_id') or previous.get('workspace_path') or
+                    self.export_template(previous) != self.export_template(value)):
+                raise ValueError('该请求对应的模板已改变，请刷新确认，不重复导入')
+            return previous
         if self._path(value['id']).exists():
+            if request_id is not None:
+                raise ValueError('模板可能已写入，但导入状态未确认；请重新打开应用核对，不重复导入')
             raise FileExistsError('Flow 文件已存在')
         self._write(value)
         self.records[value['id']] = value

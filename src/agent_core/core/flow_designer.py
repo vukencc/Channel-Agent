@@ -9,18 +9,30 @@ from agent_core.core.budgets import BudgetExceeded, budget_scope
 from agent_core.core.flow_templates import REASONING_EFFORTS, PortableTemplate, flow_tool_catalog, validate_template
 from agent_core.core.llm import ModelResponseError, RuntimeModelRequestError
 from agent_core.core.model_settings import model_profile as profile_scope, model_thinking
+from agent_core.core.model_transport import ModelProxyError
 from agent_core.core.session_limits import limits_scope
 from agent_core.core.tool_settings import model_tools
 
 
-def _provider_error_message(exc: Exception) -> str:
+def _connection_error_message(phase: str | None = None) -> str:
+    """连接阶段来自内部指标，不回显服务端、请求或代理异常正文。"""
+    if phase == 'stream':
+        return ('模型已开始响应，但生成过程中连接中断，本次未导入模板。'
+                '请重试；较大流程可分多轮设计。')
+    return ('设计请求在首段响应前连接失败，尚未生成模板。请重试；'
+            '若持续失败，请检查模型服务与当前进程的网络或代理连接。')
+
+
+def _provider_error_message(exc: Exception, phase: str | None = None) -> str:
     """只读取 SDK 状态码，不展示服务端响应或请求细节。"""
     if isinstance(exc, RuntimeModelRequestError):
         exc = exc.__context__
+    if isinstance(exc, ModelProxyError):
+        return 'Windows 系统代理不可用或配置无效；请检查模型连接的代理来源与 Windows 固定代理设置。'
     if isinstance(exc, openai.APITimeoutError):
         return '设计模型请求超时，请稍后重试或缩小需求'
     if isinstance(exc, openai.APIConnectionError):
-        return '设计模型连接失败，请检查网络、代理和模型服务后重试'
+        return _connection_error_message(phase)
     if isinstance(exc, openai.APIStatusError):
         status = exc.status_code
         if status in (400, 422):
@@ -69,12 +81,22 @@ async def design_flow(manager, messages: list[dict], *, model_profile=None, reas
     if model_profile and not manager.model_registry.contains(model_profile):
         raise ValueError('未知模型 profile')
     endpoint = manager.model_registry.resolve(model_profile)
+    connection_phase = None
+
+    def observe(kind, payload):
+        # 保留安全的内部阶段，丢弃模板片段、思考、错误正文和所有其它元数据。
+        nonlocal connection_phase
+        if kind == 'metrics' and isinstance(payload, dict):
+            phase = payload.get('failure_phase')
+            if isinstance(phase, str) and phase in ('connect', 'stream'):
+                connection_phase = phase
+
     history = [{'role': 'system', 'content': '你是 Flow 设计助手。仅返回 JSON 对象 {"reply":字符串,"template":便携模板或null}。信息不足时询问并返回 null。模板 format 为 agent-flow，version 为 1；节点禁止 workspace_path。不要包含工作区或凭据。节点可定义 custom_tools，Python 代码提供 main(arguments)，使用标准库或项目依赖完成真实 I/O；不得嵌入凭据。没有外部 API 时不要声称已发送回复，可写项目 outbox 并说明。设计与导入不会执行代码。模板 schema：' + json.dumps(PortableTemplate.model_json_schema(), ensure_ascii=False) + '\n可用工具：' + json.dumps(flow_tool_catalog(), ensure_ascii=False)}] + messages
     try:
         with profile_scope(model_profile, endpoint), model_tools([]), model_thinking(reasoning_effort), budget_scope(manager.budget_ledger, 'flow-designer'), limits_scope({'model_profile': model_profile}, endpoint=endpoint):
             async with asyncio.timeout(config.MODEL_CALL_TIMEOUT):
                 async with manager.slots:
-                    response = await manager.model(history, session_id=None, emit=lambda *_: None)
+                    response = await manager.model(history, session_id=None, emit=observe)
     except asyncio.CancelledError:
         raise
     except BudgetExceeded:
@@ -82,11 +104,11 @@ async def design_flow(manager, messages: list[dict], *, model_profile=None, reas
     except TimeoutError:
         raise ValueError('设计模型请求超时，请稍后重试或缩小需求') from None
     except ConnectionError:
-        raise ValueError('设计模型连接失败，请检查网络、代理和模型服务后重试') from None
+        raise ValueError(_connection_error_message(connection_phase)) from None
     except ModelResponseError:
         raise ValueError('设计模型未返回完整可用内容，请精简模板或调整输出配置后重试') from None
     except Exception as exc:
-        raise ValueError(_provider_error_message(exc)) from None
+        raise ValueError(_provider_error_message(exc, connection_phase)) from None
     try:
         if response.get('tool_calls'):
             raise ValueError('设计模型不能调用工具')

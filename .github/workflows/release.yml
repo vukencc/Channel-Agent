@@ -112,6 +112,11 @@ jobs:
             'src/agent_test/tests/test_dynamic_feedback_validation.py',
             'src/agent_test/tests/test_flow_designer.py',
             'src/agent_test/tests/test_designer_request_errors.py',
+            'src/agent_test/tests/test_designer_import_retry.py',
+            'src/agent_test/tests/test_designer_connection_diagnostics.py',
+            'src/agent_test/tests/test_designer_chat_ui.py',
+            'src/agent_test/tests/test_model_transport.py',
+            'src/agent_test/tests/test_runtime_model_proxy_mode.py',
             'src/agent_test/tests/test_web_flow_interaction.py',
             'src/agent_test/tests/test_packaged_dynamic_smoke.py',
             'src/agent_test/tests/test_packaged_smoke.py'
