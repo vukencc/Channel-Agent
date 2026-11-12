@@ -97,6 +97,9 @@ def test_narrow_composer_controls_do_not_overlap():
     panel.resize(230, 650)
     panel.show()
     app.processEvents()
-    assert panel.input.geometry().bottom() < panel.model.geometry().top()
-    assert panel.model.geometry().bottom() < panel.effort.geometry().top()
-    assert panel.effort.geometry().bottom() < panel.send.geometry().top()
+    assert panel.width() <= 230
+    controls = (panel.input, panel.model, panel.effort, panel.send)
+    for index, control in enumerate(controls):
+        assert panel.composer.rect().contains(control.geometry())
+        for other in controls[index + 1:]:
+            assert not control.geometry().intersects(other.geometry())

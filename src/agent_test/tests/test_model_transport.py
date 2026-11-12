@@ -20,8 +20,8 @@ def test_system_exclusions_and_no_proxy(monkeypatch):
     monkeypatch.setattr(model_transport, "_windows_settings", lambda: (True, "proxy.example:8080", "*.internal;<local>"))
     assert model_transport.select_system_proxy("https://service.internal") is None
     assert model_transport.select_system_proxy("https://intranet") is None
-    monkeypatch.setenv("NO_PROXY", "example.com:8443")
     monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("NO_PROXY", "example.com:8443")
     assert model_transport.select_system_proxy("https://sub.example.com:8443") is None
     assert model_transport.select_system_proxy("https://sub.example.com:443") == "http://proxy.example:8080"
 
