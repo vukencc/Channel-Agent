@@ -6,7 +6,8 @@
 
 ## 当前工作与 Git
 
-- 2026-11-12，本轮修复设计助手连接诊断与对话布局。真实 Windows 负/正向对照确认用户持久 `ALL_PROXY` 指向拒绝连接的本地代理，系统固定代理下相同模型与 `xhigh` 短请求成功；新增每连接显式 `proxy_mode=environment|windows_system`，默认及旧记录不变，不改系统或用户数据。设计助手保留安全连接阶段，角色、错误与多行输入分区，模型设置在底部，支持保留新草稿的原请求重试。最终全量、原生实际设计和成品仍在验收，见[本轮记录](designer-chat-validation-2026-11-12.md)。
+- 2026-11-12，设计助手连接与布局修复对应 [PR #50](https://github.com/vukencc/Channel-Agent/pull/50)，Python 功能源码 `499421c`。用户持久 `ALL_PROXY` 指向拒绝连接的本地代理，新 adapter 显式选 `windows_system` 后同模型/`xhigh` 短请求 4.187 秒成功，原代理环境未改；旧配置默认不变。五节点四动态工具的 `xhigh`、独立 `medium` 设计均在原 90 秒内仅思考、未生成模板，不能算完整设计通过。消息与输入分区、底部模型、失败重试和仅重试缓存导入已完成；稳定导入 ID 与磁盘核验防止重复模板。取消/切换清缓存，隐藏保留。最后 Web 窄屏 CSS 把历史区从约 60px 提升到 235px。
+- 本轮验证：Linux 本机 2325 passed；[CI 43200240173](https://github.com/vukencc/Channel-Agent/actions/runs/43200240173) Linux 2321 passed、Windows 789 passed，真实隔离探针通过。Windows GBK 新增专项 92 passed；本机整组 1 failed、775 passed、60 skipped，唯一为此前已记录的原 20 秒导入超时，独立一次原两个退出用例均通过但不追认为修复。Native 成品正在构建，最终成品状态、完整失败与真实/受控边界见[本轮记录](designer-chat-validation-2026-11-12.md)。
 
 - 2026-11-12，新增[工作区共享记忆](workspace-memory.md)，实现 `9c9cd39`、多轮刷新覆盖 `4fe8d46`，对应 [PR #49](https://github.com/vukencc/Channel-Agent/pull/49)。同一实际工作区通过 `.channelagent/memory.json` 共享有界项目说明、进度和经验；每个正常模型轮次读取，私有终态成功保存后更新，原始会话保持私有。只读不写入、不请求提炼；取消和发布不确定不会误称完成，Flow 下游等待前节点提交。
 - 工作区记忆验证：真实两节点 Flow 及新状态目录的新会话继承项目事实（3 次主请求、3 次辅助请求，初版 `8fd4540`）；后续取消、预算及平台补丁分别回归。Windows/WSL 同工作区并行 12 条更新零丢失。最新代码 [CI 43174301650](https://github.com/vukencc/Channel-Agent/actions/runs/43174301650) 双端成功（Linux 2234 passed、47 skipped、5 deselected；Windows 702 passed、47 skipped），真实隔离探针通过。本机 Windows 原选择集 688 passed、60 skipped，原 20 秒退出断言不变；此前一次冷导入超时未复现，不追认为已修复。失败过程与验证边界见[正式记录](workspace-memory-validation-2026-11-12.md)。

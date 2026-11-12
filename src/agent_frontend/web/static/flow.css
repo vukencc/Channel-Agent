@@ -107,6 +107,11 @@
 @media(max-width:800px){
   .flow-layout{min-height:0}
   .flow-viewport{min-height:260px}
+  /* 设计助手展开时占满工作区，关闭后画布恢复原布局。 */
+  .flow-layout:has(> .flow-designer-panel){overflow:hidden}
+  .flow-layout:has(> .flow-designer-panel) > .flow-viewport,
+  .flow-layout:has(> .flow-designer-panel) > .flow-designer-placeholder{display:none}
+  .flow-layout > .flow-designer-panel{flex:1 1 0;min-height:0;max-height:none}
   .flow-header{flex-wrap:wrap;overflow:visible;gap:6px}
   .flow-header h1{max-width:64px}
   .flow-actions{gap:4px;min-width:0}
