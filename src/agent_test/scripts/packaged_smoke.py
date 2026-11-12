@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import builtins
+import asyncio
 from collections.abc import Callable
 from contextlib import contextmanager
 import importlib
@@ -75,6 +76,7 @@ def _check_config_root(root: Path) -> None:
 
 
 def _check_web_debug(root: Path) -> None:
+    import httpx
     from agent_frontend.web import app as web
     from agent_test.web import router as debug
     assets = Path(web.__file__).with_name('static')
@@ -83,9 +85,18 @@ def _check_web_debug(root: Path) -> None:
         _require((assets / name).is_file() and (assets / name).stat().st_size > 0)
     for name in ('debug.html', 'debug.css', 'debug.js', 'debug-view.js'):
         _require((debug_assets / name).is_file() and (debug_assets / name).stat().st_size > 0)
-    # 不启动服务或打开端口；构建真实路由表以发现遗漏导入。
+    # 通过进程内 HTTP 请求验证真实路由，不启动服务或打开端口。
     application = web.create_app(state_dir=root / 'web-state', token='self-check-local')
-    _require(any(route.path == '/api/meta' for route in application.routes))
+
+    async def check_meta() -> None:
+        async with application.router.lifespan_context(application):
+            transport = httpx.ASGITransport(app=application)
+            async with httpx.AsyncClient(transport=transport, base_url='http://localhost') as client:
+                response = await client.get('/api/meta', headers={'Authorization': 'Bearer self-check-local'})
+                _require(response.status_code == 200)
+                _require(response.json()['policies'] == ['full_access', 'smart', 'readonly'])
+
+    asyncio.run(check_meta())
 
 
 def _check_installation_boundary(root: Path) -> None:

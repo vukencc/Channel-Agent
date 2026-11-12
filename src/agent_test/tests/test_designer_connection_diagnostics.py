@@ -177,20 +177,25 @@ def test_designer_cancellation_closes_sse_without_retry_or_import(
 @pytest.mark.parametrize('transport_backend', ['legacy-httpx', 'sdk-httpx2'], indirect=True)
 @pytest.mark.parametrize('after_content', [False, True])
 def test_designer_timeout_remains_timeout_without_retry_or_import(
-        controlled_designer, controlled_sse, monkeypatch, after_content):
+        controlled_designer, controlled_sse, transport_backend, monkeypatch, after_content):
     manager, profile, streams, requests, _ = controlled_designer
     monkeypatch.setattr(config, 'MODEL_CALL_TIMEOUT', .2)
     monkeypatch.setattr(config, 'MAX_RETRIES', 2)
-    stream = controlled_sse([*([_frame(PRIVATE)] if after_content else []), 'block'])
-    streams.append(stream)
+    # MockTransport 不会计算 socket idle timeout。显式注入真实后端 ReadTimeout，
+    # 防止把已移除的设计总时限当作网络空闲超时；首帧前仍保留两次重试。
+    attempts = 1 if after_content else 2
+    failed_streams = [controlled_sse([*([_frame(PRIVATE)] if after_content else []),
+        transport_backend.ReadTimeout(f'private idle timeout {PRIVATE}')]) for _ in range(attempts)]
+    streams.extend(failed_streams)
 
     with pytest.raises(ValueError, match='超时') as caught:
-        asyncio.run(asyncio.wait_for(design_flow(manager, MESSAGES, model_profile=profile), 1))
+        # 三秒仅保护测试悬挂，并容纳生产重试的一秒退避；不充当被测模型时限。
+        asyncio.run(asyncio.wait_for(design_flow(manager, MESSAGES, model_profile=profile), 3))
 
     assert '连接失败' not in str(caught.value)
     assert PRIVATE not in str(caught.value)
     assert caught.value.__suppress_context__
-    assert stream.closed
-    assert len(requests) == 1
+    assert all(stream.closed for stream in failed_streams)
+    assert len(requests) == attempts
     assert not (manager.store.root / 'flows').exists()
     assert not manager.sessions

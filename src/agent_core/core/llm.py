@@ -22,7 +22,9 @@ from agent_core.core.session_limits import limit as session_limit, context_budge
 from agent_core.core.log import get_logger
 from agent_core.core.context import estimate_tokens, request_tokens
 from agent_core.core.messages import PackMessage
-from agent_core.core.model_settings import active_endpoint, active_profile, active_reasoning_effort, active_thinking_mode
+from agent_core.core.model_settings import (DEFAULT_MODEL_DEADLINE, active_endpoint, active_model_deadline,
+                                            active_profile, active_reasoning_effort, active_thinking_mode,
+                                            active_total_output_chars)
 from agent_core.core.tool_settings import selected_schemas
 from agent_core.core.budgets import BudgetExceeded, active_budget, reserve_request, settle_request
 from agent_core.tools import all_schemas
@@ -250,6 +252,11 @@ def selected_model():
     return selected_profile().get('model', config.MODEL)
 
 
+def effective_total_output_chars() -> int:
+    limit = active_total_output_chars.get()
+    return session_limit('MODEL_OUTPUT_CHARS') if limit is None else limit
+
+
 def reserved_cost(history, schemas, endpoint, options):
     if active_budget.get() is None:
         return None
@@ -258,7 +265,7 @@ def reserved_cost(history, schemas, endpoint, options):
     output_price = endpoint.get('output_cost_per_million', config.OUTPUT_COST_PER_MILLION if primary else 0)
     if input_price <= 0 or output_price <= 0:
         return None
-    output_tokens = options.get('max_tokens', session_limit('MODEL_OUTPUT_CHARS'))
+    output_tokens = options.get('max_tokens', effective_total_output_chars())
     return (request_tokens(history, schemas) * input_price + output_tokens * output_price) / 1e6
 
 
@@ -315,6 +322,11 @@ async def _retry(operation, what: str, attempts: int | None = None):
 
 class FallbackContextError(ValueError):
     """备用窗口容纳不了实际请求；允许继续检查后续备用服务。"""
+
+
+def _model_timeout() -> float | None:
+    timeout = active_model_deadline.get()
+    return config.MODEL_CALL_TIMEOUT if timeout is DEFAULT_MODEL_DEADLINE else timeout
 
 
 async def _open_stream(history: list[dict], session_id: str | None = None):
@@ -390,7 +402,8 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
                 raise
         try:
             # 有备用时为每个连接阶段预留时间；流开始后不自动换模型。
-            async with asyncio.timeout(config.MODEL_CALL_TIMEOUT / len(endpoints)):
+            timeout = _model_timeout()
+            async with asyncio.timeout(timeout / len(endpoints) if timeout is not None else None):
                 return await _retry(operation, '模型调用')
         except Exception as exc:
             if index + 1 == len(endpoints) or not (_is_transient(exc) or isinstance(exc, (TimeoutError, FallbackContextError))):
@@ -400,7 +413,7 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
 
 
 async def call_model(history: list[dict], *, session_id: str | None = None, emit=None) -> dict:
-    """Bound retries + stream by a wall-clock deadline; never execute partial calls."""
+    """按请求策略限制重试与流的总时间；不执行不完整的工具调用。"""
     schemas = selected_schemas(TOOL_SCHEMAS)
     route = {'model': selected_model(), 'fallbacks': [], 'endpoint': {}, 'prime': True,
              'emit': emit, 'request_attempts': 0}
@@ -415,7 +428,7 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
     progress_at = 0.0
     previous_chunk_at = started
     try:
-        async with asyncio.timeout(config.MODEL_CALL_TIMEOUT):
+        async with asyncio.timeout(_model_timeout()):
             stream = await _open_stream(history, session_id)
             if emit is None:
                 print("AI: ", end="")
@@ -464,7 +477,8 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                     if tc.function and tc.function.arguments:
                         call['arguments'].append(tc.function.arguments)
                         metrics['argument_chars'] += len(tc.function.arguments)
-                if sum(metrics[key] for key in ('content_chars', 'reasoning_chars', 'argument_chars')) > session_limit('MODEL_OUTPUT_CHARS'):
+                if (metrics['content_chars'] + metrics['argument_chars'] > session_limit('MODEL_OUTPUT_CHARS') or
+                        sum(metrics[key] for key in ('content_chars', 'reasoning_chars', 'argument_chars')) > effective_total_output_chars()):
                     raise ModelResponseError('模型单次输出超过字符上限，未执行工具；请拆分为小步骤。')
                 if emit and elapsed - progress_at >= .25:
                     if delta.tool_calls:
@@ -503,8 +517,10 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
     except (TimeoutError, httpx.TimeoutException, openai.APITimeoutError) as exc:
         metrics['outcome'] = 'timeout'
         metrics['error_type'] = type(exc).__name__
+        deadline = _model_timeout()
+        deadline_text = f'总时限 {deadline:g}s，' if deadline is not None else ''
         raise TimeoutError(
-            f'模型请求在 {time.monotonic() - started:.1f}s 后超时（总时限 {config.MODEL_CALL_TIMEOUT:g}s，网络空闲时限 {config.SESSION_TIMEOUT:g}s）。'
+            f'模型请求在 {time.monotonic() - started:.1f}s 后超时（{deadline_text}网络空闲时限 {config.SESSION_TIMEOUT:g}s）。'
             '已停止本次请求，未执行未完成的工具调用；可重试或缩小任务。'
         ) from exc
     except (openai.APIConnectionError, *_TRANSPORT_ERRORS) as exc:

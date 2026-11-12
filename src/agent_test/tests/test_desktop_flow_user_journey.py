@@ -46,7 +46,8 @@ def journey(tmp_path, monkeypatch, sandbox_env):
     saved = RuntimeModelRegistry(state).add(name='离线受控模型', model='fixture-model',
                                           base_url='https://fixture.invalid/v1', api_key='dummy-offline-key')
     control = SimpleNamespace(started=threading.Event(), release=threading.Event(),
-                              cancelled=threading.Event(), returned=threading.Event(), calls=[], mode='success')
+                              cancelled=threading.Event(), timed_out=threading.Event(),
+                              returned=threading.Event(), calls=[], mode='success')
     template = {'format': 'agent-flow', 'version': 1, 'title': '三节点受控设计',
                 'model_profile': saved['id'], 'permission_policy': 'readonly',
                 'nodes': [{'id': name, 'title': title, 'prompt': '核对任务：' + title,
@@ -67,6 +68,10 @@ def journey(tmp_path, monkeypatch, sandbox_env):
                 raise
         if control.mode == 'failure':
             raise ConnectionError('受控连接失败')
+        if control.mode == 'timeout':
+            # 模拟供应商连接或响应等待超时，而不是设计请求的整体时限。
+            control.timed_out.set()
+            raise TimeoutError('受控响应等待超时')
         control.returned.set()
         return {'role': 'assistant', 'content': json.dumps({'reply': '三节点已设计', 'template': template}, ensure_ascii=False)}
 
@@ -177,17 +182,27 @@ def test_clear_pending_design_ignores_cancellation_resistant_late_result(journey
 
 
 @pytest.mark.parametrize('mode, expected', [('failure', '连接失败'), ('timeout', '超时')])
-def test_design_failure_is_visible_without_import(journey, monkeypatch, mode, expected):
+def test_design_failure_is_visible_without_import(journey, mode, expected):
     journey.control.mode = mode
-    if mode == 'timeout':
-        monkeypatch.setattr(config, 'MODEL_CALL_TIMEOUT', .15)
     designer = _submit(journey)
-    if mode == 'failure':
-        journey.control.release.set()
+    journey.control.release.set()
     _wait(journey.app, lambda: not designer.busy)
     assert expected in designer.transcript.toPlainText()
     assert designer.send.isEnabled() and not designer.stop.isEnabled()
     assert not journey.bridge._flows.records
     assert not any(row['role'] == 'assistant' for row in designer.history)
     if mode == 'timeout':
-        assert journey.control.cancelled.is_set()
+        assert journey.control.timed_out.is_set()
+
+
+def test_designer_remains_busy_past_normal_deadline_and_stops(journey, monkeypatch):
+    monkeypatch.setattr(config, 'MODEL_CALL_TIMEOUT', .15)
+    designer = _submit(journey)
+    QTest.qWait(350)
+    assert designer.busy and designer.stop.isEnabled()
+    QTest.mouseClick(designer.stop, Qt.MouseButton.LeftButton)
+    _wait(journey.app, journey.control.cancelled.is_set)
+    _wait(journey.app, lambda: not journey.bridge._commands)
+    assert not designer.busy and designer.request_id is None
+    assert not journey.bridge._flows.records
+    assert not any(row['role'] == 'assistant' for row in designer.history)

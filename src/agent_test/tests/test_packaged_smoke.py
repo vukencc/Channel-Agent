@@ -141,3 +141,12 @@ def test_offline_environment_restored_on_failure(monkeypatch):
 
 def test_real_web_and_debug_resources(tmp_path):
     smoke._check_web_debug(tmp_path)
+
+
+def test_missing_meta_endpoint_fails_packaged_check(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from agent_frontend.web import app as web
+
+    monkeypatch.setattr(web, 'create_app', lambda **kwargs: FastAPI())
+    with pytest.raises(RuntimeError):
+        smoke._check_web_debug(tmp_path)
