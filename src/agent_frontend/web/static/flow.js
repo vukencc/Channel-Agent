@@ -134,13 +134,23 @@ function flowDesignerTrim(history) {
   }
   return rows;
 }
-if (typeof module !== "undefined" && module.exports) module.exports = { flowCanConnect, flowProjectInfo, flowCanvasBounds, flowExpandDragCanvas, flowCancelConnectionOnEscape, flowContractDraft, flowContractInvalid, flowCustomToolsDraft, flowSetCustomTools, flowDefinition, flowMergeProject, flowDisplayTitle, flowDesignerReply, flowDesignerTrim };
+function flowNodeTip(node, run, models) {
+  const states = { queued: "排队中", running: "运行中", cancelling: "正在停止", completed: "已完成", blocked: "已阻断", cancelled: "已取消", failed: "失败", error: "错误", pending: "等待中", confirming: "等待确认", stopping: "正在停止", checkpoint: "阶段已保存", interrupted: "已中断" };
+  const model = node.model_profile ? (models.find(([id]) => id === node.model_profile)?.[1] || node.model_profile) : "继承默认";
+  const lines = [`任务：${String(node.prompt || "无").slice(0, 160)}`, `状态：${states[run?.status] || run?.status || "AgentCore"}`, `模型：${model}`, `工具：${(node.tool_names || []).join("、") || "继承默认"}`];
+  if (run?.subagent_count != null) lines.push(`子 Agent：${run.subagent_count}`);
+  return lines.join("\n");
+}
+if (typeof module !== "undefined" && module.exports) module.exports = { flowCanConnect, flowProjectInfo, flowCanvasBounds, flowExpandDragCanvas, flowCancelConnectionOnEscape, flowContractDraft, flowContractInvalid, flowCustomToolsDraft, flowSetCustomTools, flowDefinition, flowMergeProject, flowDisplayTitle, flowDesignerReply, flowDesignerTrim, flowNodeTip };
 if (typeof window !== "undefined") (() => {
   let bridge, active = null, selected = null, selectedEdge = null, generation = 0, revision = -1, epoch = null;
   let cancelConnection = null, cancelNodeDrag = null;
   let catalog = { tools: [], required_tool_names: [], reasoning_efforts: [], thinking_modes: [] };
-  let designerController = null, designerRequestId = null, designerGeneration = 0, designerHistory = [], designerVisible = false, designerModel = "", designerEffort = "", designerDraft = "", inspectorVisible = true;
+  let designerController = null, designerRequestId = null, designerGeneration = 0, designerHistory = [], designerVisible = false, designerModel = "", designerEffort = "", designerDraft = "", inspectorVisible = false;
   let scale = 1, pickerGeneration = 0, selectionVersion = 0, summaries = [], projects = [], pending = false, lastError = "", fitReset = false;
+  let designerError = "";
+  let designerModelTouched = false, designerModels = [], designerModelsLoading = false, designerCreated = null, modelCatalogGeneration = 0;
+  let designerDefaultAvailable = null, designerRecords = [];
   const runInputs = new Map(), drafts = new Map(), dirty = new Set(), projectDirty = new Set(), requestVersions = new Map(), inspectorModes = new Map(), refreshDeferred = new Set();
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls = "", text = "") => {
@@ -212,7 +222,7 @@ if (typeof window !== "undefined") (() => {
     } catch (e) { if (active === id) error(e.message); }
   }
   async function open(id, { preserveDesigner = false } = {}) {
-    if (!preserveDesigner) { stopDesigner(); designerVisible = false; }
+    if (!preserveDesigner) { stopDesigner(); designerVisible = false; inspectorVisible = false; }
     if (cancelConnection) cancelConnection();
     if (cancelNodeDrag) cancelNodeDrag();
     const ticket = ++generation; active = id; selected = null; selectedEdge = null; lastError = ""; inspectorModes.set(id, "flow");
@@ -292,7 +302,7 @@ if (typeof window !== "undefined") (() => {
     input.value = target[key] ?? ""; input.disabled = locked();
     if (options.select) {
       options.select.forEach(([value, text]) => { const opt = el("option", "", text); opt.value = value; input.append(opt); });
-      if (target[key] && ![...input.options].some((o) => o.value === target[key])) { const opt = el("option", "", target[key]); opt.value = target[key]; input.append(opt); }
+      if (target[key] && ![...input.options].some((o) => o.value === target[key])) { const opt = el("option", "", key === "model_profile" ? `不可用：${target[key]}` : target[key]); opt.value = target[key]; if (key === "model_profile") opt.disabled = true; input.append(opt); }
       input.value = target[key] || "";
     }
     title.append(input); wrap.append(title);
@@ -322,6 +332,7 @@ if (typeof window !== "undefined") (() => {
     const body = el("div", "flow-inspector-body"); let mode = inspectorModes.get(active) || "flow";
     const show = (next) => { mode = next; inspectorModes.set(active, next); draw(); };
     [["flow", "Flow"], ["node", "节点"], ...(f.project_id ? [["run", "运行"]] : [])].forEach(([key, label]) => { const b = button(label, () => show(key), "flow-tab"); b.dataset.tab = key; tabs.append(b); });
+    tabs.append(button("关闭", () => { inspectorVisible = false; render(); }, "flow-close"));
     root.append(tabs, body);
     function draw() {
       tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.tab === mode)); body.replaceChildren();
@@ -412,6 +423,16 @@ if (typeof window !== "undefined") (() => {
     const actions = el("div", "flow-actions");
     const retryCompletion = f.run?.status === "persistence_failed";
     [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : retryCompletion ? "重试保存" : "运行", () => perform(running(f) ? "cancel" : retryCompletion ? "retry-completion" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = ["运行", "停止", "重试保存"].includes(label); const b = button(label, fn, isRun ? "button primary" : "button subtle"); b.disabled = pending || (running(f) && !isRun); actions.append(b); });
+    const more = document.createElement("details"), moreSummary = el("summary", "button subtle", "更多"), moreActions = el("div", "flow-more-actions");
+    more.className = "flow-more"; more.append(moreSummary, moreActions);
+    [...actions.children].filter((b) => ["导出", "删除"].includes(b.textContent)).forEach((b) => moreActions.append(b)); actions.append(more);
+    more.addEventListener("toggle", () => {
+      if (!more.open) return;
+      const anchor = moreSummary.getBoundingClientRect(), width = moreActions.offsetWidth, height = moreActions.offsetHeight;
+      moreActions.style.left = `${Math.max(4, Math.min(anchor.left, window.innerWidth - width - 4))}px`;
+      moreActions.style.top = `${Math.max(4, Math.min(anchor.bottom + 4, window.innerHeight - height - 4))}px`;
+    });
+    moreActions.addEventListener("click", (event) => { if (event.target.closest("button")) more.open = false; });
     header.append(title, actions);
     if (retryCompletion) header.append(el("p", "inline-error", "完成状态保存失败，请检查存储后重试保存；节点不会重跑。"));
     const runInputRow = el("div", "flow-run-input");
@@ -434,7 +455,9 @@ if (typeof window !== "undefined") (() => {
       bounds.width += bounds.minX - minX; bounds.height += bounds.minY - minY; bounds.minX = minX; bounds.minY = minY;
     }
     const add = button("＋ 添加 AgentCore", () => { if (locked()) return; const id = crypto.randomUUID().replaceAll("-", ""), view = root.querySelector(".flow-viewport"); const x = bounds.minX + (view.scrollLeft + view.clientWidth / 2) / scale - 90, y = bounds.minY + (view.scrollTop + view.clientHeight / 2) / scale - 40; f.nodes.push({ id, title: "AgentCore", prompt: "", x, y, workspace_path: null, handoff: "", handoff_file: null, model_profile: null }); selected = id; selectedEdge = null; selectionVersion++; inspectorModes.set(active, "node"); mark(); render(); });
-    add.disabled = locked(); toolbar.append(add, button("删除所选", removeSelected), button("−", () => { scale = Math.max(Number.EPSILON, scale / 1.25); render(); }), button("＋", () => { scale = Math.min(2, scale * 1.25); render(); }), button("适配", () => { const view = root.querySelector(".flow-viewport"); scale = Math.min(1, Math.max(Number.EPSILON, Math.min(view.clientWidth / bounds.width, view.clientHeight / bounds.height))); fitReset = true; render(); }));
+    add.disabled = locked(); const remove = button("删除所选", removeSelected), zoomOut = button("−", () => { scale = Math.max(Number.EPSILON, scale / 1.25); render(); }), zoomIn = button("＋", () => { scale = Math.min(2, scale * 1.25); render(); }), fit = button("适配", () => { const view = root.querySelector(".flow-viewport"); scale = Math.min(1, Math.max(Number.EPSILON, Math.min(view.clientWidth / bounds.width, view.clientHeight / bounds.height))); fitReset = true; render(); });
+    toolbar.append(add, remove, zoomOut, zoomIn, fit);
+    const mobileAdd = button("＋ 添加", () => add.click(), "button subtle flow-mobile-action"); mobileAdd.disabled = add.disabled; actions.append(mobileAdd);
     const layout = el("div", "flow-layout"), viewport = el("div", "flow-viewport"), stage = el("div", "flow-stage"), canvas = el("div", "flow-canvas");
     viewport.dataset.flowId = active; viewport.dataset.minX = bounds.minX; viewport.dataset.minY = bounds.minY; viewport.dataset.scale = scale;
     stage.style.width = `${bounds.width * scale}px`; stage.style.height = `${bounds.height * scale}px`;
@@ -446,9 +469,12 @@ if (typeof window !== "undefined") (() => {
     f.nodes.forEach((node) => {
       const card = el("div", "flow-node" + (node.id === selected ? " selected" : "")); card.style.left = `${node.x - bounds.minX}px`; card.style.top = `${node.y - bounds.minY}px`; card.tabIndex = 0; card.setAttribute("role", "button"); card.setAttribute("aria-label", node.title);
       const status = f.run?.nodes?.[node.id]?.status || "AgentCore"; card.append(el("strong", "", node.title), el("small", "", status));
+      card.title = flowNodeTip(node, f.run?.nodes?.[node.id], modelChoices());
       const portIn = el("span", "flow-port input-port"), portOut = el("span", "flow-port output-port"); portIn.title = "输入"; portOut.title = "拖到目标节点的输入端口"; card.append(portIn, portOut);
       card.addEventListener("click", () => { if (selected !== node.id) { inspectorModes.set(active, "node"); selectionVersion++; } selected = node.id; selectedEdge = null; render(); });
-      card.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (selected !== node.id) { inspectorModes.set(active, "node"); selectionVersion++; } selected = node.id; render(); } });
+      const showDetails = () => { if (selected !== node.id) selectionVersion++; selected = node.id; selectedEdge = null; inspectorModes.set(active, "node"); designerVisible = false; inspectorVisible = true; render(); };
+      card.addEventListener("contextmenu", (event) => { event.preventDefault(); showDetails(); });
+      card.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); showDetails(); } });
       portOut.addEventListener("pointerdown", (event) => {
         if (locked() || event.button !== 0) return;
         event.preventDefault(); event.stopPropagation();
@@ -513,8 +539,10 @@ if (typeof window !== "undefined") (() => {
       });
       canvas.append(card);
     });
-    const controls = el("div", "flow-controls"); toolbar.append(button(designerVisible ? "显示检查器" : inspectorVisible ? "隐藏检查器" : "显示检查器", () => { if (designerVisible) { stopDesigner(); designerVisible = false; inspectorVisible = true; } else inspectorVisible = !inspectorVisible; render(); })); controls.append(project, toolbar);
-    stage.append(canvas); viewport.append(stage); const panel = el("aside", "flow-inspector"); panel.hidden = !inspectorVisible || designerVisible; inspector(panel); layout.append(viewport, panel); header.append(runInputRow); root.append(header, controls, err, layout); if (designerVisible) drawDesigner(); updateHeader();
+    const controls = el("div", "flow-controls"), toggleInspector = button(designerVisible ? "显示检查器" : inspectorVisible ? "隐藏检查器" : "显示检查器", () => { if (designerVisible) { designerVisible = false; inspectorVisible = true; } else inspectorVisible = !inspectorVisible; render(); }); toolbar.append(toggleInspector); controls.append(project, toolbar);
+    const mobileActions = [["删除所选", remove], ["缩小", zoomOut], ["放大", zoomIn], ["适配", fit], [toggleInspector.textContent, toggleInspector], ...(f.project_id ? [["选择项目", choose]] : [])];
+    mobileActions.forEach(([label, target]) => { const item = button(label, () => target.click(), "button subtle flow-mobile-action"); item.disabled = target.disabled; moreActions.append(item); });
+    stage.append(canvas); viewport.append(stage); const panel = el("aside", "flow-inspector"); panel.hidden = !inspectorVisible || designerVisible; inspector(panel); layout.append(viewport, panel); header.append(runInputRow, controls); root.append(header, err, layout); if (designerVisible) drawDesigner(); updateHeader();
     controls.scrollLeft = controlsScroll;
     if (scroll && !fitReset) { viewport.scrollLeft = ((scroll.x / scroll.scale) + scroll.minX - bounds.minX) * scale; viewport.scrollTop = ((scroll.y / scroll.scale) + scroll.minY - bounds.minY) * scale; }
     fitReset = false;
@@ -574,20 +602,42 @@ if (typeof window !== "undefined") (() => {
     if (designerController) designerController.abort(); designerController = null;
   }
   function modelChoices() {
-    return (bridge.models() || []).map((m) => typeof m === "string" ? [m, m] : [m.id || m.value || m.name || m.key || m.profile, m.label || m.title || m.display_name || m.name || m.id || m.value || m.key || m.profile]).filter(([value]) => value);
+    return [...(bridge.models() || []), ...designerModels].map((m) => typeof m === "string" ? [m, m] : [m.id || m.value || m.name || m.key || m.profile, m.label || m.title || m.display_name || m.name || m.id || m.value || m.key || m.profile]).filter(([value], index, all) => value && all.findIndex(([id]) => id === value) === index);
   }
   function refreshModels() {
     const root = $("flow-view"); if (!root || !bridge) return;
+    modelCatalogGeneration++; designerModels = [];
+    const available = modelChoices();
+    const metadata = bridge.modelCatalog?.();
+    if (metadata) { designerDefaultAvailable = metadata.default_model_available; designerRecords = metadata.models || []; }
+    else designerRecords = designerRecords.filter((item) => available.some(([id]) => id === item.id));
+    if (designerModel && !designerChoices().some(([id]) => id === designerModel)) designerModel = "";
     root.querySelectorAll("select[data-flow-model]").forEach((select) => {
-      const value = select.value, choices = [["", select.dataset.flowModel === "designer" ? "默认模型" : "继承默认模型"], ...modelChoices()];
-      if (value && !choices.some(([id]) => id === value)) choices.push([value, value]);
+      const value = select.value, choices = [["", select.dataset.flowModel === "designer" ? "默认模型" : "继承默认模型"], ...available];
       select.replaceChildren(...choices.map(([id, label]) => { const option = el("option", "", label); option.value = id; return option; }));
-      select.value = value;
+      if (value && !choices.some(([id]) => id === value) && select.dataset.flowModel === "inspector") { const missing = el("option", "", `不可用：${value}`); missing.value = value; missing.disabled = true; select.append(missing); }
+      select.value = choices.some(([id]) => id === value) || select.dataset.flowModel === "inspector" ? value : "";
     });
+    if (designerVisible) drawDesigner();
+  }
+  function designerChoices() {
+    return modelChoices().filter(([id]) => designerRecords.some((item) => item.id === id && !(item.read_only && !item.has_api_key)));
+  }
+  function designerCanSend(value) {
+    return !designerModelsLoading && (value ? designerChoices().some(([id]) => id === value) : designerDefaultAvailable === true);
   }
   function openDesigner() {
     if (designerVisible) return;
-    designerVisible = true;
+    designerVisible = true; inspectorVisible = false;
+    designerModelsLoading = true; const catalogTicket = modelCatalogGeneration;
+    bridge.api("/api/models").then((data) => {
+      if (catalogTicket !== modelCatalogGeneration) return;
+      designerModels = Array.isArray(data.models) ? data.models : [];
+      const defaultAvailable = data.default_model_available ?? Boolean(data.default_model);
+      designerDefaultAvailable = defaultAvailable; designerRecords = designerModels;
+      const available = designerModels.find((model) => !(model.read_only && !model.has_api_key));
+      if (!designerModelTouched && !defaultAvailable && available) designerModel = available.id || "";
+    }).catch(() => {}).finally(() => { designerModelsLoading = false; if (designerVisible) drawDesigner(); });
     if (active && current()) { render(); return; }
     generation++; active = null; selected = null; bridge.enter(); document.body.classList.add("flow-active"); $("flow-view").hidden = false; renderList();
     const root = $("flow-view"), header = el("header", "flow-header"), layout = el("div", "flow-layout"), placeholder = el("div", "flow-designer-placeholder", "描述需要的流程，生成后将在画布中打开。");
@@ -597,31 +647,34 @@ if (typeof window !== "undefined") (() => {
     if (!designerVisible) return;
     const root = $("flow-view"), layout = root.querySelector(".flow-layout"), old = layout?.querySelector(".flow-designer-panel"), panel = el("aside", "flow-designer-panel"), header = el("header", "flow-designer-header"), history = el("div", "flow-designer-history"), input = document.createElement("textarea"), controls = el("div", "flow-designer-controls"), models = document.createElement("select"), effort = document.createElement("select"), problem = el("p", "inline-error");
     if (!layout) return;
-    problem.hidden = true;
-    header.append(el("h2", "", "对话设计 Flow"), button("关闭", () => { stopDesigner(); designerVisible = false; if (active && current()) render(); else { hide(); $("welcome").hidden = false; } }));
+    problem.textContent = designerError; problem.hidden = !designerError; problem.setAttribute("role", "alert");
+    header.append(el("h2", "", "对话设计 Flow"), button("清空", () => { stopDesigner(); designerHistory = []; designerDraft = ""; designerError = ""; designerCreated = null; drawDesigner(); }), button("关闭", () => { designerVisible = false; if (active && current()) render(); else panel.remove(); }));
     designerHistory.forEach((item) => { history.append(el("p", "flow-designer-message " + item.role, (item.role === "user" ? "你：" : "助手：") + item.display)); if (item.warning) history.append(el("p", "field-hint", item.warning)); });
-    const choices = [["", "默认模型"], ...modelChoices()];
+    const choices = [...(designerDefaultAvailable ? [["", "默认模型"]] : []), ...designerChoices()];
     choices.forEach(([value, label]) => { const o = el("option", "", label); o.value = value; models.append(o); });
     [["", "默认强度"], ...catalog.reasoning_efforts.map((v) => [v, v])].forEach(([value, label]) => { const o = el("option", "", label); o.value = value; effort.append(o); });
-    models.dataset.flowModel = "designer"; effort.dataset.flowDesignerEffort = "true"; models.setAttribute("aria-label", "设计模型"); effort.setAttribute("aria-label", "设计推理强度"); models.value = designerModel; effort.value = designerEffort; models.addEventListener("change", () => { designerModel = models.value; }); effort.addEventListener("change", () => { designerEffort = effort.value; });
+    models.dataset.flowModel = "designer"; effort.dataset.flowDesignerEffort = "true"; models.setAttribute("aria-label", "设计模型"); effort.setAttribute("aria-label", "设计推理强度"); models.value = designerModel; effort.value = designerEffort; models.addEventListener("change", () => { designerModel = models.value; designerModelTouched = true; }); effort.addEventListener("change", () => { designerEffort = effort.value; });
     input.placeholder = "描述需要的流程，或继续调整上一版"; input.maxLength = 16000; input.value = designerDraft; input.addEventListener("input", () => { designerDraft = input.value; }); input.setAttribute("aria-label", "设计需求");
-    const send = button("发送", async () => {
-      const text = input.value.trim(); if (!text || designerController) return;
-      designerHistory.push({ role: "user", display: text, content: text }); designerHistory = flowDesignerTrim(designerHistory); designerDraft = "";
+    const send = button(designerController ? "生成中…" : "发送", async () => {
+      const text = input.value.trim(); if (!text || designerController || !designerCanSend(models.value)) return;
+      designerError = ""; designerHistory.push({ role: "user", display: text, content: text }); designerHistory = flowDesignerTrim(designerHistory); designerDraft = "";
       const ticket = ++designerGeneration, controller = new AbortController(), requestId = crypto.randomUUID().replaceAll("-", ""); designerController = controller; designerRequestId = requestId; drawDesigner();
       try {
         const response = await bridge.api("/api/flow-designer/chat", { method: "POST", signal: controller.signal, body: { messages: designerHistory.map(({role, content}) => ({role, content})), model_profile: models.value || null, reasoning_effort: effort.value || null, request_id: requestId } });
-        if (ticket !== designerGeneration || !designerVisible) return;
+        if (ticket !== designerGeneration) return;
         designerHistory.push(flowDesignerReply(response.reply, response.template)); designerHistory = flowDesignerTrim(designerHistory);
-        if (response.template && ticket === designerGeneration && designerVisible) {
+        if (response.template && ticket === designerGeneration) {
           const created = await bridge.api("/api/flows/import", { method: "POST", signal: controller.signal, body: { template: response.template, missing_models: "error" } });
-          if (ticket === designerGeneration && designerVisible) { designerController = null; designerRequestId = null; openCreated(created, { preserveDesigner: true }); return; }
+          if (ticket === designerGeneration) { designerController = null; designerRequestId = null; if (designerVisible) openCreated(created, { preserveDesigner: true }); else { drafts.set(created.id, created); summaries = [...summaries.filter((x) => x.id !== created.id), { id: created.id, title: created.title, project_id: created.project_id }]; designerCreated = created; renderList(); } return; }
         }
-      } catch (e) { if (e.name !== "AbortError" && ticket === designerGeneration && designerVisible) { designerController = null; drawDesigner(); const message = $("flow-view").querySelector(".flow-designer-panel .inline-error"); message.textContent = e.message; message.hidden = false; return; } }
+      } catch (e) { if (e.name !== "AbortError" && ticket === designerGeneration) { designerError = String(e.message || "设计请求失败，请检查模型配置后重试。"); } }
       finally { if (ticket === designerGeneration) { designerController = null; designerRequestId = null; drawDesigner(); } }
     }, "button primary");
-    send.disabled = Boolean(designerController); const stop = button("停止", () => { stopDesigner(); drawDesigner(); }); stop.disabled = !designerController;
-    controls.append(models, effort, send, stop); panel.append(header, history, input, controls, problem); if (old) old.replaceWith(panel); else layout.append(panel); history.scrollTop = history.scrollHeight;
+    const guidance = el("p", "field-hint", "请先在模型管理中配置可用模型。");
+    const updateSend = () => { const usable = designerCanSend(models.value); send.disabled = Boolean(designerController) || !usable; guidance.hidden = designerModelsLoading || usable; };
+    models.addEventListener("change", updateSend); updateSend(); const stop = button("停止", () => { stopDesigner(); drawDesigner(); }); stop.disabled = !designerController;
+    if (designerCreated) controls.append(button("打开生成的 Flow", () => { const created = designerCreated; designerCreated = null; openCreated(created, { preserveDesigner: true }); }));
+    controls.append(models, effort, send, stop); panel.append(header, history, input, controls, guidance, problem); if (old) old.replaceWith(panel); else layout.append(panel); history.scrollTop = history.scrollHeight;
   }
   function init(options) {
     bridge = options; $("flow-refresh").addEventListener("click", refreshList);
@@ -634,6 +687,8 @@ if (typeof window !== "undefined") (() => {
     }).catch((e) => bridge.toast(e.message, "error"));
     window.addEventListener("beforeunload", (event) => { if (dirty.size) { event.preventDefault(); event.returnValue = ""; } });
     document.addEventListener("keydown", (event) => { if (flowCancelConnectionOnEscape(event, cancelConnection)) return; if (active && !event.target.closest("input,textarea,select,dialog") && ["Delete", "Backspace"].includes(event.key)) { event.preventDefault(); removeSelected(); } });
+    document.addEventListener("keydown", (event) => { const more = $("flow-view").querySelector(".flow-more[open]"); if (event.key === "Escape" && more) { event.preventDefault(); more.open = false; more.querySelector("summary").focus(); } });
+    document.addEventListener("click", (event) => { const more = $("flow-view").querySelector(".flow-more[open]"); if (more && !more.contains(event.target)) more.open = false; });
   }
   window.FlowUI = { init, snapshot, hide, openCreated, open, pickDirectory, refreshModels, isActive: () => Boolean(active || designerVisible), templates: () => summaries.filter((item) => !item.project_id) };
 })();

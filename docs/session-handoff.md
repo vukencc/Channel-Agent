@@ -6,6 +6,10 @@
 
 ## 当前工作与 Git
 
+- 2026-11-12，Flow/Working 可关闭的单一上下文面板、右键详情/悬停概要、设计历史清空和重复顶栏精简已实现。修复设计助手错误地使用未配置环境默认模型而忽略已保存连接，以及仅返回 error=true 隐藏失败原因的问题；同一真实连接+xhigh生成3节点11.674秒，客服反馈原需求5节点72.536秒，均仅设计未运行。Linux 全量2172 passed/39 skipped/5 deselected；桌面组143、Web39、后端35通过。首两轮全量项目入口/宽度失败及 Windows UNC 导入超时保留，最终本地盘 Windows 与 exe 待核验。详见 [易用性修复记录](flow-ui-usability-validation-2026-11-12.md)。
+
+- 2026-11-12，Flow 设计助手、右侧详情、节点交互与工具栏完成易用性修订；真实模型生成与受控界面验证分开记录，Windows 原生、成品及全量验证状态见[本轮记录](flow-ui-usability-validation-2026-11-12.md)。本轮仍在现有工作树，保留未提交改动。
+
 - 2026-11-11，0.5.0 交付基线：动态工具审查修复入口覆盖、审计失败仍执行、排队/确认期间执行已撤销旧工具，以及 WSL 完成故障误称拦截。[PR #46](https://github.com/vukencc/Channel-Agent/pull/46) 的双平台 CI 已通过：Linux 2119 passed、42 skipped、5 deselected；Windows 583 passed、46 skipped。最终安全专项 107 passed；本机原生 572 passed/56 skipped，真实 Windows→WSL 8 passed。实际 Windows exe 离线 15/15、自检含 WSL 16/16 通过。正式双平台包由标签工作流重建，最终状态见 [0.5.0 发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.5.0)。实现与边界见 [动态工具](dynamic-tools.md) 和 [安全验证报告](dynamic-tools-security-validation-2026-11-11.md)，保留此前两轮 Ubuntu DNS 安装失败记录。
 
 - 2026-11-11，使用真实设计助手重建五节点客服动态工具模板。经历可选结构化交接失败及业务规则缺失后，恢复原用例完整规则，以默认文本 Handoff 在第九轮全新项目完成：292.234 秒，30/30 模型回调、30 工具/结果配对，三个动态工具各一次，真实 RAG 两次；独立静态 **218/218**，六条语义复核通过。前八轮失败/业务未全过/取消记录保留，未追认结构化契约成功。[正式实测报告](agent-flow-dynamic-tools-validation-2026-11-11.md) · [可导入模板](../src/agent_test/scripts/cases/customer_feedback_dynamic.template.json)。

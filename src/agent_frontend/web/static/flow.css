@@ -82,3 +82,27 @@
 .flow-inspector,.flow-designer-panel,.flow-tabs{background:#20262e}
 .flow-tab:hover{background:#ffffff08;color:#dbeaff}
 .flow-result{border-radius:0;border-left:2px solid #596f89}
+
+/* Flow 工具栏只占一行；窄屏侧栏放在画布下方，避免遮挡节点。 */
+.flow-header{flex-wrap:nowrap;overflow-x:auto;min-width:0}
+.flow-header h1{flex:0 0 auto;max-width:180px}
+.flow-actions{overflow:visible}
+.flow-more{position:relative}
+.flow-more summary{list-style:none;cursor:pointer;white-space:nowrap}
+.flow-more summary::-webkit-details-marker{display:none}
+.flow-more-actions{position:fixed;z-index:40;display:flex;flex-direction:column;gap:4px;padding:6px;max-height:calc(100vh - 8px);max-width:calc(100vw - 8px);overflow:auto;background:#242932;border:1px solid #596a7d}
+.flow-mobile-action{display:none}
+.flow-controls{border:0;padding:0;overflow:visible;flex:none}
+.flow-project-bar{min-width:140px;max-width:260px}
+.flow-close{border:0;background:none;color:inherit;cursor:pointer;padding:8px}
+@media(max-width:800px){
+  .flow-layout{min-height:0}
+  .flow-viewport{min-height:260px}
+  .flow-header{flex-wrap:wrap;overflow:visible;gap:6px}
+  .flow-header h1{max-width:64px}
+  .flow-actions{gap:4px;min-width:0}
+  .flow-actions>.button,.flow-more summary{padding:6px 8px}
+  .flow-controls{display:none}
+  .flow-mobile-action{display:block}
+  .flow-run-input{flex:1 1 100%}
+}

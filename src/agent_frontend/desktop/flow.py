@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import html
 import math
 import os
 import json
@@ -10,15 +11,15 @@ from pathlib import PurePosixPath, PureWindowsPath
 import sys
 import uuid
 
-from PySide6.QtCore import QMimeData, QPointF, QRectF, QSaveFile, QIODevice, QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QMimeData, QPointF, QRectF, QSaveFile, QIODevice, QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QDrag, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QMessageBox, QFormLayout, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
-    QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
-    QSizePolicy, QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QGraphicsView, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QScrollArea,
+    QSizePolicy, QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget, QMenu,
 )
 
-from .theme import ChoiceBox
+from .theme import ChoiceBox, ElidingLabel, icon
 from .project_picker import ProjectPicker
 from . import project_picker
 from .flow_designer import FlowDesigner
@@ -114,6 +115,28 @@ class NodeItem(QGraphicsItem):
                       QGraphicsItem.GraphicsItemFlag.ItemIsMovable |
                       QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setPos(float(data.get('x', 0)), float(data.get('y', 0)))
+        self.refresh_tooltip()
+
+    def refresh_tooltip(self) -> None:
+        data = self.data
+        result = (self.panel._flow.get('run') or {}).get('nodes', {}).get(data['id'], {})
+        tools = data.get('tool_names') or []
+        profile = data.get('model_profile') or self.panel._flow.get('model_profile')
+        model = next((row.get('name') or row.get('model') for row in self.panel._models
+                      if row.get('id') == profile), None) or profile or '继承流程配置'
+        lines = [f"任务：{str(data.get('prompt') or '暂无')[:160]}",
+                 f"状态：{_status_text(result.get('status'))}",
+                 f"模型：{model}", f"工具：{', '.join(str(x) for x in tools) or '继承'}"]
+        if 'subagent_count' in result:
+            lines.append(f"子 Agent：{result.get('subagent_count')} 总数")
+        # 普通 Flow 快照没有子 Agent 计数；权威实时数量由 Working 提供。
+        self.setToolTip('<qt>' + '<br>'.join(html.escape(line) for line in lines) + '</qt>')
+
+    def contextMenuEvent(self, event) -> None:
+        self.scene().clearSelection()
+        self.setSelected(True)
+        self.panel._show_inspector()
+        event.accept()
 
     def boundingRect(self) -> QRectF:
         return QRectF(-9, -4, 218, 98)
@@ -238,6 +261,14 @@ class FlowCanvas(QGraphicsView):
         return None
 
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            item = self.itemAt(event.position().toPoint())
+            if isinstance(item, NodeItem):
+                self.scene().clearSelection()
+                item.setSelected(True)
+                self.panel._show_inspector()
+                event.accept()
+                return
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan = event.position().toPoint()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -288,6 +319,10 @@ class FlowCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Menu or (event.key() == Qt.Key.Key_F10 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            if self.panel._selected:
+                self.panel._show_inspector()
+            return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and not self.panel.running:
             self.panel.delete_selected()
             return
@@ -303,6 +338,7 @@ class FlowCanvas(QGraphicsView):
 
 class FlowPanel(QWidget):
     command = Signal(str, dict)
+    sidebar_toggle_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -319,9 +355,19 @@ class FlowPanel(QWidget):
         self._project_rows = {}
         self.nodes, self.edges = {}, []
         root = QVBoxLayout(self)
+        # 先允许窄窗 resize，再按实际宽度收起辅助动作，避免旧工具栏最小尺寸撑宽窗口。
+        root.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         root.setContentsMargins(10, 10, 10, 10)
         header = QHBoxLayout()
-        self.heading, self.status = _label('Agent Flow'), _label('')
+        self.sidebar_button = QToolButton()
+        self.sidebar_button.setIcon(icon('menu', size=16))
+        self.sidebar_button.setAccessibleName('显示/隐藏导航栏 · Ctrl+B')
+        self.sidebar_button.clicked.connect(self.sidebar_toggle_requested.emit)
+        header.addWidget(self.sidebar_button)
+        self.heading, self.status = ElidingLabel('Agent Flow'), _label('')
+        self.heading.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.status.hide()
         self.heading.setObjectName('title')
         header.addWidget(self.heading, 1)
         header.addWidget(self.status)
@@ -329,30 +375,39 @@ class FlowPanel(QWidget):
         self.designer_button.setCheckable(True)
         self.import_button = QPushButton('导入')
         self.export_button = QPushButton('导出')
-        header.addWidget(self.import_button)
-        header.addWidget(self.export_button)
-        header.addWidget(self.designer_button)
-        root.addLayout(header)
-        project_row = QHBoxLayout()
-        self.project_summary = _label('未选择项目')
-        self.project_summary.setWordWrap(True)
+        self.project_summary = ElidingLabel('未选择项目')
+        self.project_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.project_summary.setMaximumWidth(260)
+        self.project_summary.hide()
+        self.project_summary.setWordWrap(False)
         self.project_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        header.addWidget(self.project_summary)
         self.project_button = QPushButton('选择项目')
         self.project_button.clicked.connect(self._choose_project)
-        project_row.addWidget(self.project_summary, 1)
-        project_row.addWidget(self.project_button)
-        root.addLayout(project_row)
-        controls = QHBoxLayout()
-        self.add_button = AddNodeButton('添加 AgentCore')
+        header.addWidget(self.project_button)
+        self.add_button = AddNodeButton('添加')
+        self.add_button.setAccessibleName('添加 AgentCore')
         self.save_button = QPushButton('保存')
         self.run_button = QPushButton('运行')
         self.fit_button = QPushButton('适配')
         self.inspector_button = QPushButton('检查器')
-        for button in (self.add_button, self.save_button, self.run_button, self.fit_button):
-            controls.addWidget(button)
-        controls.addStretch(1)
-        controls.addWidget(self.inspector_button)
-        root.addLayout(controls)
+        for button in (self.add_button, self.save_button, self.run_button, self.inspector_button, self.designer_button):
+            header.addWidget(button)
+        self.more_button = QToolButton()
+        self.more_button.setText('更多')
+        self.more_button.setAccessibleName('更多 Flow 操作')
+        self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.more_button)
+        self._more_actions = {}
+        for button in (self.project_button, self.fit_button, self.import_button, self.export_button,
+                       self.inspector_button, self.designer_button):
+            action = menu.addAction(button.text())
+            action.triggered.connect(button.click)
+            self._more_actions[button] = action
+        menu.aboutToShow.connect(self._refresh_more_actions)
+        self.more_button.setMenu(menu)
+        header.addWidget(self.more_button)
+        root.addLayout(header)
         run_input_row = QHBoxLayout()
         self.run_input = QTextEdit()
         self.run_input.setAcceptRichText(False)
@@ -366,19 +421,38 @@ class FlowPanel(QWidget):
         root.addLayout(run_input_row)
         self.queue_button.clicked.connect(self._queue_run)
         body = QHBoxLayout()
+        self._body = body
         root.addLayout(body, 1)
         self.canvas = FlowCanvas(self)
+        self.canvas.setMinimumWidth(0)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         body.addWidget(self.canvas, 1)
         self.inspector = QTabWidget()
-        self.inspector.setMinimumWidth(270)
+        self.inspector.setMinimumWidth(230)
         self.inspector.setMaximumWidth(340)
-        body.addWidget(self.inspector)
+        self.inspector_panel = QWidget()
+        self.inspector_panel.setMinimumWidth(230)
+        self.inspector_panel.setMaximumWidth(340)
+        self.inspector_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        inspector_layout = QVBoxLayout(self.inspector_panel)
+        inspector_layout.setContentsMargins(0, 0, 0, 0)
+        inspector_header = QHBoxLayout()
+        inspector_header.addWidget(QLabel('检查器'), 1)
+        self.inspector_close = QPushButton('关闭')
+        self.inspector_close.setAccessibleName('关闭检查器')
+        self.inspector_close.clicked.connect(self.inspector_panel.hide)
+        inspector_header.addWidget(self.inspector_close)
+        inspector_layout.addLayout(inspector_header)
+        inspector_layout.addWidget(self.inspector)
+        body.addWidget(self.inspector_panel)
+        self.inspector_panel.hide()
         self.designer = FlowDesigner()
         self.designer.setMinimumWidth(210)
         self.designer.setMaximumWidth(340)
         self.designer.hide()
         body.addWidget(self.designer)
         self.designer.command.connect(self.command.emit)
+        self.designer.close_requested.connect(lambda: self.designer_button.setChecked(False))
         self.designer_button.toggled.connect(self._toggle_designer)
         self.flow_fields = self._make_form([
             ('名称', 'title', 'line'), ('项目目录', 'workspace_path', 'line'),
@@ -442,12 +516,40 @@ class FlowPanel(QWidget):
 
     def _toggle_designer(self, visible: bool) -> None:
         self.designer.setMaximumWidth(230 if self.width() < 750 else 340)
+        if visible:
+            self.inspector_panel.hide()
         self.designer.setVisible(visible)
-        if visible and self.width() < 750:
-            self.inspector.hide()
-            self.canvas.show()
-        if not visible:
-            self.designer.cancel()
+        if visible:
+            QTimer.singleShot(0, self._ensure_selected_visible)
+
+    def _refresh_more_actions(self) -> None:
+        for button, action in self._more_actions.items():
+            action.setText(button.text())
+            action.setEnabled(button.isEnabled())
+            action.setCheckable(button.isCheckable())
+            action.setChecked(button.isChecked())
+            action.setVisible((button is not self.project_button or bool(self._flow.get('project_id')))
+                              and (button not in (self.project_button, self.inspector_button, self.designer_button)
+                                   or not button.isVisible()))
+
+    def _sync_toolbar(self) -> None:
+        """项目入口始终可达，窄窗将辅助面板入口放入更多菜单。"""
+        self.project_button.setVisible(bool(self._flow.get('project_id')))
+        self.inspector_button.setVisible(self.width() >= 720)
+        self.designer_button.setVisible(self.width() >= 720)
+        self.project_summary.setVisible(self.width() >= 1000)
+
+    def _show_inspector(self) -> None:
+        self.designer_button.setChecked(False)
+        self.inspector_panel.show()
+        self._body.invalidate()
+        self._body.activate()
+        QTimer.singleShot(0, self._ensure_selected_visible)
+
+    def _ensure_selected_visible(self) -> None:
+        node = self.nodes.get(self._selected)
+        if node and (not self.inspector_panel.isHidden() or not self.designer.isHidden()):
+            self.canvas.ensureVisible(node.sceneBoundingRect(), 4, 4)
 
     def _make_form(self, rows):
         scroll = QScrollArea()
@@ -631,6 +733,8 @@ class FlowPanel(QWidget):
         self.project_summary.setText(summary)
         if not self._flow.get('project_id'):
             self.project_summary.setText('Flow 模板 · 导入项目后运行')
+        self.project_summary.setToolTip(summary)
+        self.heading.setToolTip(str(self._flow.get('title') or 'Agent Flow') + '\n' + summary)
         self.project_button.setText('更换项目' if path else '选择项目')
         if not self._selected or self._selected not in self.nodes:
             self.node_project_summary.setText('留空时继承项目')
@@ -930,7 +1034,6 @@ class FlowPanel(QWidget):
         self.export_button.setEnabled(bool(self._flow) and self._export_path is None)
         self.run_button.setVisible(bool(self._flow.get('project_id')) or running)
         self.inspector.setTabVisible(2, bool(self._flow.get('project_id')))
-        self.project_button.setVisible(bool(self._flow.get('project_id')))
         for form, field in self._project_rows.values():
             form.setRowVisible(field, bool(self._flow.get('project_id')))
         self.run_button.setEnabled((bool(self._flow.get('project_id')) and not updating_project) or running)
@@ -948,6 +1051,7 @@ class FlowPanel(QWidget):
         self.node_project_picker.browse_button.setEnabled(bool(self._flow) and not running and bool(self._selected))
         for item in self.nodes.values():
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not running)
+            item.refresh_tooltip()
             item.update()
         for fields, enabled in ((self.flow_fields, not running), (self.node_fields, not running and bool(self._selected))):
             for field in fields.values():
@@ -962,6 +1066,7 @@ class FlowPanel(QWidget):
         for check in self.custom_tool_checks.values():
             check.setEnabled(not running and bool(self._selected) and self.tools_mode.currentData() == 'custom')
         self._refresh_projects()
+        self._sync_toolbar()
         self._show_result()
 
     def _selection_changed(self) -> None:
@@ -1235,17 +1340,16 @@ class FlowPanel(QWidget):
                 self.canvas.centerOn(rect.center())
 
     def _toggle_inspector(self) -> None:
-        show = not self.inspector.isVisible()
-        self.inspector.setVisible(show)
-        if self.width() < 750 and self.designer_button.isChecked():
-            self.designer.setVisible(not show)
-        self.canvas.setVisible(not (show and self.width() < 750))
+        if self.inspector_panel.isHidden():
+            self._show_inspector()
+        else:
+            self.inspector_panel.hide()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.designer.setMaximumWidth(230 if event.size().width() < 750 else 340)
-        if event.size().width() < 750 and (event.oldSize().width() <= 0 or event.oldSize().width() >= 750):
-            self.inspector.hide()
-        if event.size().width() >= 750 or not self.inspector.isVisible():
-            self.designer.setVisible(self.designer_button.isChecked())
-        self.canvas.setVisible(not (self.inspector.isVisible() and event.size().width() < 750))
+        self.inspector_panel.setMaximumWidth(240 if event.size().width() < 750 else 340)
+        self.status.setVisible(event.size().width() >= 650)
+        self._sync_toolbar()
+        if hasattr(self, 'inspector_panel') and (not self.inspector_panel.isHidden() or not self.designer.isHidden()):
+            QTimer.singleShot(0, self._ensure_selected_visible)

@@ -16,7 +16,7 @@
     maintenance: null, maintenanceLoading: false, maintenanceGeneration: 0, cleanupPending: false,
     planOwner: null, planView: null, planLoading: false, planGeneration: 0,
     selectionGeneration: 0, planHydrationKey: null,
-    layout: { left: 246, right: 310, split: 52 }, modelLibrary: [], defaultModel: null, editingModel: null, modelSaving: false,
+    layout: { left: 246, right: 310, split: 52 }, modelLibrary: [], defaultModel: null, defaultModelAvailable: null, editingModel: null, modelSaving: false,
   };
   const policyLabels = {
     read_only: "只读", readonly: "只读", read: "只读", ask: "逐次确认", confirm: "逐次确认",
@@ -1105,8 +1105,9 @@
   async function loadModels() {
     const data = await jsonApi("/api/models");
     state.defaultModel = typeof data.default_model === "string" ? data.default_model : null;
+    state.defaultModelAvailable = data.default_model_available ?? Boolean(data.default_model);
     // The public library intentionally contains no API key values.
-    state.modelLibrary = (data.models || []).map((item) => ({ id: item.id, name: item.name, model: item.model, base_url: item.base_url, context_tokens: item.context_tokens, response_reserve_tokens: item.response_reserve_tokens, has_api_key: Boolean(item.has_api_key), editable: !item.read_only && item.editable !== false && !item.builtin && !item.built_in, source: item.source }));
+    state.modelLibrary = (data.models || []).map((item) => ({ id: item.id, name: item.name, model: item.model, base_url: item.base_url, context_tokens: item.context_tokens, response_reserve_tokens: item.response_reserve_tokens, has_api_key: Boolean(item.has_api_key), read_only: Boolean(item.read_only), editable: !item.read_only && item.editable !== false && !item.builtin && !item.built_in, source: item.source }));
     renderModels();
     window.FlowUI?.refreshModels?.();
   }
@@ -1455,7 +1456,7 @@
   $("new-mode").addEventListener("change", updateNewMode);
   $("new-browse").addEventListener("click", () => window.FlowUI.pickDirectory({ input: $("new-project-path"), valid: () => $("new-dialog").open }));
   window.WorkingUI.init({ api: jsonApi, enter: () => { window.FlowUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); } });
-  window.FlowUI.init({ api: jsonApi, platform: () => state.meta.platform || "linux", models: () => normalizeOptions(state.meta.models, "model"), selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { window.WorkingUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
+  window.FlowUI.init({ api: jsonApi, platform: () => state.meta.platform || "linux", models: () => normalizeOptions(state.meta.models, "model"), modelCatalog: () => state.defaultModelAvailable === null ? null : { models: state.modelLibrary, default_model_available: state.defaultModelAvailable }, selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { window.WorkingUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
   $("refresh-sessions").addEventListener("click", refreshSessions); $("session-search").addEventListener("input", renderSessions);
   $("composer-form").addEventListener("submit", sendMessage); $("stop-agent").addEventListener("click", () => stopSession());
   $("message-input").addEventListener("input", () => { saveDraft(); resizeInput(); renderComposer(); state.slashIndex = 0; renderSlash(); });

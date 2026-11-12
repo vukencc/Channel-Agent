@@ -94,7 +94,7 @@ const fs=require('node:fs'),vm=require('node:vm');
 let source=fs.readFileSync(process.argv[2],'utf8');
 source=source.replace('function render() {', 'function render() { window.rendered.push({active, designerVisible}); return;');
 source=source.replace('window.FlowUI = {', `window.harness={
- setup(b,f){bridge=b;active=f.id;drafts.set(f.id,f);designerVisible=true},
+ setup(b,f){bridge=b;active=f.id;drafts.set(f.id,f);designerVisible=true;designerDefaultAvailable=true},
  drawDesigner,open,openCreated,hide,state:()=>({active,designerVisible,history:designerHistory}),
 }; window.FlowUI = {`);
 class Element {

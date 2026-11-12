@@ -30,6 +30,9 @@ def test_working_panel_interaction_and_refresh():
     assert '&lt;任务&gt;' in item.toolTip()
     QTest.mouseClick(panel.listing.viewport(), Qt.MouseButton.LeftButton,
                      pos=panel.listing.visualItemRect(item).center())
+    assert not panel.detail.isVisible()
+    QTest.mouseClick(panel.listing.viewport(), Qt.MouseButton.RightButton,
+                     pos=panel.listing.visualItemRect(item).center())
     assert '<任务>' in panel.details.toPlainText()
     assert '子任务' in panel.details.toPlainText()
     assert '显示 1 / 2' in panel.details.toPlainText()
@@ -66,14 +69,16 @@ def test_working_navigation_with_live_bridge(lifecycle):
     item = panel.listing.item(1)
     QTest.mouseClick(panel.listing.viewport(), Qt.MouseButton.LeftButton,
                      pos=panel.listing.visualItemRect(item).center())
+    QTest.mouseClick(panel.listing.viewport(), Qt.MouseButton.RightButton,
+                     pos=panel.listing.visualItemRect(item).center())
     assert panel._selection
     selected = panel._selection
     panel.listing.setFocus()
     panel.listing.setCurrentRow(2)
-    QTest.keyClick(panel.listing, Qt.Key.Key_Return)
+    QTest.keyClick(panel.listing, Qt.Key.Key_Menu)
     assert panel._selection == (selected[0], 'next')
     panel.listing.setCurrentRow(1)
-    QTest.keyClick(panel.listing, Qt.Key.Key_Return)
+    QTest.keyClick(panel.listing, Qt.Key.Key_F10, Qt.KeyboardModifier.ShiftModifier)
     assert panel._selection == selected
     assert 'working_runs' not in window.state
     calls = []

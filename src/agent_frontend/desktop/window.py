@@ -394,6 +394,7 @@ class MainWindow(QMainWindow):
         center.setContentsMargins(0, 0, 0, 0)
         center.setSpacing(0)
         header = QWidget()
+        self.workspace_header = header
         header.setObjectName('header')
         toolbar = QHBoxLayout(header)
         toolbar.setContentsMargins(18, 16, 20, 15)
@@ -441,10 +442,12 @@ class MainWindow(QMainWindow):
         flow_layout.addWidget(self.flow_error)
         self.flow_panel = FlowPanel()
         self.flow_panel.command.connect(lambda action, args: self.bridge.request(action, **args))
+        self.flow_panel.sidebar_toggle_requested.connect(self._toggle_sidebar)
         self.flow_panel.designer_button.toggled.connect(self._designer_toggled)
         flow_layout.addWidget(self.flow_panel, 1)
         self.workspace_stack.addWidget(self.flow_page)
         self.working_panel = WorkingPanel()
+        self.working_panel.sidebar_toggle_requested.connect(self._toggle_sidebar)
         self.workspace_stack.addWidget(self.working_panel)
         self.error_label = QLabel()
         self.error_label.setObjectName('error')
@@ -579,10 +582,19 @@ class MainWindow(QMainWindow):
         self.activity_dock.setWidget(self.detail_tabs)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.activity_dock)
         self.activity_dock.hide()
+        self.workspace_stack.currentChanged.connect(self._sync_workspace_chrome)
+        self._sync_workspace_chrome()
         self.statusBar().showMessage('本机会话与项目 · 正在初始化')
         for label in self.findChildren(QLabel):
             label.setTextFormat(Qt.TextFormat.PlainText)
         self._update_buttons()
+
+    def _sync_workspace_chrome(self, _index: int = 0) -> None:
+        """Flow/Working 使用自己的工具栏，保留经典会话的完整操作入口。"""
+        classic = self.workspace_stack.currentWidget() is self.agent_page
+        self.workspace_header.setVisible(classic)
+        if not classic:
+            self.activity_dock.hide()
 
     @staticmethod
     def _icon_button(name: str, tooltip: str, callback) -> QPushButton:
@@ -668,6 +680,8 @@ class MainWindow(QMainWindow):
         self._render_flows()
         current_flow = state.get('selected_flow')
         self.flow_panel.set_flow(current_flow, state.get('models', []))
+        self.flow_panel.designer.set_models(state.get('models', []),
+            default_model_available=state.get('default_model_available', bool(state.get('default_model'))))
         self.flow_panel.set_tool_catalog(state.get('flow_tools', {}))
         self.workspace_stack.setCurrentWidget(self.working_panel if self._working_open else (self.flow_page if current_flow or getattr(self, '_designer_open', False) else self.agent_page))
         if selected:
@@ -926,9 +940,17 @@ class MainWindow(QMainWindow):
         if action in ('project_update', 'project_delete'):
             self.flow_panel.accept_result(action, result)
         if action.startswith('flow_'):
+            designer = self.flow_panel.designer
+            handled_design = (action == 'flow_design' and designer.busy
+                              and result.get('request_id') == designer.request_id)
             self.flow_panel.accept_result(action, result)
             if not result.get('error'):
                 self.flow_error.hide()
+            elif handled_design:
+                # 设计错误留在对应对话里，避免同一消息再占据画布顶部。
+                for label in (self.flow_error, self.error_label):
+                    if label.text() == result.get('error'):
+                        label.hide()
         if action in {'files', 'file'} and not result.get('error') and self.current_session and result.get('session_id') == self.current_session['id']:
             self.file_path_label.setText(result['path'] + ('（仅前 256 KiB）' if result.get('truncated') else ''))
             if action == 'files':

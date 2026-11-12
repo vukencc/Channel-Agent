@@ -41,13 +41,15 @@ def flow(path='', *, identifier='flow', handoff=''):
             'edges': [{'source': 'first', 'target': 'second'}]}
 
 
-def test_flow_project_is_accessible_above_narrow_canvas(panel, tmp_path):
-    panel.resize(560, 700)
+@pytest.mark.parametrize('width', [500, 560])
+def test_flow_project_is_accessible_above_narrow_canvas(panel, tmp_path, width):
+    panel.resize(width, 700)
     panel.set_flow(flow(tmp_path))
     QApplication.processEvents()
     assert panel.project_button.isVisible()
     assert str(tmp_path) in panel.project_summary.text()
     assert panel.project_button.geometry().bottom() < panel.canvas.geometry().top()
+    assert panel.width() <= width + 5
 
 
 def choose(monkeypatch, result):
