@@ -119,11 +119,25 @@ def test_designer_live_sse_survives_classic_deadline_without_simplifying(
     assert not (manager.store.root / 'flows').exists()
 
 
-def test_classic_live_sse_still_times_out_concurrently_and_after_design(controlled_designer):
+def test_classic_live_sse_still_times_out_concurrently_and_after_design(controlled_designer, monkeypatch):
     from agent_core.core.model_settings import model_profile
     from agent_core.core.tool_settings import model_tools
 
     manager, profile, requests, streams, clients, _ = controlled_designer
+    original_client = llm.endpoint_client
+
+    def cold_client(endpoint):
+        time.sleep(.08)
+        return original_client(endpoint)
+
+    # 本例验证流式总时限及作用域隔离。Windows 冷初始化可能已超过 50ms，
+    # 因此计时前预建真实 SDK/HTTPX 客户端并加载 lazy 资源；慢初始化取消另有专项。
+    endpoint = manager.model_registry.resolve(profile).endpoint()
+    prepared = [cold_client(endpoint) for _ in range(3)]
+    for client in prepared:
+        client.chat.completions
+    ready = iter(prepared)
+    monkeypatch.setattr(llm, 'endpoint_client', lambda endpoint: next(ready))
 
     async def classic():
         with model_profile(profile, manager.model_registry.resolve(profile)), model_tools([]):
@@ -140,6 +154,7 @@ def test_classic_live_sse_still_times_out_concurrently_and_after_design(controll
 
     asyncio.run(run())
     assert len(requests) == 3
+    assert len(streams) == len(clients) == 3
     assert all(stream.closed for stream in streams)
     assert all(client.is_closed() for client in clients)
     assert config.MODEL_CALL_TIMEOUT == .05
