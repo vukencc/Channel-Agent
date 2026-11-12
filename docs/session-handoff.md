@@ -6,6 +6,8 @@
 
 ## 当前工作与 Git
 
+- 2026-11-12，本轮正在实现[工作区共享记忆](workspace-memory.md)：同一实际工作区共享有界项目摘要，与私有会话及 Codex 配置分离。实现和验证仍在进行，最终测试、真实模型及平台结果待本轮负责代理补充；以下既有交付和测量保持历史事实。
+
 - 2026-11-12，Flow/Working 易用性修复经 [PR #47](https://github.com/vukencc/Channel-Agent/pull/47) 合并，合并提交 cba461e393755a6a0c7ffa845049eb49c9292e1e，最终 [CI 运行 43157549039](https://github.com/vukencc/Channel-Agent/actions/runs/43157549039) 的 Linux、Windows 任务成功。当前稳定版仍为 0.5.0，本任务未重新发布标签；合并时锁文件收纳 main 的五项依赖升级。合并后锁定依赖的 Linux 全量 2172 passed、39 skipped、5 deselected（202.81 秒）；真实 API 使用 OpenAI SDK 3.46.0 在 11.954 秒生成三个节点，未运行 Flow。先前客服反馈需求生成五节点、四连线用时 72.536 秒，亦未运行。Windows D 盘本地源码完整 CI 选择集 622 passed、57 skipped（283.92 秒），原 20 秒退出断言通过；本地修复版 exe 离线自检 15/15 通过，manifest 记录源码提交 cba461e393755a6a0c7ffa845049eb49c9292e1e、工作树未修改及 124 个已核验应用模块。此前 UNC 路径的导入超时保留，不能追认为关闭阶段修复；受控界面、早期失败及其他边界见[易用性修复记录](flow-ui-usability-validation-2026-11-12.md)。
 
 - 2026-11-11，0.5.0 交付基线：动态工具审查修复入口覆盖、审计失败仍执行、排队/确认期间执行已撤销旧工具，以及 WSL 完成故障误称拦截。[PR #46](https://github.com/vukencc/Channel-Agent/pull/46) 的双平台 CI 已通过：Linux 2119 passed、42 skipped、5 deselected；Windows 583 passed、46 skipped。最终安全专项 107 passed；本机原生 572 passed/56 skipped，真实 Windows→WSL 8 passed。实际 Windows exe 离线 15/15、自检含 WSL 16/16 通过。正式双平台包由标签工作流重建，最终状态见 [0.5.0 发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.5.0)。实现与边界见 [动态工具](dynamic-tools.md) 和 [安全验证报告](dynamic-tools-security-validation-2026-11-11.md)，保留此前两轮 Ubuntu DNS 安装失败记录。
