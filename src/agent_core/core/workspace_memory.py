@@ -284,7 +284,7 @@ class WorkspaceMemoryStore:
                             self.read()
                             # Windows 替换操作可能在异常后已经生效。
                             try:
-                                atomic_replace(temp, self.path)
+                                atomic_replace(temp, self.path, replace_open=True)
                                 published = True
                                 fsync_directory(self.directory)
                                 audit("workspace_memory_updated", revision=snapshot.revision)

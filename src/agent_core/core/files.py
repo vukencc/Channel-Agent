@@ -73,11 +73,12 @@ def directory_identity(path: Path) -> tuple[int, int]:
         return info.st_dev, info.st_ino
 
 
-def atomic_replace(source: Path, target: Path) -> None:
+def atomic_replace(source: Path, target: Path, *, replace_open: bool = False) -> None:
     """原子发布同目录文件；Windows 在发布前刷新文件数据。"""
     if os.name == 'nt':
         from .windows_files import atomic_replace as windows_atomic_replace
-        windows_atomic_replace(source, target)
+        options = {'replace_open': True} if replace_open else {}
+        windows_atomic_replace(source, target, **options)
     else:
         os.replace(source, target)
 

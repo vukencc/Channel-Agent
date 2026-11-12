@@ -142,7 +142,7 @@ def directory_identity(path: Path) -> tuple[int, int]:
         return _identity(msvcrt.get_osfhandle(fd))
 
 
-def atomic_replace(source: Path, target: Path) -> None:
+def atomic_replace(source: Path, target: Path, *, replace_open: bool = False) -> None:
     """以已打开的文件句柄原子替换同一目录内的目标。"""
     source, target = Path(source), Path(target)
     _validate(source)
@@ -174,19 +174,21 @@ def atomic_replace(source: Path, target: Path) -> None:
                 raise ctypes.WinError(ctypes.get_last_error())
             name = str(target).encode('utf-16-le')
             class _RenameInfo(ctypes.Structure):
-                _fields_ = [('replace', wintypes.BOOLEAN),
+                _fields_ = [('replace', wintypes.DWORD if replace_open else wintypes.BOOLEAN),
                             ('root', wintypes.HANDLE),
                             ('length', wintypes.DWORD),
                             ('name', ctypes.c_ubyte * (len(name) + 2))]
             rename = _RenameInfo()
-            rename.replace = 1
+            # FileRenameInfoEx: REPLACE_IF_EXISTS | POSIX_SEMANTICS。
+            # 仅原子快照启用；不忽略只读属性，普通工具仍保持旧句柄保护。
+            rename.replace = 0x3 if replace_open else 1
             rename.root = None
             rename.length = len(name)
             rename.name[:len(name)] = name
             set_info = _kernel.SetFileInformationByHandle
             set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
             set_info.restype = wintypes.BOOL
-            if not set_info(handle, 3, ctypes.byref(rename), ctypes.sizeof(rename)):
+            if not set_info(handle, 22 if replace_open else 3, ctypes.byref(rename), ctypes.sizeof(rename)):
                 raise ctypes.WinError(ctypes.get_last_error())
             # 失败时替换可能已经发生，调用方不得假定原目标仍存在。
             if not flush(handle):
