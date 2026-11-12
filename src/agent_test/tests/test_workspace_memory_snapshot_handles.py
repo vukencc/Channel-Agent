@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from agent_core.core.files import directory_identity, opened_path
-from agent_core.core.workspace_memory import WorkspaceMemoryDelta, WorkspaceMemoryStore
+from agent_core.core.workspace_memory import WorkspaceMemoryCommitUncertain, WorkspaceMemoryDelta, WorkspaceMemoryStore
 
 
 @pytest.mark.parametrize('options', [{'directory': True}, {'writable': True}])
@@ -74,3 +74,65 @@ store.append(WorkspaceMemoryDelta(progress="second"),update_id="two",outcome="id
         with pytest.raises(OSError):
             tmp_path.rename(tmp_path.with_name(tmp_path.name + '-moved'))
     assert store.read().revision == (2 if allow_replace else 1)
+
+
+def _initial_store(tmp_path):
+    store = WorkspaceMemoryStore(tmp_path, directory_identity(tmp_path))
+    store.append(WorkspaceMemoryDelta(progress='first'), update_id='one', outcome='idle',
+                 cancelled=threading.Event(), authorize=lambda: True, audit=lambda *args, **kwargs: None)
+    return store
+
+
+def _append_second(store):
+    return store.append(WorkspaceMemoryDelta(progress='second'), update_id='two', outcome='idle',
+                        cancelled=threading.Event(), authorize=lambda: True, audit=lambda *args, **kwargs: None)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows 只读属性保护')
+def test_windows_snapshot_publish_does_not_ignore_readonly(tmp_path):
+    import stat
+    store = _initial_store(tmp_path)
+    os.chmod(store.path, stat.S_IREAD)
+    try:
+        with pytest.raises(WorkspaceMemoryCommitUncertain):
+            _append_second(store)
+        assert store.read().revision == 1
+    finally:
+        os.chmod(store.path, stat.S_IREAD | stat.S_IWRITE)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows 扩展重命名不可用时拒绝')
+def test_windows_snapshot_unsupported_rename_fails_without_fallback(tmp_path, monkeypatch):
+    import ctypes
+    from agent_core.core import windows_files
+    store = _initial_store(tmp_path)
+    classes = []
+    def unsupported(handle, information_class, info, size):
+        classes.append(information_class)
+        ctypes.set_last_error(87)
+        return False
+    monkeypatch.setattr(windows_files._kernel, 'SetFileInformationByHandle', unsupported)
+    with pytest.raises(WorkspaceMemoryCommitUncertain):
+        _append_second(store)
+    assert classes == [22]
+    assert store.read().revision == 1
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows 发布后刷新失败的提交不确定状态')
+def test_windows_snapshot_post_publish_flush_is_uncertain(tmp_path, monkeypatch):
+    import ctypes
+    from agent_core.core import windows_files
+    store = _initial_store(tmp_path)
+    original = windows_files._kernel.FlushFileBuffers
+    calls = []
+    def flush(handle):
+        calls.append(handle)
+        if len(calls) == 2:
+            ctypes.set_last_error(5)
+            return False
+        return original(handle)
+    monkeypatch.setattr(windows_files._kernel, 'FlushFileBuffers', flush)
+    with pytest.raises(WorkspaceMemoryCommitUncertain):
+        _append_second(store)
+    assert len(calls) == 2
+    assert store.read().revision == 2
