@@ -271,3 +271,93 @@ def test_designer_budget_still_blocks_unknown_price_before_http_request(controll
     assert clients and all(client.is_closed() for client in clients)
     assert manager.budget_ledger.state['pending'] == {}
     assert not (manager.store.root / 'flows').exists()
+
+
+@pytest.mark.parametrize('backend_name', ['sdk-httpx2', 'legacy-httpx'])
+def test_designer_real_local_socket_idle_timeout_closes_without_partial_import(
+        controlled_designer, monkeypatch, backend_name):
+    """真实 localhost TCP 空闲计时；服务内容受控，不调用真实供应商。"""
+    from openai import _base_client
+
+    backend = httpx if backend_name == 'legacy-httpx' else getattr(_base_client, 'httpx2', None)
+    if backend is None:
+        pytest.skip('当前 SDK 未提供 httpx2 后端')
+    manager, profile, _, _, _, _ = controlled_designer
+    monkeypatch.setattr(config, 'SESSION_TIMEOUT', .15)
+    monkeypatch.setattr(config, 'MAX_RETRIES', 2)
+    clients, requests, metrics = [], [], []
+    original_model = manager.model
+
+    async def observed_model(history, *, session_id, emit):
+        def observe(kind, value):
+            if kind == 'metrics':
+                metrics.append(value)
+            emit(kind, value)
+        return await original_model(history, session_id=session_id, emit=observe)
+
+    monkeypatch.setattr(manager, 'model', observed_model)
+
+    async def run():
+        disconnected = asyncio.Event()
+        handlers = set()
+        first_sent = []
+
+        async def handle(reader, writer):
+            task = asyncio.current_task()
+            handlers.add(task)
+            try:
+                headers = await reader.readuntil(b'\r\n\r\n')
+                length = next(int(line.split(b':', 1)[1]) for line in headers.split(b'\r\n')
+                              if line.lower().startswith(b'content-length:'))
+                requests.append(json.loads(await reader.readexactly(length)))
+                # 完整 JSON 也不能因连接中断而被当作已完整结束的模板。
+                partial = json.dumps({'reply': 'controlled-partial', 'template': _template()})
+                frame = ControlledSSE._frame({'content': partial})
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n'
+                             b'Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n')
+                writer.write(f'{len(frame):x}\r\n'.encode() + frame + b'\r\n')
+                await writer.drain()
+                first_sent.append(time.monotonic())
+                # 不发送结束帧或任何新字节；真实 HTTP 客户端负责计算读取空闲时限。
+                assert await reader.read() == b''
+                disconnected.set()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                handlers.discard(task)
+
+        server = await asyncio.start_server(handle, '127.0.0.1', 0)
+        port = server.sockets[0].getsockname()[1]
+
+        def client(endpoint):
+            sdk = llm.AsyncOpenAI(api_key='local-fixture-key',
+                base_url=f'http://127.0.0.1:{port}/v1', max_retries=0,
+                http_client=backend.AsyncClient(trust_env=False))
+            clients.append(sdk)
+            return sdk
+
+        monkeypatch.setattr(llm, 'endpoint_client', client)
+        try:
+            async with asyncio.timeout(3):
+                with pytest.raises(ValueError, match='超时') as caught:
+                    await design_flow(manager, [{'role': 'user', 'content': '完整设计'}],
+                                      model_profile=profile, reasoning_effort='xhigh')
+                assert 'controlled-partial' not in str(caught.value)
+                await disconnected.wait()
+            assert len(first_sent) == 1
+            assert time.monotonic() - first_sent[0] >= config.SESSION_TIMEOUT
+        finally:
+            server.close()
+            await server.wait_closed()
+            if handlers:
+                await asyncio.wait_for(asyncio.gather(*handlers), 2)
+
+    asyncio.run(run())
+    assert len(requests) == 1
+    assert requests[0]['reasoning_effort'] == 'xhigh'
+    assert clients and all(client.is_closed() for client in clients)
+    assert len(metrics) == 1 and metrics[0]['outcome'] == 'timeout'
+    assert metrics[0]['request_attempts'] == 1
+    assert manager.budget_ledger.state['pending'] == {}
+    assert not manager.sessions
+    assert not (manager.store.root / 'flows').exists()
