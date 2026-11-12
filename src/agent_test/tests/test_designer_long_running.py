@@ -120,33 +120,78 @@ def test_designer_live_sse_survives_classic_deadline_without_simplifying(
 
 
 def test_classic_live_sse_still_times_out_concurrently_and_after_design(controlled_designer, monkeypatch):
-    from agent_core.core.model_settings import model_profile
+    from agent_core.core.model_settings import DEFAULT_MODEL_DEADLINE, active_model_deadline, model_profile
     from agent_core.core.tool_settings import model_tools
 
     manager, profile, requests, streams, clients, install = controlled_designer
     # 给真实 SDK 序列化和线程调度留出余量，流本身持续约 1.8s，明确超过经典总时限。
     monkeypatch.setattr(config, 'MODEL_CALL_TIMEOUT', .5)
     install(lambda: ControlledSSE(frames=120))
+    calls = {}
 
-    async def classic():
+    async def observed_model(history, *, session_id=None, emit=None):
+        label = history[-1]['content']
+        entry = {'deadline_is_default': active_model_deadline.get() is DEFAULT_MODEL_DEADLINE,
+                 'deadline_type': type(active_model_deadline.get()).__name__,
+                 'timeout': llm._model_timeout(), 'metrics': []}
+        calls[label] = entry
+
+        def observe(kind, value):
+            if kind == 'metrics':
+                entry['metrics'].append(value)
+            if emit:
+                emit(kind, value)
+
+        started = time.monotonic()
+        try:
+            result = await llm.call_model(history, session_id=session_id, emit=observe)
+            entry['outcome'] = 'returned'
+            return result
+        except TimeoutError:
+            entry['outcome'] = 'timeout'
+            raise
+        finally:
+            entry['elapsed_s'] = time.monotonic() - started
+            entry['exit_timeout'] = llm._model_timeout()
+
+    monkeypatch.setattr(manager, 'model', observed_model)
+
+    async def classic(label):
+        assert active_model_deadline.get() is DEFAULT_MODEL_DEADLINE
+        assert llm._model_timeout() == .5
         with model_profile(profile, manager.model_registry.resolve(profile)), model_tools([]):
             with pytest.raises(TimeoutError, match='总时限'):
-                await llm.call_model([{'role': 'user', 'content': '普通请求'}], emit=lambda *a: None)
+                await observed_model([{'role': 'user', 'content': label}])
+                # 若原生环境再出现未超时，保留真实调用及安全阶段指标，不能用重跑掩盖。
+                pytest.fail('普通请求未遵守总时限：' + json.dumps(calls[label], ensure_ascii=False))
+        assert active_model_deadline.get() is DEFAULT_MODEL_DEADLINE
 
     async def run():
         design = asyncio.create_task(design_flow(manager, [{'role': 'user', 'content': '完整设计'}],
                                                  model_profile=profile, reasoning_effort='xhigh'))
-        await classic()
+        await classic('普通请求-同期')
         assert not design.done()
         assert (await design)['template']['title'] == '五节点四动态工具'
-        await classic()
+        await classic('普通请求-之后')
+        assert active_model_deadline.get() is DEFAULT_MODEL_DEADLINE
 
     asyncio.run(run())
-    assert len(requests) == 3
-    assert len(streams) == len(clients) == 3
+    assert set(calls) == {'普通请求-同期', '完整设计', '普通请求-之后'}
+    for label, entry in calls.items():
+        ordinary = label != '完整设计'
+        assert entry['deadline_is_default'] is ordinary
+        assert entry['timeout'] == entry['exit_timeout'] == (.5 if ordinary else None)
+        assert entry['outcome'] == ('timeout' if ordinary else 'returned')
+        assert len(entry['metrics']) == 1
+        assert entry['metrics'][0]['outcome'] == ('timeout' if ordinary else 'ok')
+    # 经典总时限也包含客户端初始化及请求准备；超时可以合法发生在 HTTP/SSE 前。
+    assert 1 <= len(requests) == len(streams) <= len(clients) <= len(calls)
     assert all(stream.closed for stream in streams)
     assert all(client.is_closed() for client in clients)
     assert config.MODEL_CALL_TIMEOUT == .5
+    assert llm._model_timeout() == .5
+    assert manager.budget_ledger.state['pending'] == {}
+    assert not (manager.store.root / 'flows').exists()
 
 
 def test_designer_stop_closes_live_sdk_stream_and_drains_slot(controlled_designer):
