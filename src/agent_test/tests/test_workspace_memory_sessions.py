@@ -404,7 +404,9 @@ def test_readonly_reads_existing_without_metadata_or_aux_side_effects(tmp_path, 
 
 
 @pytest.mark.parametrize('unsafe', ['corrupt', 'symlink'])
-def test_invalid_memory_blocks_model_without_overwriting(tmp_path, monkeypatch, symlink_capable, unsafe):
+def test_invalid_memory_blocks_model_without_overwriting(tmp_path, monkeypatch, request, unsafe):
+    if unsafe == 'symlink':
+        request.getfixturevalue('symlink_capable')
     async def run():
         project = tmp_path / 'project'
         project.mkdir()

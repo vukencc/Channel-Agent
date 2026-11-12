@@ -48,6 +48,16 @@ def test_replaceable_handle_rejects_link_and_outside(tmp_path, symlink_capable):
                 pytest.fail('不得越界读取')
 
 
+def test_replaceable_handle_rejects_outside_without_link_privilege(tmp_path):
+    root = tmp_path / 'root'
+    root.mkdir()
+    outside = tmp_path / 'outside'
+    outside.write_text('outside', encoding='utf-8')
+    with pytest.raises(PermissionError):
+        with opened_path(root, outside, allow_replace=True, expected_identity=directory_identity(root)):
+            pytest.fail('不得越界读取')
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows 删除共享句柄回归')
 @pytest.mark.parametrize('allow_replace', [False, True])
 def test_windows_held_snapshot_and_other_process_append(tmp_path, allow_replace):
