@@ -65,6 +65,8 @@
 
 以下材料记录具体时点的实现、问题和实测结果。重构前记录中的路径与命令可能已迁移，历史数字不代表当前性能或当前代码验证结果。
 
+- [工作区共享记忆验证（2026-11-12）](workspace-memory-validation-2026-11-12.md)：真实模型、并发、Windows 句柄与失败过程；最终验证状态见记录。
+
 - [DEBUG 总览清晰度报告](debug-overview-clarity-report.md)：既有 trace 回放和受控界面布局测量。
 - [DEBUG 时间线交付报告](debug-timeline-delivery.md)：因果事件与界面交付记录。
 - [上下文、执行与调试界面交付](context-execution-ui-delivery.md)：预算、长任务与调试布局实现记录。
