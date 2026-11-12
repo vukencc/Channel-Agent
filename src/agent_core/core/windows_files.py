@@ -56,10 +56,14 @@ def _validate(path: Path) -> None:
             raise PermissionError('路径分量无效')
 
 
-def _open(path: Path, *, directory: bool, writable: bool = False) -> tuple[int, tuple[int, int]]:
-    # 不允许删除共享，防止已验证的路径分量被替换。
+def _open(path: Path, *, directory: bool, writable: bool = False,
+          allow_replace: bool = False) -> tuple[int, tuple[int, int]]:
+    if allow_replace and (directory or writable):
+        raise ValueError('原子快照替换只适用于只读普通文件')
+    # 祖先和普通工具句柄禁止删除共享；仅原子快照可替换最终只读文件。
     access = 0x80000000 | (0x40000000 if writable else 0)
-    handle = _create(str(path), access, 0x1 | 0x2, None, 3,
+    share = 0x1 | 0x2 | (0x4 if allow_replace else 0)
+    handle = _create(str(path), access, share, None, 3,
                      0x00200000 | 0x02000000, None)
     if handle == _INVALID:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -82,7 +86,10 @@ def _open(path: Path, *, directory: bool, writable: bool = False) -> tuple[int, 
 
 
 @contextmanager
-def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None, writable: bool = False):
+def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None,
+                writable: bool = False, allow_replace: bool = False):
+    if allow_replace and (directory or writable):
+        raise ValueError('原子快照替换只适用于只读普通文件')
     root, target = Path(root), Path(target)
     _validate(root)
     _validate(target)
@@ -105,7 +112,8 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
         for index, part in enumerate(parts):
             current /= part
             is_directory = directory or index < len(parts) - 1
-            handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory)
+            options = {'allow_replace': True} if allow_replace and not is_directory else {}
+            handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory, **options)
             handles.append(handle)
         if not parts and not directory:
             raise ValueError('只支持普通文本文件或目录预览')
@@ -134,7 +142,21 @@ def directory_identity(path: Path) -> tuple[int, int]:
         return _identity(msvcrt.get_osfhandle(fd))
 
 
-def atomic_replace(source: Path, target: Path) -> None:
+def hide_directory(path: Path) -> None:
+    """在保持安全祖先句柄时设置隐藏属性，保留已有属性。"""
+    with opened_path(path, path, directory=True) as fd:
+        info = _FileInfo()
+        if not _info(msvcrt.get_osfhandle(fd), ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not info.attributes & 0x2:
+            change = _kernel.SetFileAttributesW
+            change.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+            change.restype = wintypes.BOOL
+            if not change(str(path), info.attributes | 0x2):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+
+def atomic_replace(source: Path, target: Path, *, replace_open: bool = False) -> None:
     """以已打开的文件句柄原子替换同一目录内的目标。"""
     source, target = Path(source), Path(target)
     _validate(source)
@@ -166,19 +188,21 @@ def atomic_replace(source: Path, target: Path) -> None:
                 raise ctypes.WinError(ctypes.get_last_error())
             name = str(target).encode('utf-16-le')
             class _RenameInfo(ctypes.Structure):
-                _fields_ = [('replace', wintypes.BOOLEAN),
+                _fields_ = [('replace', wintypes.DWORD if replace_open else wintypes.BOOLEAN),
                             ('root', wintypes.HANDLE),
                             ('length', wintypes.DWORD),
                             ('name', ctypes.c_ubyte * (len(name) + 2))]
             rename = _RenameInfo()
-            rename.replace = 1
+            # FileRenameInfoEx: REPLACE_IF_EXISTS | POSIX_SEMANTICS。
+            # 仅原子快照启用；不忽略只读属性，普通工具仍保持旧句柄保护。
+            rename.replace = 0x3 if replace_open else 1
             rename.root = None
             rename.length = len(name)
             rename.name[:len(name)] = name
             set_info = _kernel.SetFileInformationByHandle
             set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
             set_info.restype = wintypes.BOOL
-            if not set_info(handle, 3, ctypes.byref(rename), ctypes.sizeof(rename)):
+            if not set_info(handle, 22 if replace_open else 3, ctypes.byref(rename), ctypes.sizeof(rename)):
                 raise ctypes.WinError(ctypes.get_last_error())
             # 失败时替换可能已经发生，调用方不得假定原目标仍存在。
             if not flush(handle):

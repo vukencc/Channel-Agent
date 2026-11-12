@@ -544,14 +544,21 @@ async def complete(prompt: str, *, session_id: str | None = None) -> str:
     评估是可选后台工作，受独立总时限约束，不自动重试。
     """
     ticket = None
-    model = config.AUX_MODEL or config.MODEL
+    runtime = active_endpoint.get()
+    model = config.AUX_MODEL or selected_model()
     timeout = config.AUX_TIMEOUT or config.ASSESS_TIMEOUT
+    # 环境默认模型的价格不能借给其他连接；未知价格仍由预算层拒绝。
     input_price = config.AUX_INPUT_COST_PER_MILLION or (config.INPUT_COST_PER_MILLION if model == config.MODEL else 0)
     output_price = config.AUX_OUTPUT_COST_PER_MILLION or (config.OUTPUT_COST_PER_MILLION if model == config.MODEL else 0)
     endpoint = {'model': model, 'input_cost_per_million': input_price, 'output_cost_per_million': output_price}
+    runtime_client = None
     async def operation():
-        nonlocal ticket
-        client = await asyncio.to_thread(get_client)
+        nonlocal ticket, runtime_client
+        if runtime is not None and not config.AUX_MODEL:
+            runtime_client = await _runtime_client(runtime.endpoint())
+            client = runtime_client
+        else:
+            client = await asyncio.to_thread(get_client)
         options = model_options()
         options.update(config.AUX_MODEL_PARAMETERS)
         options.pop('tool_choice', None)
@@ -577,4 +584,8 @@ async def complete(prompt: str, *, session_id: str | None = None) -> str:
             actual = (usage.prompt_tokens * input_price + usage.completion_tokens * output_price) / 1e6
         return response.choices[0].message.content or ""
     finally:
-        await settle_request(ticket, actual)
+        try:
+            await settle_request(ticket, actual)
+        finally:
+            if runtime_client is not None:
+                await _close_runtime_client(runtime_client)

@@ -25,6 +25,7 @@
 - [本机 WebUI](web-ui.md)：启动、模型管理、并发状态与文件预览。
 - [Agent 运行调试](debug-runtime.md)：CLI/WebUI 调试面板、事件与数据边界。
 - [配置说明](configuration.md)：环境变量、优先级与本地配置同步。
+- [工作区共享记忆](workspace-memory.md)：跨会话的项目摘要、权限和恢复边界。
 - [结构化历史与上下文管理](context-management.md)：压缩、归档、检索和监督器配置。
 - [沙箱说明](sandbox.md)：文件工具、命令隔离、资源限制与文件操作。
 - [隔离命令环境准备](environment-preparation.md)：运行时诊断和项目依赖准备。
@@ -63,6 +64,8 @@
 ## 历史交付与诊断记录
 
 以下材料记录具体时点的实现、问题和实测结果。重构前记录中的路径与命令可能已迁移，历史数字不代表当前性能或当前代码验证结果。
+
+- [工作区共享记忆验证（2026-11-12）](workspace-memory-validation-2026-11-12.md)：真实模型、并发、Windows 句柄与失败过程；最终验证状态见记录。
 
 - [DEBUG 总览清晰度报告](debug-overview-clarity-report.md)：既有 trace 回放和受控界面布局测量。
 - [DEBUG 时间线交付报告](debug-timeline-delivery.md)：因果事件与界面交付记录。

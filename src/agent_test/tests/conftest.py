@@ -6,7 +6,7 @@ import pytest
 # 测试默认行为不受用户忽略的 .env 污染；显式启用功能的用例自行 monkeypatch。
 # 必须在首次导入 config/tools 前设置，子进程也继承相同基线。
 for name in ('AUTO_CONTINUE_TASKS', 'ENABLE_STRUCTURED_CONTEXT', 'ENABLE_TASK_PLANS',
-             'ENABLE_ENVIRONMENT_PREPARE'):
+             'ENABLE_ENVIRONMENT_PREPARE', 'WORKSPACE_MEMORY_ENABLED'):
     os.environ[name] = 'false'
 os.environ['COMMAND_RUNTIME_PATHS'] = '{}'
 os.environ['COMMAND_NODE_MEMORY_MB'] = '0'

@@ -69,6 +69,7 @@ jobs:
         run: |
           $tests = @((Get-ChildItem src/agent_test/tests/test_desktop*.py).FullName)
           $tests += @((Get-ChildItem src/agent_test/tests/test_windows*.py).FullName)
+          $tests += @((Get-ChildItem src/agent_test/tests/test_workspace_memory*.py).FullName)
           $tests += @(
             'src/agent_test/tests/test_file_crud.py',
             'src/agent_test/tests/test_cli.py',

@@ -26,7 +26,8 @@
 - 沙箱环境探测与 npm/uv 依赖准备：见[隔离命令环境准备](environment-preparation.md)；安装和显式 `resource_profile="development"` 构建/测试共用开发额度，值为 `0` 时继承通用命令限额。Linux 项目根目录可在会话设置或 CLI `/project` 中选择，无需修改全局 `SANDBOX_DIR`。
 - 命令执行环境：`COMMAND_EXECUTION_ENVIRONMENT` 默认 `sandbox`，可设为 `local`；`LOCAL_COMMAND_TIMEOUT` 默认 `600` 秒，范围 `1..86400`。应用配置与 Codex 自身的模型、代理和权限配置分开。Linux 本机模式及其安全边界见[沙箱说明](sandbox.md)。
 - 会话、后台命令、Agent 委派和任务计划：见[会话工具](session-tools.md)、[命令模式](cli-command-modes.md)及[任务计划](task-plans.md)。委派保持单层；计划功能默认关闭，启用后由现有 Agent 显式使用工具，不会增加模型调用或自动调度器。
-- 记忆、图片输入、Web UI 与观测功能：对应选项见模板分组和[Web UI 文档](web-ui.md)、[Agent 运行调试](debug-runtime.md)。可选能力默认保持关闭。
+- 工作区共享记忆：`WORKSPACE_MEMORY_ENABLED=true` 默认开启，`WORKSPACE_MEMORY_INJECT_CHARS=6000` 控制最大参考长度；自动提炼使用辅助模型并遵守权限和预算，见[工作区共享记忆](workspace-memory.md)。
+- 旧式会话记忆管理、自动候选提取、图片输入与观测功能默认关闭；对应选项见模板分组、[Web UI 文档](web-ui.md)和[Agent 运行调试](debug-runtime.md)。
 
 ## 常用安全选项
 

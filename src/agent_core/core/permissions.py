@@ -135,6 +135,12 @@ def evaluate_operation_risk(action: str, detail: str = '', *, paths: list[str] |
     if action == 'web_search':
         return OperationRisk(level='high', reason='查询内容将发送至外部服务', requires_confirmation=True)
     try:
+        if action == 'workspace_memory_update' and paths and len(paths) == 1:
+            target, = _workspace_targets(paths, write=True)
+            from agent_core.tools.sandbox import sandbox_root
+            if target == sandbox_root() / '.channelagent' / 'memory.json':
+                return OperationRisk(level='low', reason='框架维护当前工作区的有界共享记忆，不修改业务文件',
+                                     requires_confirmation=False)
         if action == 'run_command':
             if command is not None and _readonly_command(command):
                 return OperationRisk(level='low', reason='已验证的工作区简单只读命令', requires_confirmation=False)
