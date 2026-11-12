@@ -123,21 +123,10 @@ def test_classic_live_sse_still_times_out_concurrently_and_after_design(controll
     from agent_core.core.model_settings import model_profile
     from agent_core.core.tool_settings import model_tools
 
-    manager, profile, requests, streams, clients, _ = controlled_designer
-    original_client = llm.endpoint_client
-
-    def cold_client(endpoint):
-        time.sleep(.08)
-        return original_client(endpoint)
-
-    # 本例验证流式总时限及作用域隔离。Windows 冷初始化可能已超过 50ms，
-    # 因此计时前预建真实 SDK/HTTPX 客户端并加载 lazy 资源；慢初始化取消另有专项。
-    endpoint = manager.model_registry.resolve(profile).endpoint()
-    prepared = [cold_client(endpoint) for _ in range(3)]
-    for client in prepared:
-        client.chat.completions
-    ready = iter(prepared)
-    monkeypatch.setattr(llm, 'endpoint_client', lambda endpoint: next(ready))
+    manager, profile, requests, streams, clients, install = controlled_designer
+    # 给真实 SDK 序列化和线程调度留出余量，流本身持续约 1.8s，明确超过经典总时限。
+    monkeypatch.setattr(config, 'MODEL_CALL_TIMEOUT', .5)
+    install(lambda: ControlledSSE(frames=120))
 
     async def classic():
         with model_profile(profile, manager.model_registry.resolve(profile)), model_tools([]):
@@ -157,7 +146,7 @@ def test_classic_live_sse_still_times_out_concurrently_and_after_design(controll
     assert len(streams) == len(clients) == 3
     assert all(stream.closed for stream in streams)
     assert all(client.is_closed() for client in clients)
-    assert config.MODEL_CALL_TIMEOUT == .05
+    assert config.MODEL_CALL_TIMEOUT == .5
 
 
 def test_designer_stop_closes_live_sdk_stream_and_drains_slot(controlled_designer):
