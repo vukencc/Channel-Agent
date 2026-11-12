@@ -2,7 +2,7 @@
 
 > 文档类型：本轮验证记录 · [使用指南](workspace-memory.md) · [文档导航](README.md)
 
-本记录区分真实模型执行、受控回归和平台验证。记录时最终源码为 `9c9cd39`，Windows 与 WSL 源码同 HEAD；尚待完成的测试、成品和 CI 不计为通过。
+本记录区分真实模型执行、受控回归和平台验证。功能源码为 `9c9cd39`，后续覆盖及文档提交不改变应用代码；本机 Windows 成品已完成验收，本轮未发布新版本标签。
 
 ## 真实模型与项目隔离
 
@@ -24,7 +24,7 @@ Linux 首轮全量为 3 failed、2227 passed、37 skipped、5 deselected（186.5
 
 Windows 与 WSL 实际混合写入使用同步 barrier，各写 6 条，共 12 条，最终 revision 12、无丢失；写入区间重叠 0.761 秒。初次混合写入使用旧信息类 3 失败，修复后在新目录重新运行通过，不能将初次失败追认为通过。本机结果为 `D:\AI\AgentSrcCode\ChannelAgent\.cache\reports\workspace-memory-20261112-2doxax68\cross-backend-result.json`，不随文档分发。Windows 上 `.channelagent` 实际设置了 HIDDEN 属性。
 
-## Windows 失败过程与待补验证
+## Windows 失败过程与最终回归
 
 Windows 首轮未使用 CI 的 UTF-8 环境，结果为 31 failed、605 passed、60 skipped、39 errors（385.35 秒），包含 GBK 读取 fixture 和旧兼容问题；新 JSON 测试随后显式使用 UTF-8。GBK 第二次专项为 59 passed、4 skipped、1 failed（69.33 秒），失败为快照读取者使用旧 API；修复后第三次专项为 65 passed、3 skipped（53.63 秒）。
 
@@ -32,4 +32,19 @@ Windows 整组第三轮为 1 failed、686 passed、60 skipped（345.42 秒），
 
 Windows 第四轮整组为 1 failed、687 passed、60 skipped（344.71 秒），原生桌面子进程 20 秒内仅输出 `child start`，尚未完成导入。一次独立导入测量为 3.588 秒；有父 QApplication 的三项对照通过（20.49 秒），无父 QApplication 的两项通过（10.74 秒），子进程约 4.1–4.6 秒退出。没有复现原超时或支持父消息泵阻塞的证据，因此未修改退出用例、时限或产品导入，不将原失败追认为修复。
 
-最新 Windows 整组、成品打包和 [PR #49](https://github.com/vukencc/Channel-Agent/pull/49) 的 CI 结果待补。此功能位于桌面、Web、CLI 和 headless 共用的 Core，无新增 UI 布局；本轮真实模型验证直接使用 Core 会话与 Flow 服务，未将受控界面或回放冒充真实模型运行。
+Windows 第五轮原选择集完整复跑为 **688 passed、60 skipped（288.04 秒）**，包括原生桌面 20 秒退出用例；这次通过不改变此前未复现故障的根因边界。最终功能代码的 GBK 专项和整组回归分别验证，未放宽生产限制或原有断言。
+
+[PR #49](https://github.com/vukencc/Channel-Agent/pull/49) 的文档提交 `c79cdb8` 上，[CI 43173281047](https://github.com/vukencc/Channel-Agent/actions/runs/43173281047) 的 Linux 和 Windows 任务均成功：Linux **2233 passed、47 skipped、5 deselected（158.63 秒）**，Windows **701 passed、47 skipped（102.44 秒）**；真实 Bubblewrap/prlimit 探针成功，手动启用的模型下载集成任务未运行。本机在最终功能代码上也重新运行真实隔离探针并通过。平台和依赖决定可执行集合，不把两端计数差异当作测试缺失的证明。
+
+最终只读复核未发现阻断缺陷，并补上多工具轮次刷新覆盖：真实 `read_file` 暂停期间，独立 Store 发布 revision 2；同一会话下一正常模型轮次读取新事实及 revision 2，任务只提炼一次并提交 revision 3。该受控用例包含实际工具 I/O，不请求 provider；会话专项 **32 passed（0.80 秒）**。提交 `4fe8d46` 的 [CI 43174301650](https://github.com/vukencc/Channel-Agent/actions/runs/43174301650) 双平台通过：Linux **2234 passed、47 skipped、5 deselected（201.00 秒）**，Windows **702 passed、47 skipped（91.74 秒）**，实际隔离探针亦通过。恢复重试沿用当轮快照的行为已在指南中明确。
+
+## Windows 本地成品
+
+干净源码 `9c9cd39ef10ab14a6bb2d09577275285e99ea263` 构建完成，实际 exe 在移除开发工具 PATH、使用临时数据且禁止下载的环境中离线自检 **15/15 通过**；126 个应用模块与构建源码一致。独立检查确认冻结包包含 `agent_core.core.workspace_memory` 和 `agent_core.core.workspace_memory_runtime`，配置样例默认启用；ZIP 完整 CRC 和 SHA256 校验均通过。该自检不运行真实模型，不把它当作真实业务验证。
+
+- 成品：`D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-073109\ChannelAgent.exe`，须保留同目录的 `_internal`。
+- 分发包：同级 `ChannelAgent-0.5.0-windows-x64-20261112-073109.zip`，333,512,275 字节。
+- SHA256：`1395ac37ab9fe07f5e1725be2bcf90c84e40e1b876ba92e93da4c81712476d9b`。
+- 本地独立复核：`D:\AI\AgentSrcCode\ChannelAgent\.cache\reports\workspace-memory-20261112-2doxax68\package-validation.json`，不随仓库分发。本轮是新功能本地构建，稳定发布标签仍为 0.5.0。
+
+此功能位于桌面、Web、CLI 和 headless 共用的 Core，无新增 UI 布局；本轮真实模型验证直接使用 Core 会话与 Flow 服务，未将受控界面或回放冒充真实模型运行。

@@ -2,11 +2,13 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-12，稳定版 0.5.0 已发布；Flow 易用性修复已经 [PR #47](https://github.com/vukencc/Channel-Agent/pull/47) 合入 main，本地修复版 exe 离线自检已通过，尚未发布新标签。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。发布与 CI 状态以以下最新记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
+截至 2026-11-12，稳定版 0.5.0 已发布；本轮新增工作区共享记忆，未发布新标签。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。最新源码、PR、CI 与本地成品状态以以下记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
 
-- 2026-11-12，本轮正在实现[工作区共享记忆](workspace-memory.md)：同一实际工作区共享有界项目摘要，与私有会话及 Codex 配置分离。实现和验证仍在进行，最终测试、真实模型及平台结果待本轮负责代理补充；以下既有交付和测量保持历史事实。
+- 2026-11-12，新增[工作区共享记忆](workspace-memory.md)，实现 `9c9cd39`、多轮刷新覆盖 `4fe8d46`，对应 [PR #49](https://github.com/vukencc/Channel-Agent/pull/49)。同一实际工作区通过 `.channelagent/memory.json` 共享有界项目说明、进度和经验；每个正常模型轮次读取，私有终态成功保存后更新，原始会话保持私有。只读不写入、不请求提炼；取消和发布不确定不会误称完成，Flow 下游等待前节点提交。
+- 工作区记忆验证：真实两节点 Flow 及新状态目录的新会话继承项目事实（3 次主请求、3 次辅助请求，初版 `8fd4540`）；后续取消、预算及平台补丁分别回归。Windows/WSL 同工作区并行 12 条更新零丢失。最新代码 [CI 43174301650](https://github.com/vukencc/Channel-Agent/actions/runs/43174301650) 双端成功（Linux 2234 passed、47 skipped、5 deselected；Windows 702 passed、47 skipped），真实隔离探针通过。本机 Windows 原选择集 688 passed、60 skipped，原 20 秒退出断言不变；此前一次冷导入超时未复现，不追认为已修复。失败过程与验证边界见[正式记录](workspace-memory-validation-2026-11-12.md)。
+- 本轮 Windows 成品位于 `D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-073109\ChannelAgent.exe`，基于干净源码 `9c9cd39`，126 模块一致性及 15/15 离线自检通过，独立核对两个新模块、ZIP CRC 和 SHA256 通过。本轮未发布新标签；原有用户配置、项目、会话和知识库未修改。以下既有交付和测量保持历史事实。
 
 - 2026-11-12，Flow/Working 易用性修复经 [PR #47](https://github.com/vukencc/Channel-Agent/pull/47) 合并，合并提交 cba461e393755a6a0c7ffa845049eb49c9292e1e，最终 [CI 运行 43157549039](https://github.com/vukencc/Channel-Agent/actions/runs/43157549039) 的 Linux、Windows 任务成功。当前稳定版仍为 0.5.0，本任务未重新发布标签；合并时锁文件收纳 main 的五项依赖升级。合并后锁定依赖的 Linux 全量 2172 passed、39 skipped、5 deselected（202.81 秒）；真实 API 使用 OpenAI SDK 3.46.0 在 11.954 秒生成三个节点，未运行 Flow。先前客服反馈需求生成五节点、四连线用时 72.536 秒，亦未运行。Windows D 盘本地源码完整 CI 选择集 622 passed、57 skipped（283.92 秒），原 20 秒退出断言通过；本地修复版 exe 离线自检 15/15 通过，manifest 记录源码提交 cba461e393755a6a0c7ffa845049eb49c9292e1e、工作树未修改及 124 个已核验应用模块。此前 UNC 路径的导入超时保留，不能追认为关闭阶段修复；受控界面、早期失败及其他边界见[易用性修复记录](flow-ui-usability-validation-2026-11-12.md)。
 
