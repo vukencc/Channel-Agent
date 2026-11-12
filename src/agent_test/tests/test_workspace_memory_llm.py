@@ -11,6 +11,34 @@ from agent_core.core.model_settings import model_profile
 from agent_core.core.runtime_models import RuntimeModelSnapshot
 
 
+def test_workspace_summary_input_cannot_exceed_current_window(tmp_path, monkeypatch, sandbox_env):
+    import agent_core.core.workspace_memory_runtime as runtime
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+    store = SessionStore(tmp_path / 'state', workspace_root=sandbox_env)
+    manager = SessionManager(store)
+    calls = []
+    async def complete(*args, **kwargs):
+        calls.append(1)
+        return '{"project":[],"progress":"fixture","lessons":[]}'
+    monkeypatch.setattr(manager, '_complete', complete)
+    monkeypatch.setattr(runtime, 'limit', lambda name: 128)
+    async def run():
+        try:
+            session = manager.create(prompt='fixture')
+            session.record['last_run'] = {'input_index': 1}
+            session.record['messages'].extend([{'role':'user','content':'x'*300},
+                                               {'role':'assistant','content':'y'*300}])
+            delta, status = await manager.workspace_memory._delta(session, 'idle', None)
+            assert not calls
+            assert status == 'input_budget'
+            assert not delta.project and not delta.lessons
+        finally:
+            await manager.shutdown()
+            store.close()
+    asyncio.run(run())
+
+
 def _client(monkeypatch):
     sent, endpoints, closed = [], [], []
     async def create(**kwargs):

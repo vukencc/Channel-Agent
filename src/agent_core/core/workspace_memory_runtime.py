@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from agent_core import config
 from agent_core.core.budgets import budget_scope
+from agent_core.core.context import request_tokens
 from agent_core.core.instrumentation import observation_context
 from agent_core.core.model_settings import model_profile
 from agent_core.core.session_limits import limit, limits_scope
@@ -112,6 +113,9 @@ class WorkspaceMemoryRuntime:
             '数组最多各 8 项，每项最多 500 字符，progress 非空且最多 1200 字符。\n'
             + json.dumps(data, ensure_ascii=False)
         )
+        if (len(prompt) > limit('MODEL_INPUT_CHARS')
+                or request_tokens([{'role': 'user', 'content': prompt}], []) > limit('MODEL_INPUT_TOKENS')):
+            return WorkspaceMemoryDelta(progress='共享摘要输入超出本轮预算，未发送提炼请求；请核对项目产物。'), 'input_budget'
         try:
             # 选择会话连接，费用和请求数仍记在原预算所有者；不调用工具或自动重试。
             async with asyncio.timeout(config.AUX_TIMEOUT or config.ASSESS_TIMEOUT):
