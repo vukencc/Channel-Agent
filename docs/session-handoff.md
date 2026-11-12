@@ -2,12 +2,13 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-12，稳定版 0.5.0 已发布；本轮新增工作区共享记忆，未发布新标签。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。最新源码、PR、CI 与本地成品状态以以下记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
+截至 2026-11-12，稳定版 0.5.0 已发布；本轮修复设计助手连接与对话布局，未发布新标签。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。最新源码、PR、CI 与本地成品状态以以下记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
 
 - 2026-11-12，设计助手连接与布局修复对应 [PR #50](https://github.com/vukencc/Channel-Agent/pull/50)，Python 功能源码 `499421c`。用户持久 `ALL_PROXY` 指向拒绝连接的本地代理，新 adapter 显式选 `windows_system` 后同模型/`xhigh` 短请求 4.187 秒成功，原代理环境未改；旧配置默认不变。五节点四动态工具的 `xhigh`、独立 `medium` 设计均在原 90 秒内仅思考、未生成模板，不能算完整设计通过。消息与输入分区、底部模型、失败重试和仅重试缓存导入已完成；稳定导入 ID 与磁盘核验防止重复模板。取消/切换清缓存，隐藏保留。最后 Web 窄屏 CSS 把历史区从约 60px 提升到 235px。
-- 本轮验证：Linux 本机 2325 passed；[CI 43200240173](https://github.com/vukencc/Channel-Agent/actions/runs/43200240173) Linux 2321 passed、Windows 789 passed，真实隔离探针通过。Windows GBK 新增专项 92 passed；本机整组 1 failed、775 passed、60 skipped，唯一为此前已记录的原 20 秒导入超时，独立一次原两个退出用例均通过但不追认为修复。Native 成品正在构建，最终成品状态、完整失败与真实/受控边界见[本轮记录](designer-chat-validation-2026-11-12.md)。
+- 本轮验证：Linux 本机 2325 passed；最终源码 `f3f1912` 的 [CI 43202693425](https://github.com/vukencc/Channel-Agent/actions/runs/43202693425) Linux 2321 passed、Windows 789 passed，真实隔离探针通过。Windows GBK 新增专项 92 passed；本机整组 1 failed、775 passed、60 skipped，唯一为此前已记录的原 20 秒导入超时，独立一次原两个退出用例均通过但不追认为修复。完整失败与真实/受控边界见[本轮记录](designer-chat-validation-2026-11-12.md)。
+- 最新 Windows 成品为 `D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-105359\ChannelAgent.exe`，干净来源 `f3f1912`；127 应用模块与 11 静态文件源码一致、15/15 实际离线自检、ZIP CRC/SHA256 全通过。打开新构建后，在原模型连接高级参数显式选择 Windows 系统代理即可绕开失效环境代理，地址不改时空密钥保留原值；没有自动改用户模型或系统配置。
 
 - 2026-11-12，新增[工作区共享记忆](workspace-memory.md)，实现 `9c9cd39`、多轮刷新覆盖 `4fe8d46`，对应 [PR #49](https://github.com/vukencc/Channel-Agent/pull/49)。同一实际工作区通过 `.channelagent/memory.json` 共享有界项目说明、进度和经验；每个正常模型轮次读取，私有终态成功保存后更新，原始会话保持私有。只读不写入、不请求提炼；取消和发布不确定不会误称完成，Flow 下游等待前节点提交。
 - 工作区记忆验证：真实两节点 Flow 及新状态目录的新会话继承项目事实（3 次主请求、3 次辅助请求，初版 `8fd4540`）；后续取消、预算及平台补丁分别回归。Windows/WSL 同工作区并行 12 条更新零丢失。最新代码 [CI 43174301650](https://github.com/vukencc/Channel-Agent/actions/runs/43174301650) 双端成功（Linux 2234 passed、47 skipped、5 deselected；Windows 702 passed、47 skipped），真实隔离探针通过。本机 Windows 原选择集 688 passed、60 skipped，原 20 秒退出断言不变；此前一次冷导入超时未复现，不追认为已修复。失败过程与验证边界见[正式记录](workspace-memory-validation-2026-11-12.md)。

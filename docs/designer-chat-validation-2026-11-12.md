@@ -35,7 +35,7 @@
 
 Qt 截图使用应用实际主题与字体配置，但为离屏检查。Web 使用独立 `create_app` 的实际本机 HTTP 服务和受控设计回调，检查 1440px/416px、发送/停止/重试显隐、旧历史滚动位置、关闭重开保留草稿、失败重试及清空取消后的迟到结果不导入。未把受控回调称为真实模型业务运行。窄屏收口过程中复现控件重叠，补容器高度和几何回归；取消后立即再发可能在排空期间收到受控 409，排空后可重试。
 
-首组聚焦 **104 passed、1 skipped（13.61 秒）**；最后输入区与代理配置专项 **41 passed（2.59 秒）**。真实 Bubblewrap/prlimit 探针通过，未改任何原有 20 秒退出或 12 秒并发时限。后续全量、原生实际设计与成品验收结果将在完成后补充，未完成部分不计为通过。
+首组聚焦 **104 passed、1 skipped（13.61 秒）**；输入区与代理配置专项 **41 passed（2.59 秒）**，最终恢复与生命周期专项 **89 passed（9.84 秒）**。真实 Bubblewrap/prlimit 探针通过，未改任何原有 20 秒退出或 12 秒并发时限。全量、原生实际设计与成品验收见以下记录，未通过条件仍保留。
 
 UI 证据在本地 `.cache/reports/designer-ui-20261112/`，原始 `qt-before.png` 保留；最终输入区截图为 `qt-composer-wide.png`、`qt-composer-narrow.png`。生成目录、截图、缓存、凭据和会话均未提交。
 
@@ -59,4 +59,15 @@ Linux 首次全量未把 Linux/nvm Node 加入执行 PATH，38 项 Node 用例�
 
 最终 Web 表单通过真实本机 HTTP 创建/编辑验证代理来源由 `environment` 保存为 `windows_system`；重开后模式保留、密钥框为空、原密钥仍存在，服务地址未改。416px 下保存按钮可滚动到视口内，提示明确依据 Windows 服务端。长需求与受控错误同时显示时发现历史区只有约 60px；最后仅以 CSS 将窄屏助手调整为占满 Flow 工作区，历史增至约 **235px**，无页面横向溢出，关闭后恢复画布并实际添加节点。1440px 仍并列显示。当前 Chromium 已实测 `:has()` 选择器；未声明所有旧版浏览器具有相同布局。证据在本地 `.cache/reports/web-proxy-20261112-a3c9/` 与 `.cache/reports/designer-drawer-20261112-b730/`。
 
-Windows 新成品的 Python 功能源码为 `499421c`，最后窄屏补丁仅修改 Web CSS；构建完成时额外核对静态资源与实际源码逐文件一致。成品自检及校验结果完成后补充。本轮不发布新标签，稳定发布仍为 0.5.0。
+最终源码 `f3f1912` 的 [CI 43202693425](https://github.com/vukencc/Channel-Agent/actions/runs/43202693425) 双端成功：Linux **2321 passed、47 skipped、5 deselected（203.52 秒）**，Windows **789 passed、47 skipped（116.97 秒）**，真实隔离探针通过。
+
+## 本地 Windows 成品
+
+成品来源为干净提交 `f3f19125a25cde78d0680b32664d7c8c0eb2629f`。Python 功能与 `499421c` 一致，最终窄屏 CSS 在依赖分析后、文件汇总前同步；实际包的 **127 个应用模块**与源码一致，额外逐文件核对 **11 个 Web/Debug 静态文件**全部相同，避免混入旧布局。实际 exe 使用独立临时数据、移除开发工具 PATH，离线自检 **15/15 通过**，未请求模型或下载权重；独立 ZIP CRC 及 SHA256 均通过。
+
+- exe：`D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-105359\ChannelAgent.exe`，须保留同目录 `_internal`。
+- ZIP：同级 `ChannelAgent-0.5.0-windows-x64-20261112-105359.zip`，333,529,181 字节。
+- SHA256：`8e4fdff8cfc01936b920a17a5020bf81311dbfdf5b73ac613634d11fd264d06e`。
+- 本机独立核验记录：`D:\AI\AgentSrcCode\ChannelAgent\.cache\reports\designer-validation-dinkloh9\package-validation.json`，不随 Git 分发。
+
+在新构建中使用已启用的固定系统代理：模型管理 → 编辑原连接 → 高级参数 → 代理来源 → Windows 系统代理 → 保存。服务地址不改时密钥留空会保留原值；这是用户明确选择的应用连接设置，不需要改系统环境。原用户数据、凭据、项目和知识库未迁移或自动改写。本轮不发布新标签，稳定发布仍为 0.5.0。
