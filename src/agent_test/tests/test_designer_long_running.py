@@ -36,13 +36,23 @@ class ControlledSSE(httpx.AsyncByteStream):
         self.first_delay = first_delay
         self.closed = False
         self.started = asyncio.Event()
+        self.reasoning_elapsed_s = None
+
+    @staticmethod
+    async def _wait_delay(delay):
+        # 某些 Windows 事件循环会提前唤醒短 sleep；单调时钟保证夹具实际等待时长。
+        deadline = time.monotonic() + delay
+        while (remaining := deadline - time.monotonic()) > 0:
+            await asyncio.sleep(remaining)
 
     async def __aiter__(self):
         self.started.set()
-        await asyncio.sleep(self.first_delay)
+        await self._wait_delay(self.first_delay)
+        reasoning_started = time.monotonic()
         for _ in range(self.frames):
-            await asyncio.sleep(self.delay)
+            await self._wait_delay(self.delay)
             yield self._frame({'reasoning_content': '继续完整设计'})
+        self.reasoning_elapsed_s = time.monotonic() - reasoning_started
         if self.failure:
             raise self.failure
         content = json.dumps({'reply': '设计完成', 'template': _template()}, ensure_ascii=False)
@@ -186,6 +196,9 @@ def test_classic_live_sse_still_times_out_concurrently_and_after_design(controll
         assert entry['metrics'][0]['outcome'] == ('timeout' if ordinary else 'ok')
     # 经典总时限也包含客户端初始化及请求准备；超时可以合法发生在 HTTP/SSE 前。
     assert 1 <= len(requests) == len(streams) <= len(clients) <= len(calls)
+    completed_streams = [stream for stream in streams if stream.reasoning_elapsed_s is not None]
+    assert len(completed_streams) == 1
+    assert completed_streams[0].reasoning_elapsed_s >= 120 * .015
     assert all(stream.closed for stream in streams)
     assert all(client.is_closed() for client in clients)
     assert config.MODEL_CALL_TIMEOUT == .5
