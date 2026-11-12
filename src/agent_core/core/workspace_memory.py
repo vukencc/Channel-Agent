@@ -132,7 +132,7 @@ class WorkspaceMemoryStore:
 
     def read(self) -> Snapshot | None:
         try:
-            with opened_path(self.root, self.path, expected_identity=self.expected_identity) as fd:
+            with opened_path(self.root, self.path, expected_identity=self.expected_identity, allow_replace=True) as fd:
                 if os.fstat(fd).st_size > MAX_BYTES:
                     raise ValueError("记忆快照超过大小限制")
                 data = b""

@@ -62,6 +62,39 @@ async def answer(history, **kwargs):
     return {'role': 'assistant', 'content': '本轮可见回复', 'reasoning_content': '内部思考不得共享'}
 
 
+def test_irrelevant_conversation_does_not_create_shared_record(tmp_path, monkeypatch):
+    async def summarize(*args, **kwargs):
+        return 'null'
+    async def run():
+        project = tmp_path / 'project'
+        project.mkdir()
+        async with runtime(tmp_path, answer, monkeypatch, summary=summarize) as (manager, prompts):
+            session = manager.create(workspace_path=str(project))
+            await submit(manager, session, '这是与项目无关的私人闲聊')
+            assert session.record['status'] == 'idle'
+            assert session.record['last_run']['workspace_memory']['status'] == 'skipped_irrelevant'
+            assert len(prompts) == 1
+            assert not list(project.iterdir())
+    asyncio.run(run())
+
+
+def test_generated_summary_cannot_persist_known_config_secret(tmp_path, monkeypatch):
+    secret = 'fixture-output-secret-8946'
+    monkeypatch.setattr(config, 'API_KEY', secret)
+    async def summarize(*args, **kwargs):
+        return json.dumps({'project': [secret], 'progress': '任务已结束', 'lessons': [secret]})
+    async def run():
+        project = tmp_path / 'project'
+        project.mkdir()
+        async with runtime(tmp_path, answer, monkeypatch, summary=summarize) as (manager, prompts):
+            session = manager.create(workspace_path=str(project))
+            await submit(manager, session)
+            text = memory_path(project).read_text(encoding='utf-8')
+            assert secret not in text
+            assert '已隐藏配置密钥' in text
+    asyncio.run(run())
+
+
 def test_summary_retains_selected_endpoint_and_budget_scope(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'SESSION_COST_LIMIT', 10)
     async def run():
@@ -107,7 +140,7 @@ def test_hanging_auxiliary_is_bounded_and_falls_back(tmp_path, monkeypatch):
             await asyncio.wait_for(asyncio.shield(session.task), 1)
             assert started.is_set() and cancelled.is_set()
             assert session.record['status'] == 'idle'
-            data = json.loads(memory_path(project).read_text())
+            data = json.loads(memory_path(project).read_text(encoding='utf-8'))
             assert not data['lessons'] and not data['project']
             assert '失败' in data['progress'][0]['summary']
     asyncio.run(run())
@@ -193,7 +226,7 @@ def test_cancel_during_metadata_phase_or_after_completed_turn(tmp_path, monkeypa
             assert session.record['status'] == 'cancelled'
             assert session.record['last_run']['status'] == 'cancelled'
             assert session.confirmation is None and session.decision is None
-            persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text())
+            persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text(encoding='utf-8'))
             assert persisted['status'] == 'cancelled'
             assert not list(project.iterdir())
             assert any(m.get('content') == '本轮可见回复' for m in session.record['messages'])
@@ -217,7 +250,7 @@ def test_new_session_and_independent_state_inherit_actual_workspace(tmp_path, mo
         async with runtime(tmp_path / 'one', model, monkeypatch) as (manager, prompts):
             first = manager.create(workspace_path=str(project))
             await submit(manager, first)
-            payload = json.loads(memory_path(project).read_text())
+            payload = json.loads(memory_path(project).read_text(encoding='utf-8'))
             assert payload['version'] == payload['revision'] == 1
             assert FACT in payload['project']
             assert first.record['last_run']['workspace_memory']['status'] == 'saved'
@@ -275,7 +308,7 @@ def test_non_success_records_status_without_inventing_summary(tmp_path, monkeypa
             await submit(manager, session)
             assert session.record['status'] == failure
             assert not prompts
-            data = json.loads(memory_path(project).read_text())
+            data = json.loads(memory_path(project).read_text(encoding='utf-8'))
             assert not data['project'] and not data['lessons']
             assert data['progress'][0]['outcome'] == failure
     asyncio.run(run())
@@ -334,7 +367,7 @@ def test_summary_input_excludes_private_history_reasoning_and_config_secret(tmp_
             for value in (secret, '私有记忆不得共享', '旧用户历史不得共享',
                           '旧助手历史不得共享', '内部思考不得共享'):
                 assert value not in prompt
-                assert value not in memory_path(project).read_text()
+                assert value not in memory_path(project).read_text(encoding='utf-8')
             assert not list(project.rglob('messages.jsonl'))
             assert not list(project.rglob('memory.md'))
             assert not list(project.rglob('inbox*'))
@@ -378,10 +411,10 @@ def test_invalid_memory_blocks_model_without_overwriting(tmp_path, monkeypatch, 
         target = memory_path(project)
         target.parent.mkdir()
         if unsafe == 'corrupt':
-            target.write_text('{broken')
+            target.write_text('{broken', encoding='utf-8')
         else:
             external = tmp_path / 'outside'
-            external.write_text('external-preserved')
+            external.write_text('external-preserved', encoding='utf-8')
             target.symlink_to(external)
         original = target.read_bytes()
         calls = []
@@ -409,7 +442,7 @@ def test_summary_failure_records_only_explicit_fallback_progress(tmp_path, monke
         async with runtime(tmp_path, answer, monkeypatch, summary=summarize) as (manager, prompts):
             session = manager.create(workspace_path=str(project))
             await submit(manager, session)
-            data = json.loads(memory_path(project).read_text())
+            data = json.loads(memory_path(project).read_text(encoding='utf-8'))
             assert not data['project'] and not data['lessons']
             assert len(data['progress']) == 1
             assert '摘要' in data['progress'][0]['summary']
@@ -467,7 +500,7 @@ def test_cancel_during_first_terminal_save_never_publishes_memory(tmp_path, monk
                 await asyncio.wait_for(asyncio.shield(session.task), 5)
                 assert session.record['status'] == 'cancelled'
                 assert session.record['last_run']['status'] == 'cancelled'
-                persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text())
+                persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text(encoding='utf-8'))
                 assert persisted['status'] == 'cancelled'
                 assert not prompts
                 assert not list(project.iterdir())
@@ -508,7 +541,7 @@ def test_cancel_during_second_terminal_save_retains_committed_memory_without_rep
                 await asyncio.wait_for(asyncio.shield(session.task), 5)
                 assert session.record['status'] == 'cancelled'
                 assert session.record['last_run']['status'] == 'cancelled'
-                persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text())
+                persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text(encoding='utf-8'))
                 assert persisted['status'] == 'cancelled'
                 assert persisted['last_run']['status'] == 'cancelled'
                 assert memory_path(project).read_bytes() == committed
@@ -552,7 +585,7 @@ def test_cancel_during_error_save_retry_preserves_persistence_failure(tmp_path, 
                 assert session.record['status'] == 'error'
                 assert session.record['last_run']['status'] == 'error'
                 assert session.record['last_run']['stop_reason'] == 'persistence_failed'
-                persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text())
+                persisted = json.loads((manager.store.directory(session.id) / 'session.json').read_text(encoding='utf-8'))
                 assert persisted['status'] == 'error'
                 assert persisted['last_run']['status'] == 'error'
                 assert persisted['last_run']['stop_reason'] == 'persistence_failed'
@@ -616,7 +649,7 @@ def test_flow_downstream_waits_for_memory_commit_and_stops_on_failure(tmp_path, 
                     assert result['status'] == 'completed'
                     assert len(calls) == 2
                     assert FACT in calls[1]
-                    assert json.loads(memory_path(project).read_text())['revision'] == 2
+                    assert json.loads(memory_path(project).read_text(encoding='utf-8'))['revision'] == 2
             finally:
                 release_summary.set()
                 await service.shutdown()

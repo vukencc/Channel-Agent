@@ -56,10 +56,14 @@ def _validate(path: Path) -> None:
             raise PermissionError('路径分量无效')
 
 
-def _open(path: Path, *, directory: bool, writable: bool = False) -> tuple[int, tuple[int, int]]:
-    # 不允许删除共享，防止已验证的路径分量被替换。
+def _open(path: Path, *, directory: bool, writable: bool = False,
+          allow_replace: bool = False) -> tuple[int, tuple[int, int]]:
+    if allow_replace and (directory or writable):
+        raise ValueError('原子快照替换只适用于只读普通文件')
+    # 祖先和普通工具句柄禁止删除共享；仅原子快照可替换最终只读文件。
     access = 0x80000000 | (0x40000000 if writable else 0)
-    handle = _create(str(path), access, 0x1 | 0x2, None, 3,
+    share = 0x1 | 0x2 | (0x4 if allow_replace else 0)
+    handle = _create(str(path), access, share, None, 3,
                      0x00200000 | 0x02000000, None)
     if handle == _INVALID:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -82,7 +86,10 @@ def _open(path: Path, *, directory: bool, writable: bool = False) -> tuple[int, 
 
 
 @contextmanager
-def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None, writable: bool = False):
+def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None,
+                writable: bool = False, allow_replace: bool = False):
+    if allow_replace and (directory or writable):
+        raise ValueError('原子快照替换只适用于只读普通文件')
     root, target = Path(root), Path(target)
     _validate(root)
     _validate(target)
@@ -105,7 +112,8 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
         for index, part in enumerate(parts):
             current /= part
             is_directory = directory or index < len(parts) - 1
-            handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory)
+            options = {'allow_replace': True} if allow_replace and not is_directory else {}
+            handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory, **options)
             handles.append(handle)
         if not parts and not directory:
             raise ValueError('只支持普通文本文件或目录预览')

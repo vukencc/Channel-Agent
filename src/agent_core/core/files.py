@@ -7,11 +7,15 @@ import stat
 
 
 @contextmanager
-def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None, writable: bool = False):
+def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None,
+                writable: bool = False, allow_replace: bool = False):
+    if allow_replace and (directory or writable):
+        raise ValueError('原子快照替换只适用于只读普通文件')
     if os.name == 'nt':
         from .windows_files import opened_path as windows_opened_path
+        options = {'allow_replace': True} if allow_replace else {}
         with windows_opened_path(root, target, directory=directory, expected_identity=expected_identity,
-                                 writable=writable) as descriptor:
+                                 writable=writable, **options) as descriptor:
             yield descriptor
         return
     if os.open not in os.supports_dir_fd or not hasattr(os, 'O_NOFOLLOW'):

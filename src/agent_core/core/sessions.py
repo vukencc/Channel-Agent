@@ -461,8 +461,10 @@ class SessionManager:
         if session.summary_task and not session.summary_task.done():
             session.summary_task.cancel()
         status = session.record['status']
-        if session.task is not None and not session.task.done() and status in {
-                'queued', 'running', 'confirming', 'idle', 'checkpoint', 'error'}:
+        cancellable = {'queued', 'running', 'confirming'}
+        if config.WORKSPACE_MEMORY_ENABLED:
+            cancellable.update({'idle', 'checkpoint', 'error'})
+        if session.task is not None and not session.task.done() and status in cancellable:
             session.cancelled.set()
             self.decide(session, False)
             if status in {'idle', 'checkpoint', 'error'}:
@@ -1499,7 +1501,7 @@ class SessionManager:
         record.setdefault('run_history', []).append(history_entry)
         record['run_history'] = record['run_history'][-config.RUN_HISTORY_LIMIT:]
         persisted = await self._save_terminal_state(session, run, history_entry)
-        if persisted and ((workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED) or session.cancelled.is_set()):
+        if persisted and workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED:
             if session.cancelled.is_set():
                 record['status'] = 'cancelled'
             if workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED:
