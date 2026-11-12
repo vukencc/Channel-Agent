@@ -6,6 +6,8 @@
 
 用户要求取消设计助手固定 90 秒总时限，保留停止和取消；使用原五节点、四动态工具客服用例与 `xhigh` 验证完整生成及导入，不降推理强度或简化任务。
 
+本记录按阶段保留取消时限、旧输出预算阻断、明确授权新增预算后的真实成功，以及最终成品验收。现行规则以 [Flow 指南](agent-flow.md)和[配置说明](configuration.md)为准。
+
 原实现有三处总时限：设计入口、模型调用整体、连接阶段按端点分摊。现在通过请求局部 `ContextVar` 明确将设计请求总时限设为 `None`，同时解除这三处限制。退出后恢复原作用域，并发普通 Agent 仍受原 `MODEL_CALL_TIMEOUT` 限制。没有修改全局默认值、模型采样参数、用户代理或模型配置。
 
 `SESSION_TIMEOUT` 仍约束 SDK 网络连接及读取空闲，首帧前仍按原 `MAX_RETRIES` 重试，首帧后不重放。停止、清空、预算、字符上限、流完整结束校验和原子导入保持。设计过程及导入不执行生成代码，不绑定项目或工作区。此前 90 秒失败仍作为历史证据保留。
@@ -30,7 +32,7 @@
 
 UI 证据在本地 `.cache/reports/designer-deadline-20261112-f149/`；真实请求、固定输入及导入证据在 Native 独立目录 `.cache/reports/designer-original-xhigh-27d85ae20d8a/`，不提交原始响应、推理、凭据、会话或生成缓存。
 
-## 真实请求与最终结果
+## 独立预算授权前的真实请求结果
 
 干净源码 `cd581879538652eac3724a3d3b77a8989d072479` 的 Native 首轮实际请求在 **164.497 秒**结束；Core 指标为 164.453 秒，首帧 5.344 秒、1 次请求，持续收到 **48,001 推理字符、0 正文、0 工具参数**，因原 `MODEL_OUTPUT_CHARS=48000` 合计上限抛出 `ModelResponseError`。没有再遇到 90 秒截断，但没有生成模板，导入及往返尚未通过，未盲目重试。输入/输出 token 为框架估计（3655/14276），不作为供应商账单用量或吞吐提升依据。
 
@@ -57,7 +59,7 @@ Windows 新并发隔离用例最初假定两个普通请求均在 50ms 内进入
 - 原 xhigh 设计在 48,000 合计字符预算下未完成。用户随后明确批准独立 192,000 合计生成预算、正文仍 48,000；后续重跑见下一节，不得降低强度、简化原任务或跳过模板验收。
 - **P2：共享记忆读取与合法原子替换竞态。** 后续先增加确定性回归，再评估只对 `allow_replace=True` 且旧 FD 已无链接的快照有界重开；每次保留根身份、路径、符号链接及多硬链接校验，不全局放宽安全检查。本轮只记录，不修改该独立模块。
 
-本轮未发布新标签，尚未重建 Windows exe；上一轮成品不包含本项总时限修复。
+在独立预算授权前，尚未重建 Windows exe，上一轮成品不包含本项总时限修复。本轮不发布新标签，后续成品见文末。
 
 独立预算若获确认，应同时保留总生成量的有限上限、正文上限和保守费用预留，继续按实际 provider usage 结算，缺少 usage 时保留预留而非记零。只丢弃推理存储不能代替生成量边界。
 
@@ -91,4 +93,33 @@ Linux 本机非集成全量 **2388 passed、42 skipped、5 deselected（215.24 �
 
 成功证据位于 Native 独立目录 `.cache/reports/designer-original-xhigh-budget-f401ff67cb2b/attempt-20261112T131148-d3f1de/`：`report.json`、可导入 `template.json`、`semantic-review.md`、`comparison.md`。旧失败目录保持不变，未提交原始响应、推理、凭据或用户会话。
 
-本地 Windows 新成品正在以干净 `4b497e3` 源码构建，完成后补充实际 exe 自检及包摘要。下面后续记录作为最终交付依据。
+本地 Windows 新成品以干净 `4b497e3` 源码构建，最终自检及包摘要见文末。后续文档提交没有改变应用源码。
+
+### 真实模板的桌面及 Web 往返
+
+使用上述真实生成的 `template.json`，在独立 WSL 状态及完整 `create_app` 中，通过 Chromium 实际文件选择导入。1440px 和 416px 下逐一右键四个工具节点并展开工具设置，4/4 定义可见且被选中；实际下载导出 JSON，再于窄屏重新导入，两份均为五节点四边、四工具定义和选择一致，未绑定项目或工作区，页面无横向溢出。
+
+桌面为 Qt 离屏，使用实际 `MainWindow`、`RuntimeBridge` 和 QTest 点击，通过受控文件对话框路径导入同一 JSON、查看四个工具节点、导出和重导入。两端工具定义相互一致，工具均显示并选中，五节点四边及未绑定状态保持。此次没有调用模型、运行节点或执行工具；它是对真实生成结果的实际界面操作验证，不是新的真实模型业务执行。没有因此修改 UI 源码。
+
+截图、导出 JSON、脚本及隔离状态在本地 `.cache/reports/designer-template-ui-20261112-c24f/`，验证服务已停止。
+
+功能及44项新测试提交 `4b497e3` 的 [CI 43225207933](https://github.com/vukencc/Channel-Agent/actions/runs/43225207933) 双端通过：Linux **2382 passed、47 skipped、5 deselected（216.33 秒）**，Windows **850 passed、47 skipped（135.55 秒）**，真实隔离探针通过。
+
+### Windows 成品构建过程
+
+首次冻结完成、应用模块源码核验通过后，实际 exe 离线自检 **14/15 通过**，`documents_vision` 报 `ModuleNotFoundError`，构建按原断言非零退出，未生成合格 ZIP。原因是本轮同步 Native 构建依赖时漏掉文档可选 extra；现行 [Windows 构建指南](windows.md) 已明确要求 `documents` 和 `vision`，这是执行准备遗漏，没有改动应用预算逻辑或削弱自检。
+
+随后按既有命令执行 `uv sync --locked --group packaging --extra desktop --extra web --extra documents --extra vision`，补回锁定的 `lxml`、`pypdf`、`python-docx`，真实导入预检通过，再从同一干净源码重建。所有 15 项验收继续保留，不增加跳过项或修改期限。首次失败证据在 Native `.cache/reports/windows-package-5oysy5rg/self-check.json` 和 `.cache/reports/designer-budget-package-397cd6212cf34223b7711846b4cb0b94/`；重建日志在 `.cache/reports/designer-budget-package-complete-3e07d49350234d9584664fe2a8478ca2/`。最终成品结果将在下方记录，首次失败不追认为通过。
+
+### 最终 Windows 成品
+
+完整依赖重建成功，实际 exe 离线自检 **15/15 通过**；独立脚本再次启动 exe，在隔离状态、移除开发 PATH、禁止模型下载和供应商请求的条件下，同样 **15/15 通过**。原 600 秒自检 guard 保持。`documents_vision` 实际完成 DOCX、PDF 和图片往返；本轮未修改其断言。
+
+- exe：`D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-135746\ChannelAgent.exe`，保留同目录 `_internal`。
+- ZIP：同级 `ChannelAgent-0.5.0-windows-x64-20261112-135746.zip`，**333,532,190 字节**。
+- SHA256：`75ac1a2e6e060ac880041d364bffb42388b4dbf8e9895957360d408b1a1a1cd2`；独立 Python 验收及父级 .NET 文件哈希均与 sidecar 一致。
+- 来源：干净 `4b497e3eba421f8079cfbc9f38440890e6f06277`，Python 3.12.9、PyInstaller 6.22.3；后续应用目录 Git diff 为空。
+
+独立验收确认 **127 个应用模块（含启动器）**与源码字节码一致，**11 个 Web/Debug 静态资源**逐字一致，**91 份 WSL Core 纯源码**一致，新 192,000 默认值及作用域/费用 helper 均进入包内。manifest 的 **6620 个文件**哈希全通过；ZIP 的 **6621 个文件**与分发目录逐文件一致、CRC 和整体 SHA256 通过。
+
+独立证据位于 Native `.cache/reports/designer-budget-verifier-fbc08402b50e407785151b4680130c01/run-hg49s30s/package-validation.json`，构建报告为 `.cache/reports/windows-package-kxauglh6/`。现有用户项目、会话、知识库、模型连接及代理环境未迁移或改写。打开新成品前关闭旧版，用户数据继续保留在原独立目录。本轮不发布新版本标签，PR 检查与合并状态见 [PR #51](https://github.com/vukencc/Channel-Agent/pull/51)。
