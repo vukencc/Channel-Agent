@@ -16,7 +16,8 @@ from agent_core.core.budgets import active_budget
 from agent_core.core.runtime_models import RuntimeModelSnapshot
 from agent_core.core.sessions import SessionManager
 from agent_core.core.storage import SessionStore
-from agent_core.core.workspace_memory import WorkspaceMemoryCommitUncertain, WorkspaceMemoryStore
+from agent_core.core.workspace_memory import WorkspaceMemoryCommitUncertain, WorkspaceMemoryDelta, WorkspaceMemoryStore
+from agent_core.tools.base import TOOL_REGISTRY
 
 
 FACT = '项目使用橙色工单编号'
@@ -60,6 +61,68 @@ async def submit(manager, session, text='当前工作请求'):
 
 async def answer(history, **kwargs):
     return {'role': 'assistant', 'content': '本轮可见回复', 'reasoning_content': '内部思考不得共享'}
+
+
+def test_next_tool_round_reads_snapshot_committed_by_independent_writer(tmp_path, monkeypatch):
+    async def run():
+        project = tmp_path / 'project'
+        project.mkdir()
+        (project / 'input.txt').write_text('工具实际读取的项目文件', encoding='utf-8')
+        metadata = project.stat()
+        writer = WorkspaceMemoryStore(project, (metadata.st_dev, metadata.st_ino))
+        writer_cancelled = threading.Event()
+        audits = []
+        def commit(delta, update_id):
+            return writer.append(delta, update_id=update_id, outcome='idle',
+                cancelled=writer_cancelled, authorize=lambda: True,
+                audit=lambda event, **values: audits.append(event))
+        seed = commit(WorkspaceMemoryDelta(project=['项目初始事实'], progress='初始化项目摘要'), 'seed')
+        assert seed.revision == 1
+        entered, release = threading.Event(), threading.Event()
+        original_read = TOOL_REGISTRY['read_file'].fn
+        def pause_then_read(**arguments):
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError('测试读取工具屏障未释放')
+            return original_read(**arguments)
+        monkeypatch.setattr(TOOL_REGISTRY['read_file'], 'fn', pause_then_read)
+        seen = []
+        new_fact = '外部写入者确认项目采用紫色批次号'
+        async def model(history, *, session_id, emit):
+            seen.append((json.dumps(history, ensure_ascii=False),
+                         manager.sessions[session_id].record['last_run']['workspace_memory'].copy()))
+            if len(seen) == 1:
+                return {'role': 'assistant', 'content': '', 'tool_calls': [{
+                    'id': 'read-project', 'function': {'name': 'read_file',
+                    'arguments': json.dumps({'path': 'input.txt'})}}]}
+            assert history[-1]['role'] == 'tool'
+            assert history[-1]['tool_call_id'] == 'read-project'
+            assert '工具实际读取的项目文件' in history[-1]['content']
+            return await answer(history)
+        async with runtime(tmp_path, model, monkeypatch) as (manager, prompts):
+            session = manager.create(workspace_path=str(project))
+            try:
+                manager.submit(session, '读取项目文件后结合最新共享事实回复')
+                assert await asyncio.to_thread(entered.wait, 2)
+                assert len(seen) == 1 and not prompts
+                # 独立 store 在真实工具轮次暂停期间原子发布，未修改 reader 的历史或上下文。
+                updated = await asyncio.to_thread(commit,
+                    WorkspaceMemoryDelta(project=[new_fact], progress='外部更新已提交'), 'external-update')
+                assert updated.revision == 2
+                release.set()
+                await asyncio.wait_for(asyncio.shield(session.task), 5)
+                assert session.record['status'] == 'idle', session.record.get('error')
+                assert len(seen) == 2
+                assert '项目初始事实' in seen[0][0] and new_fact not in seen[0][0]
+                assert seen[0][1]['revision'] == 1
+                assert new_fact in seen[1][0]
+                assert seen[1][1]['revision'] == 2
+                assert len(prompts) == 1
+                assert writer.read().revision == 3
+                assert audits.count('workspace_memory_updated') == 2
+            finally:
+                release.set()
+    asyncio.run(run())
 
 
 def test_irrelevant_conversation_does_not_create_shared_record(tmp_path, monkeypatch):
