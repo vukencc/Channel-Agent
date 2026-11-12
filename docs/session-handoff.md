@@ -2,13 +2,11 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-07，`0.3.0` 已发布，代码通过两端 CI 并经 PR #37 合并：统一桌面、Web 和 Debug 视觉，并提供 Windows 与 Linux 成品及发布流水线。原生开发副本为 `D:\AI\AgentSrcCode\ChannelAgent`，分支 `codex/windows-support`；源码同步至原 WSL 仓库。发布与 CI 状态以以下最新记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
+截至 2026-11-12，稳定版 0.5.0 已发布；Flow 易用性修复已经 [PR #47](https://github.com/vukencc/Channel-Agent/pull/47) 合入 main，本地修复版 exe 离线自检已通过，尚未发布新标签。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。发布与 CI 状态以以下最新记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
 
-- 2026-11-12，Flow/Working 可关闭的单一上下文面板、右键详情/悬停概要、设计历史清空和重复顶栏精简已实现。修复设计助手错误地使用未配置环境默认模型而忽略已保存连接，以及仅返回 error=true 隐藏失败原因的问题；同一真实连接+xhigh生成3节点11.674秒，客服反馈原需求5节点72.536秒，均仅设计未运行。Linux 全量2172 passed/39 skipped/5 deselected；桌面组143、Web39、后端35通过。首两轮全量项目入口/宽度失败及 Windows UNC 导入超时保留，最终本地盘 Windows 与 exe 待核验。详见 [易用性修复记录](flow-ui-usability-validation-2026-11-12.md)。
-
-- 2026-11-12，Flow 设计助手、右侧详情、节点交互与工具栏完成易用性修订；真实模型生成与受控界面验证分开记录，Windows 原生、成品及全量验证状态见[本轮记录](flow-ui-usability-validation-2026-11-12.md)。本轮仍在现有工作树，保留未提交改动。
+- 2026-11-12，Flow/Working 易用性修复经 [PR #47](https://github.com/vukencc/Channel-Agent/pull/47) 合并，合并提交 cba461e393755a6a0c7ffa845049eb49c9292e1e，最终 [CI 运行 43157549039](https://github.com/vukencc/Channel-Agent/actions/runs/43157549039) 的 Linux、Windows 任务成功。当前稳定版仍为 0.5.0，本任务未重新发布标签；合并时锁文件收纳 main 的五项依赖升级。合并后锁定依赖的 Linux 全量 2172 passed、39 skipped、5 deselected（202.81 秒）；真实 API 使用 OpenAI SDK 3.46.0 在 11.954 秒生成三个节点，未运行 Flow。先前客服反馈需求生成五节点、四连线用时 72.536 秒，亦未运行。Windows D 盘本地源码完整 CI 选择集 622 passed、57 skipped（283.92 秒），原 20 秒退出断言通过；本地修复版 exe 离线自检 15/15 通过，manifest 记录源码提交 cba461e393755a6a0c7ffa845049eb49c9292e1e、工作树未修改及 124 个已核验应用模块。此前 UNC 路径的导入超时保留，不能追认为关闭阶段修复；受控界面、早期失败及其他边界见[易用性修复记录](flow-ui-usability-validation-2026-11-12.md)。
 
 - 2026-11-11，0.5.0 交付基线：动态工具审查修复入口覆盖、审计失败仍执行、排队/确认期间执行已撤销旧工具，以及 WSL 完成故障误称拦截。[PR #46](https://github.com/vukencc/Channel-Agent/pull/46) 的双平台 CI 已通过：Linux 2119 passed、42 skipped、5 deselected；Windows 583 passed、46 skipped。最终安全专项 107 passed；本机原生 572 passed/56 skipped，真实 Windows→WSL 8 passed。实际 Windows exe 离线 15/15、自检含 WSL 16/16 通过。正式双平台包由标签工作流重建，最终状态见 [0.5.0 发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.5.0)。实现与边界见 [动态工具](dynamic-tools.md) 和 [安全验证报告](dynamic-tools-security-validation-2026-11-11.md)，保留此前两轮 Ubuntu DNS 安装失败记录。
 
