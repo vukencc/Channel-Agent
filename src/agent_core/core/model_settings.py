@@ -35,6 +35,19 @@ active_endpoint = ContextVar('active_model_endpoint', default=None)
 active_reasoning_effort = ContextVar('active_reasoning_effort', default=None)
 active_thinking_mode = ContextVar('active_thinking_mode', default=None)
 
+# 默认继承配置；None 表示当前请求不设置整体时限。
+DEFAULT_MODEL_DEADLINE = object()
+active_model_deadline = ContextVar('active_model_deadline', default=DEFAULT_MODEL_DEADLINE)
+
+
+@contextmanager
+def model_deadline(timeout: float | None):
+    token = active_model_deadline.set(timeout)
+    try:
+        yield
+    finally:
+        active_model_deadline.reset(token)
+
 
 @contextmanager
 def model_thinking(reasoning_effort=None, thinking_mode=None):
