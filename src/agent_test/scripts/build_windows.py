@@ -274,6 +274,10 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
     version = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    standalone = output_dir / f'ChannelAgent-{version}-windows-x64.exe'
+    standalone_hash = standalone.with_suffix('.exe.sha256')
+    if bundle.is_file() and smoke and (standalone.exists() or standalone_hash.exists()):
+        raise FileExistsError('独立 exe 或校验文件已存在，请选择其他输出目录。')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
     name = f'ChannelAgent-{version}-windows-x64-{stamp}'
     destination = output_dir / name
@@ -306,10 +310,10 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
             portable_probe.mkdir()
             check_executable = portable_probe / 'ChannelAgent.exe'
             shutil.copyfile(executable, check_executable)
-            for name in ('AI_AGENT_PROJECT_ROOT', 'AI_AGENT_PORTABLE', 'AGENT_STATE_DIR',
+            for variable in ('AI_AGENT_PROJECT_ROOT', 'AI_AGENT_PORTABLE', 'AGENT_STATE_DIR',
                          'SANDBOX_DIR', 'RAG_CACHE_DIR', 'RUNTIME_MODEL_DIR', 'DOC_DIR',
                          'AUDIT_LOG', 'CONTEXT_SUPERVISOR_ENV_FILE'):
-                smoke_environment.pop(name, None)
+                smoke_environment.pop(variable, None)
         # 从任意目录启动，并移除开发 Python/工具 PATH，检查是否有源码或宿主依赖。
         smoke_environment.pop('PYTHONPATH', None)
         smoke_environment.pop('PYTHONHOME', None)
@@ -348,6 +352,20 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
     with archive.open('rb') as stream:
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     archive.with_suffix('.zip.sha256').write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+    if bundle.is_file() and smoke:
+        # 仅发布已完成代码、资源及真实启动检查的单文件；独占创建避免覆盖已有资产。
+        target = standalone.open('xb')
+        try:
+            with target, executable.open('rb') as source:
+                shutil.copyfileobj(source, target)
+            with standalone.open('rb') as source:
+                if hashlib.file_digest(source, 'sha256').hexdigest() != exe_digest:
+                    raise RuntimeError('独立 exe 复制后的校验值不匹配。')
+            with standalone_hash.open('x', encoding='utf-8') as target:
+                target.write(f'{exe_digest}  {standalone.name}\n')
+        except Exception:
+            standalone.unlink()
+            raise
     print(f'成品目录：{destination}\n分发压缩包：{archive}\n构建报告：{work}')
     return destination
 

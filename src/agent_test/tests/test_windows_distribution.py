@@ -107,3 +107,56 @@ def test_preflight_reports_missing_packaging_extras(monkeypatch):
     monkeypatch.setattr(build_windows.importlib.util, "find_spec", lambda name: None if name == "docx" else object())
     with pytest.raises(SystemExit, match="documents.*vision"):
         build_windows.check_build_dependencies()
+
+
+def test_single_exe_smoke_keeps_distribution_archive_name(tmp_path, monkeypatch):
+    """受控子进程替身仅验证组装命名，不作为真实 exe 自检证据。"""
+    from types import SimpleNamespace
+    bundle = tmp_path / 'ChannelAgent.exe'
+    bundle.write_bytes(b'controlled-package-input')
+    resources = tmp_path / 'resources'
+    resources.mkdir()
+    (resources / 'LICENSE.txt').write_text('controlled public resource', encoding='utf-8')
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.setattr(build_windows, 'verify_application_code', lambda path: 1)
+    monkeypatch.setattr(build_windows, 'verify_onefile_resources', lambda *args: 1)
+    monkeypatch.setattr(build_windows.importlib.metadata, 'version', lambda name: 'controlled-metadata')
+    monkeypatch.setattr(build_windows.subprocess, 'check_output',
+                        lambda arguments, **kwargs: '0' * 40 if arguments[1] == 'rev-parse' else '')
+
+    def controlled_smoke(arguments, **kwargs):
+        executable = Path(arguments[0])
+        assert [path.name for path in executable.parent.iterdir()] == ['ChannelAgent.exe']
+        assert kwargs['timeout'] == 600
+        assert 'AI_AGENT_PROJECT_ROOT' not in kwargs['env']
+        assert 'CONTEXT_SUPERVISOR_ENV_FILE' not in kwargs['env']
+        for relative in ('config', 'data/state', 'cache/rag', 'logs'):
+            (executable.parent / relative).mkdir(parents=True, exist_ok=True)
+        (executable.parent / '.env').write_bytes(b'# controlled initialization\n')
+        Path(arguments[-1]).write_text('{"ok":true}', encoding='utf-8')
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(build_windows.subprocess, 'run', controlled_smoke)
+    destination = build_windows.assemble(bundle, tmp_path / 'output', work=work,
+                                          uv='unused-controlled-uv', resources=resources)
+    assert (destination.parent / f'{destination.name}.zip').is_file()
+    assert (destination.parent / f'{destination.name}.zip.sha256').is_file()
+    assert not (destination.parent / 'CONTEXT_SUPERVISOR_ENV_FILE.zip').exists()
+    standalone = destination.parent / 'ChannelAgent-0.6.0-windows-x64.exe'
+    assert standalone.read_bytes() == (destination / 'ChannelAgent.exe').read_bytes()
+    digest = hashlib.sha256(standalone.read_bytes()).hexdigest()
+    assert standalone.with_suffix('.exe.sha256').read_text() == f'{digest}  {standalone.name}\n'
+
+
+@pytest.mark.parametrize('suffix', ['.exe', '.exe.sha256'])
+def test_standalone_asset_never_overwrites_existing_file(tmp_path, suffix):
+    output = tmp_path / 'output'
+    output.mkdir()
+    existing = output / f'ChannelAgent-0.6.0-windows-x64{suffix}'
+    existing.write_bytes(b'existing asset')
+    bundle = tmp_path / 'ChannelAgent.exe'
+    bundle.write_bytes(b'controlled input')
+    with pytest.raises(FileExistsError):
+        build_windows.assemble(bundle, output, work=tmp_path, uv='unused')
+    assert existing.read_bytes() == b'existing asset'

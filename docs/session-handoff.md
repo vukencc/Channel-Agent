@@ -6,6 +6,12 @@
 
 ## 当前工作与 Git
 
+- 2026-11-13 续做：用户明确要求完成回退与 ZIP 收尾、合并 PR 并发布包含独立 exe 的新版本。目标版本 **0.6.0**，四包及精确依赖已同步，锁定依赖同步通过；发布工作流增加版本化独立 exe 与 SHA256，保留 ZIP/Linux 包和原完整自检。旧 0.5.0 冻结包仅用于相同启动逻辑的回退验收，正式 0.6.0 将重新冻结并由标签工作流构建。以下中断记录为当时快照，当前验证和发布结果将继续补充。
+
+- 2026-11-13 本轮中断点：用户按物理 Esc 停止 Computer Use，已停止桌面输入，关闭本轮 `portable-live-fixed-20261113-f930023c` / `portable-gui-fixed-20261113-66b41897` 的测试进程并恢复其临时只读目录 ACL；没有结束既有用户应用。便携源码最新 `9fa4e7f`，草稿 [PR #52](https://github.com/vukencc/Channel-Agent/pull/52) 未合并。最新 [CI 43348181678](https://github.com/vukencc/Channel-Agent/actions/runs/43348181678) Linux 2471 passed、54 skipped、5 deselected，Windows 945 passed、48 skipped；本机 Linux 隔离全量 2476 passed、49 skipped，真实隔离探针通过。普通 Modify 目录缺 WRITE_OWNER 的首启故障已修复，Native 先三红后转绿，现有 foreign ACL 仍拒绝；详情见未提交的本轮验证报告。
+- 修复版真实单 exe 为 `D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261113-020226\ChannelAgent.exe`，331,131,590 字节；构建已从 only-exe 默认根执行真实离线自检 **15/15**，独立选定 PE 导入无缺失、无 CLR，128 应用模块一致。实际复制单 exe 的首启、重复保留配置、中文空格路径搬移均通过；后续显式根、NTFS 只读回退和可见 GUI 尚未完成。停止前 harness 记录见 Native `.cache/reports/portable-live-fixed-20261113-f930023c/`，GUI 验证不算通过。
+- 收尾待办：新构建暴露 builder 循环变量 `name` 覆盖成品名，ZIP 错名为 `dist/CONTEXT_SUPERVISOR_ENV_FILE.zip`。WSL 中已修为 `variable`，新增红→绿组装回归，专项 26 passed，**尚未提交/同步**；它不在冻结归档中（已查），可复用 `windows-package-1zg1347z/dist/ChannelAgent.exe` 和其 `portable_resources`，在新的独立 work 目录用修复后的 `assemble` 重新组装并保留自检，避免第三次完整依赖分析。先提交/同步 builder 修复，再完成余下实际验收、文档、正确 ZIP/哈希和 PR 合并。Root 尚有本轮文档与 builder/test 改动，务必保留，不要 reset/clean；Native 当前 clean、HEAD 9fa4e7f。原失败包 `013017` 仅作为故障证据，不能当成最终成品。
+
 - 2026-11-13，Windows 便携单 exe 正在验收：冻结入口默认实际 exe 父目录，先安全初始化再导入配置，支持 `--data-dir` / `--use-user-data` 和默认目录不可写时的选择；配置/会话/缓存分区，内嵌公开资源首次释放不覆盖，PyInstaller 默认 onefile、可显式 onedir。Linux/源码布局不变。新专项 Linux 107 passed、4 项 Windows 句柄用例待原生执行；真实 Bubblewrap/prlimit 通过。此项尚未构建实际单 exe，不能沿用下面旧目录包的验证结论；最终状态将继续更新。
 
 - 2026-11-12，用户明确批准设计助手独立有界总生成预算 192,000 字符，正文仍 48,000；新增 `FLOW_DESIGNER_TOTAL_OUTPUT_CHARS`，请求隔离并按有效总量保守预留费用，普通 Agent 和停止/取消不变。原提示词、原模型及 `xhigh` 真实生成/导入通过：116.923 秒，五节点、四边、四动态工具，8 结构及 8 导入/导出/重载幂等检查通过；未运行节点/工具。成功轮总量 39,342 低于旧 48,000，不能归因于额度增加或宣称性能提升。源码实现 `fa9b455`，44 项新回归 `4b497e3`，Linux 全量 2388 passed、Native 专项 147 passed；[CI 43225207933](https://github.com/vukencc/Channel-Agent/actions/runs/43225207933) Linux 2382、Windows 850 passed。实际模板的 Chromium 1440/416 与 Qt 离屏导入导出均通过，未改 UI。最终过程见[长请求记录](designer-long-running-validation-2026-11-12.md)，交付状态查看 [PR #51](https://github.com/vukencc/Channel-Agent/pull/51)。

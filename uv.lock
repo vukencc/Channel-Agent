@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -26,7 +26,7 @@ members = [
 
 [[package]]
 name = "ai-agent-core"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "src/agent_core" }
 dependencies = [
     { name = "fastembed" },
@@ -79,7 +79,7 @@ provides-extras = ["documents", "vision", "ann"]
 
 [[package]]
 name = "ai-agent-frontend"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "src/agent_frontend" }
 dependencies = [
     { name = "ai-agent-core" },
@@ -111,7 +111,7 @@ provides-extras = ["web", "desktop", "debug"]
 
 [[package]]
 name = "ai-agent-startup"
-version = "0.5.0"
+version = "0.6.0"
 source = { virtual = "." }
 dependencies = [
     { name = "ai-agent-frontend" },
@@ -167,7 +167,7 @@ packaging = [{ name = "pyinstaller", marker = "sys_platform == 'linux' or sys_pl
 
 [[package]]
 name = "ai-agent-test"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "src/agent_test" }
 dependencies = [
     { name = "ai-agent-core" },

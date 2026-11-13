@@ -69,6 +69,8 @@
 
 以下材料记录具体时点的实现、问题和实测结果。重构前记录中的路径与命令可能已迁移，历史数字不代表当前性能或当前代码验证结果。
 
+- [Windows 便携单文件验证（2026-11-13）](windows-portable-validation-2026-11-13.md)：首次初始化、路径与权限边界、实际 exe 和运行库验证。
+
 - [工作区共享记忆验证（2026-11-12）](workspace-memory-validation-2026-11-12.md)：真实模型、并发、Windows 句柄与失败过程；最终验证状态见记录。
 
 - [DEBUG 总览清晰度报告](debug-overview-clarity-report.md)：既有 trace 回放和受控界面布局测量。

@@ -6,11 +6,11 @@ Windows 可运行原生 Qt 桌面、Web 界面及 Core，Flow 和会话状态支
 
 ## 使用免安装成品
 
-成品目标为 Windows 10/11 x64。将 `ChannelAgent.exe` 放在本地可写目录并双击；首次在「模型管理」添加连接，再创建项目或 Flow 模板。默认构建为 PyInstaller 单 exe：Python、Qt、Core、文档/图片和本地检索运行依赖均打包，无需另装 Windows Python、uv、Node 或 .NET。启动时 bootloader 将运行库解包到系统临时目录，持久数据仍在选定的数据根。模型权重不随包分发，本地 RAG 首次使用可能下载模型，也可配置已有模型或云端 Embedding。系统 Visual C++ 运行库依赖需以实际 exe 审计为准，不能据此假定所有干净系统均无额外前提；当前包未进行商业代码签名。
+成品目标为 Windows 10/11 x64。从 [Releases](https://github.com/vukencc/Channel-Agent/releases) 下载独立 exe 和对应的 `.sha256` 校验文件；ZIP 为可选分发形式。将 `ChannelAgent.exe` 放在本地可写 NTFS 目录并双击；首次在「模型管理」添加连接，再创建项目或 Flow 模板。默认构建为 PyInstaller 单 exe：Python、Qt、Core、文档/图片和本地检索运行依赖均打包，无需另装 Windows Python、uv、Node 或 .NET。启动时 bootloader 将运行库解包到系统临时目录，持久数据仍在选定的数据根。模型权重不随包分发，本地 RAG 首次使用可能下载模型，也可配置已有模型或云端 Embedding。本轮修复版所选 PE 导入审计显示 Python、Qt 和所需 VC 运行库随包提供，未发现缺失导入或 CLR；这不是干净虚拟机兼容性测试。当前包未进行商业代码签名。
 
 ### 数据根与首次启动
 
-默认数据根是 exe 所在目录，与启动工作目录无关。首次启动自动创建下列目录及最小 `.env`；已有文件和凭据不会覆盖，也不会自动迁移旧版用户目录数据：
+默认数据根是 exe 所在目录，与启动工作目录无关。数据根及私有配置需要支持 Windows 私有 ACL，建议使用本地 NTFS；首次启动自动创建下列目录及最小 `.env`；已有文件和凭据不会覆盖，也不会自动迁移旧版用户目录数据：
 
 ```text
 数据根/
@@ -26,7 +26,7 @@ Windows 可运行原生 Qt 桌面、Web 界面及 Core，Flow 和会话状态支
   logs/                        日志
 ```
 
-启动时还会将内嵌的 `configuration.example.env`、`使用说明.txt`、许可证及 `WSL/requirements.txt` 复制到数据根，仅创建缺失文件。`.env` 已自动生成，请参考模板按需编辑它，不要覆盖现有文件。部分模板路径是源码默认值；显式填写后会覆盖便携默认路径。搬移或备份时保留所选数据根及用户项目。`--state-dir` 只选择独立会话状态目录，不改变整个数据根；独立状态目录使用独立配置，不共享默认便携根的凭据。
+启动时还会将内嵌的 `configuration.example.env`、`使用说明.txt`、许可证及 `WSL/requirements.txt` 复制到数据根，仅创建缺失文件。`.env` 已自动生成，请参考模板按需编辑它，不要覆盖现有文件。部分模板路径是源码默认值；显式填写后会覆盖便携默认路径。搬移或备份时保留所选数据根及用户项目；已绑定的项目保存目录身份，搬移后需重新选择项目目录，不自动授权新位置。`--state-dir` 只选择独立会话状态目录，不改变整个数据根；独立状态目录使用独立配置，不共享默认便携根的凭据。
 
 数据根优先级为 `--data-dir`、进程环境变量 `AI_AGENT_PROJECT_ROOT`、exe 所在目录。也可显式使用 `--use-user-data` 选择 `%LOCALAPPDATA%\ChannelAgentPortable`（未设置 `LOCALAPPDATA` 时为用户目录下 `AppData\Local\ChannelAgentPortable`）；它与 `--data-dir` 互斥。示例：
 
@@ -53,7 +53,7 @@ Start-Process -FilePath .\ChannelAgent.exe -ArgumentList '--portable-info', 'D:\
 & .\ChannelAgent.exe --self-check "$env:TEMP\ChannelAgent-check.json"
 ```
 
-该命令是窗口程序；在 PowerShell 需要等待完成时使用 `Start-Process -Wait`，随后查看报告的 `ok`。报告路径必须不存在，自检也会先初始化所选便携数据根。配置好 WSL 后，可先设置 `$env:CHANNEL_AGENT_SELF_CHECK_WSL = "1"` 再运行，附加验证真实隔离写入。`manifest.json` 给出成品文件 SHA256，ZIP 旁的 `.sha256` 给出压缩包校验值。测试使用独立临时目录。
+该命令是窗口程序；在 PowerShell 需要等待完成时使用 `Start-Process -Wait`，随后查看报告的 `ok`。报告路径必须不存在，自检也会先初始化所选便携数据根。配置好 WSL 后，可先设置 `$env:CHANNEL_AGENT_SELF_CHECK_WSL = "1"` 再运行，附加验证真实隔离写入。`manifest.json` 给出成品文件 SHA256；独立 exe 和 ZIP 各有对应 `.sha256` 校验文件。测试使用独立临时目录。
 
 ## 从源码构建成品
 

@@ -208,6 +208,8 @@ jobs:
         with:
           name: windows-package
           path: |
+            dist/*.exe
+            dist/*.exe.sha256
             dist/*.zip
             dist/*.zip.sha256
           if-no-files-found: error
