@@ -1,6 +1,7 @@
 """真实 Windows ACL 回归；只操作 tmp_path，不属于模拟 frozen 或实际 exe 验收。"""
 import ctypes
 from ctypes import wintypes
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -18,11 +19,21 @@ class NativeAcl:
         self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
         self.security = ctypes.WinDLL('advapi32', use_last_error=True)
         self.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        self.kernel.GetCurrentThread.restype = wintypes.HANDLE
         self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         self.kernel.LocalFree.argtypes = [wintypes.LPVOID]
         self.security.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
         self.security.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
                                                     wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        self.security.OpenThreadToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL,
+                                                 ctypes.POINTER(wintypes.HANDLE)]
+        self.security.DuplicateTokenEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID,
+                                                  ctypes.c_int, ctypes.c_int, ctypes.POINTER(wintypes.HANDLE)]
+        self.security.SetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+        self.security.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL, wintypes.LPVOID,
+                                                       wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID]
+        self.security.SetThreadToken.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.HANDLE]
+        self.security.RevertToSelf.argtypes = []
         self.security.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
         self.security.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
             wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.LPVOID), wintypes.LPVOID]
@@ -69,6 +80,55 @@ class NativeAcl:
         finally:
             self.kernel.LocalFree(descriptor)
 
+    @contextmanager
+    def current_user_default_owner(self):
+        """只在本线程使用复制 token，消除管理员默认 owner 为组的差异。"""
+        original, process, duplicate = wintypes.HANDLE(), wintypes.HANDLE(), wintypes.HANDLE()
+        active = False
+        try:
+            # 保存已有线程身份；无 impersonation token 时最后恢复进程身份。
+            if not self.security.OpenThreadToken(self.kernel.GetCurrentThread(), 0x4 | 0x8, True,
+                                                 ctypes.byref(original)):
+                if ctypes.get_last_error() != 1008:  # ERROR_NO_TOKEN
+                    raise ctypes.WinError(ctypes.get_last_error())
+            if not self.security.OpenProcessToken(self.kernel.GetCurrentProcess(), 0x2 | 0x8,
+                                                  ctypes.byref(process)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            # SecurityImpersonation + TokenImpersonation；原进程 token 始终只读。
+            if not self.security.DuplicateTokenEx(process, 0x4 | 0x8 | 0x20 | 0x80, None, 2, 2,
+                                                  ctypes.byref(duplicate)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            length = wintypes.DWORD()
+            self.security.GetTokenInformation(duplicate, 1, None, 0, ctypes.byref(length))
+            buffer = ctypes.create_string_buffer(length.value)
+            if not self.security.GetTokenInformation(duplicate, 1, buffer, length, ctypes.byref(length)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            # TOKEN_OWNER 只有一个 SID 指针；token user 所在缓冲区保持到调用结束。
+            owner = wintypes.LPVOID(ctypes.cast(buffer, ctypes.POINTER(wintypes.LPVOID))[0])
+            if not self.security.SetTokenInformation(duplicate, 4, ctypes.byref(owner), ctypes.sizeof(owner)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            # 管理员 runner 的复制 token 也不得凭 Restore/TakeOwnership 绕过权限前提。
+            ctypes.set_last_error(0)
+            if not self.security.AdjustTokenPrivileges(duplicate, True, None, 0, None, None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if ctypes.get_last_error():
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not self.security.SetThreadToken(None, duplicate):
+                raise ctypes.WinError(ctypes.get_last_error())
+            active = True
+            yield
+        finally:
+            try:
+                if active:
+                    restored = (self.security.SetThreadToken(None, original) if original
+                                else self.security.RevertToSelf())
+                    if not restored:
+                        raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                for handle in (duplicate, process, original):
+                    if handle:
+                        self.kernel.CloseHandle(handle)
+
     def try_apply(self, path: Path, sddl: str, flags: int) -> tuple[bool, int]:
         descriptor = wintypes.LPVOID()
         if not self.security.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
@@ -97,14 +157,15 @@ def modify_parent(tmp_path):
     """新父只给当前用户可继承 Modify；SYSTEM FullControl，不继承外部授权。"""
     acl = NativeAcl()
     parent = tmp_path / 'modify-only-parent'
-    parent.mkdir()
-    try:
-        acl.apply(parent, f'D:P(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;{acl.current_sid})')
-        assert acl.owner_is_current(parent)
-        yield parent, acl
-    finally:
-        # 只恢复本夹具新建父目录，确保失败红测也不会妨碍 pytest 回收。
-        acl.apply(parent, f'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{acl.current_sid})')
+    with acl.current_user_default_owner():
+        parent.mkdir()
+        try:
+            acl.apply(parent, f'D:P(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;{acl.current_sid})')
+            assert acl.owner_is_current(parent)
+            yield parent, acl
+        finally:
+            # 先恢复夹具父权限，再恢复线程 token，失败红测也必须能回收。
+            acl.apply(parent, f'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{acl.current_sid})')
 
 
 def test_owned_modify_file_can_be_protected_without_write_owner(modify_parent):
