@@ -1,5 +1,7 @@
 import importlib
+import os
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -10,6 +12,28 @@ from agent_core.tools.sandbox import SandboxError
 from agent_core.core.workspaces import SessionWorkspaces
 
 
+@pytest.fixture(autouse=True)
+def isolated_portable_resources_and_environment(tmp_path, monkeypatch):
+    """冻结入口使用受控公开资源，不能读取实际用户目录或保留缓存变量。"""
+    resources = tmp_path / 'bundle' / 'portable_resources'
+    resources.mkdir(parents=True)
+    for filename in ('configuration.example.env', 'LICENSE.txt', '使用说明.txt'):
+        (resources / filename).write_text('# controlled public fixture\n', encoding='utf-8')
+    (resources / 'WSL').mkdir()
+    (resources / 'WSL/requirements.txt').write_text('# controlled lock\n', encoding='utf-8')
+    (resources / 'THIRD_PARTY_LICENSES').mkdir()
+    monkeypatch.setattr(sys, '_MEIPASS', str(resources.parent), raising=False)
+    for name in ('AI_AGENT_PROJECT_ROOT', 'AI_AGENT_PORTABLE', 'HF_HOME', 'TORCH_HOME',
+                 'XDG_CACHE_HOME', 'TEMP', 'TMP', 'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE',
+                 'TRANSFORMERS_CACHE', 'HF_MODULES_CACHE', 'SENTENCE_TRANSFORMERS_HOME',
+                 'FASTEMBED_CACHE_PATH'):
+        if name in os.environ:
+            monkeypatch.setenv(name, os.environ[name])
+        else:
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(tempfile, 'tempdir', tempfile.tempdir)
+
+
 def test_frozen_worker_fails_closed_when_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     monkeypatch.setattr(sys, '_MEIPASS', str(tmp_path), raising=False)
@@ -17,11 +41,14 @@ def test_frozen_worker_fails_closed_when_missing(monkeypatch, tmp_path):
         wsl_command._worker_script()
 
 
-def test_frozen_launcher_uses_local_appdata_independent_of_cwd(monkeypatch, tmp_path):
+def test_frozen_launcher_uses_executable_directory_independent_of_cwd(monkeypatch, tmp_path):
     launcher = importlib.import_module('agent_frontend.desktop.launcher')
     # 在任意回归宿主上显式验证 Windows 分支，Linux 自有 XDG 用例。
     monkeypatch.setattr(sys, 'platform', 'win32')
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    install = tmp_path / 'portable-install'
+    install.mkdir()
+    monkeypatch.setattr(sys, 'executable', str(install / 'ChannelAgent.exe'))
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
     monkeypatch.delenv('AI_AGENT_PROJECT_ROOT', raising=False)
     monkeypatch.chdir(tmp_path)
@@ -31,7 +58,7 @@ def test_frozen_launcher_uses_local_appdata_independent_of_cwd(monkeypatch, tmp_
     app.main = lambda: None
     monkeypatch.setitem(sys.modules, 'agent_frontend.desktop.app', app)
     launcher.main()
-    assert Path(launcher.os.environ['AI_AGENT_PROJECT_ROOT']) == tmp_path / 'local' / 'ChannelAgent'
+    assert Path(launcher.os.environ['AI_AGENT_PROJECT_ROOT']) == install
     assert Path.cwd() == tmp_path
 
 
@@ -39,6 +66,9 @@ def test_frozen_launcher_replaces_empty_root(monkeypatch, tmp_path):
     launcher = importlib.import_module('agent_frontend.desktop.launcher')
     monkeypatch.setattr(sys, 'platform', 'win32')
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    install = tmp_path / 'portable-install'
+    install.mkdir()
+    monkeypatch.setattr(sys, 'executable', str(install / 'ChannelAgent.exe'))
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
     monkeypatch.setenv('AI_AGENT_PROJECT_ROOT', '')
     monkeypatch.chdir(tmp_path)
@@ -48,7 +78,7 @@ def test_frozen_launcher_replaces_empty_root(monkeypatch, tmp_path):
     app.main = lambda: None
     monkeypatch.setitem(sys.modules, 'agent_frontend.desktop.app', app)
     launcher.main()
-    assert Path(launcher.os.environ['AI_AGENT_PROJECT_ROOT']) == tmp_path / 'local' / 'ChannelAgent'
+    assert Path(launcher.os.environ['AI_AGENT_PROJECT_ROOT']) == install
 
 
 def test_worker_paths(monkeypatch, tmp_path):

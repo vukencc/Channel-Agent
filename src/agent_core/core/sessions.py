@@ -82,7 +82,10 @@ class SessionManager:
         self.store, self.notify, self.model = store, notify, model
         self.observer: RuntimeObserver = observer if observer is not None else NullObserver()
         from agent_core.core.runtime_models import RuntimeModelRegistry
-        self.model_registry = model_registry if model_registry is not None else RuntimeModelRegistry(store.root, forbidden_roots=[store.workspace_root,
+        # 显式独立 --state-dir 保持配置隔离，不共享默认便携根的凭据。
+        registry_root = (config.RUNTIME_MODEL_DIR if config.PORTABLE_MODE and config.RUNTIME_MODEL_DIR
+                         and store.root.resolve() == config.AGENT_STATE_DIR.resolve() else store.root)
+        self.model_registry = model_registry if model_registry is not None else RuntimeModelRegistry(registry_root, forbidden_roots=[store.workspace_root,
             *(entry['path'] for entry in config.TOOL_ROOTS.values()), config.DOC_DIR,
             *(entry['path'] for entry in config.RAG_SOURCES.values())])
         from agent_core.core.permissions import ACCEPTED_PERMISSION_POLICIES

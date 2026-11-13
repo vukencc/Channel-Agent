@@ -6,9 +6,9 @@
 
 ## 安装与启动
 
-Windows 和 Linux 桌面成品通过 [Releases](https://github.com/vukencc/Channel-Agent/releases) 分发；Windows 选择 ZIP，Linux x64 选择 tar.gz。运行与系统依赖见 [Windows 指南](docs/windows.md)和 [Linux 成品指南](docs/linux.md)。桌面、Web 与 Debug 使用平直的深色工作台、细分隔线和小圆角控件，Flow 状态点及连接端口保留圆形。
+Windows 和 Linux 桌面成品通过 [Releases](https://github.com/vukencc/Channel-Agent/releases) 分发；Windows 可下载独立 exe 及其 SHA256 校验文件，也可选 ZIP；Linux x64 选择 tar.gz。运行与系统依赖见 [Windows 指南](docs/windows.md)和 [Linux 成品指南](docs/linux.md)。桌面、Web 与 Debug 使用平直的深色工作台、细分隔线和小圆角控件，Flow 状态点及连接端口保留圆形。
 
-Windows 成品为免安装目录：解压后双击 `ChannelAgent.exe`，保留同目录的 `_internal`，无需安装 Windows Python。首次使用在「模型管理」添加连接；用户数据默认保存在 `%LOCALAPPDATA%\ChannelAgent`。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
+Windows 成品默认构建为免安装单 exe：放入本地可写 NTFS 目录后双击 `ChannelAgent.exe`，无需安装 Windows Python。首次使用在「模型管理」添加连接；配置和数据默认保存在 exe 所在目录。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
 
 ```bash
 uv sync --locked --extra desktop --extra web

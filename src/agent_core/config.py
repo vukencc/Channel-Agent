@@ -53,6 +53,10 @@ def env_path(name: str, default: str | None = None) -> pathlib.Path | None:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
+# 冻结 Windows 启动器在导入配置前设置；源码运行保持既有布局。
+PORTABLE_MODE = env_bool('AI_AGENT_PORTABLE', False)
+
+
 def _validate_url_characters(value: str, name: str, offset: int = 0) -> None:
     """禁止解析器会忽略的控制字符；诊断只包含配置名称及位置。"""
     for index, character in enumerate(value):
@@ -144,7 +148,7 @@ MODEL_CALL_TIMEOUT = env_float("MODEL_CALL_TIMEOUT", 90.0)
 ASSESS_TIMEOUT = env_float("ASSESS_TIMEOUT", 30.0)
 
 # 工具沙箱与命令执行
-SANDBOX_DIR = env_path("SANDBOX_DIR", "crud_tests")   # 文件/命令操作的活动范围
+SANDBOX_DIR = env_path("SANDBOX_DIR", "data/workspaces" if PORTABLE_MODE else "crud_tests")
 CONFIRM_TIMEOUT = env_float("CONFIRM_TIMEOUT", 30.0)  # 风险操作确认等待秒数，超时视为拒绝
 COMMAND_TIMEOUT = env_float("COMMAND_TIMEOUT", 10.0)  # 单条命令最长执行秒数
 COMMAND_EXECUTION_ENVIRONMENT = os.getenv('COMMAND_EXECUTION_ENVIRONMENT', 'sandbox').strip().lower()
@@ -188,7 +192,7 @@ DEBUG = env_bool("DEBUG")
 DEBUG_TRACE_MAX_EVENTS = max(1, min(env_int('DEBUG_TRACE_MAX_EVENTS', 512), 10000))
 
 # RAG models and indexes are cached locally; secrets are never cache identifiers.
-RAG_CACHE_DIR = env_path("RAG_CACHE_DIR", ".cache/rag")
+RAG_CACHE_DIR = env_path("RAG_CACHE_DIR", "cache/rag" if PORTABLE_MODE else ".cache/rag")
 RAG_CANDIDATES = env_int("RAG_CANDIDATES", 50)
 RAG_RERANK_TOP_N = env_int("RAG_RERANK_TOP_N", 50)
 RAG_RRF_K = env_int("RAG_RRF_K", 60)
@@ -205,7 +209,8 @@ RAG_THRESHOLD_NORMAL = env_float("RAG_THRESHOLD_NORMAL", -2.0)
 RAG_THRESHOLD_LOOSE = env_float("RAG_THRESHOLD_LOOSE", -10.0)
 
 # Durable user conversations and memory, separate from disposable model caches.
-AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", ".agent")
+AGENT_STATE_DIR = env_path("AGENT_STATE_DIR", "data/state" if PORTABLE_MODE else ".agent")
+RUNTIME_MODEL_DIR = env_path('RUNTIME_MODEL_DIR', 'config' if PORTABLE_MODE else None)
 MAX_CONCURRENT_AGENTS = env_int("MAX_CONCURRENT_AGENTS", 4)
 ENABLE_OBSERVABILITY = env_bool('ENABLE_OBSERVABILITY', False)
 TRACE_MAX_ROWS = env_int('TRACE_MAX_ROWS', 20)

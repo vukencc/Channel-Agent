@@ -83,6 +83,28 @@ def protect_private_path(path: Path) -> None:
     security.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
         wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.LPVOID), wintypes.LPVOID]
     security.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPVOID]
+    security.GetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.LPVOID)]
+    security.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    security.EqualSid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
+    security.EqualSid.restype = wintypes.BOOL
+
+    def owner_is_current(path: Path, current_sid: wintypes.LPVOID) -> bool:
+        owner = wintypes.LPVOID()
+        owner_descriptor = wintypes.LPVOID()
+        try:
+            error = security.GetNamedSecurityInfoW(str(path), 1, 0x1, ctypes.byref(owner), None,
+                                                   None, None, ctypes.byref(owner_descriptor))
+            if error:
+                raise ctypes.WinError(error)
+            if not owner or not owner_descriptor:
+                raise PermissionError('无法确认私有路径的所有者')
+            return bool(security.EqualSid(owner, current_sid))
+        finally:
+            if owner_descriptor:
+                kernel.LocalFree(owner_descriptor)
+
     try:
         if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x8, ctypes.byref(token)):
             raise ctypes.WinError(ctypes.get_last_error())
@@ -99,8 +121,14 @@ def protect_private_path(path: Path) -> None:
         if not security.ConvertStringSecurityDescriptorToSecurityDescriptorW(acl, 1, ctypes.byref(descriptor), None):
             raise ctypes.WinError(ctypes.get_last_error())
         with opened_path(path.parent, path, directory=path.is_dir()):
-            if not security.SetFileSecurityW(str(path), 0x1 | 0x4 | 0x80000000, descriptor):
+            # 现有所有者已是当前用户时，不额外请求 WRITE_OWNER。
+            flags = 0x4 | 0x80000000
+            if not owner_is_current(path, sid):
+                flags |= 0x1
+            if not security.SetFileSecurityW(str(path), flags, descriptor):
                 raise ctypes.WinError(ctypes.get_last_error())
+            if not owner_is_current(path, sid):
+                raise PermissionError('无法确认私有路径的所有者')
     finally:
         if descriptor:
             kernel.LocalFree(descriptor)

@@ -61,12 +61,16 @@ def _check_config_root(root: Path) -> None:
     override = os.environ.get('AI_AGENT_PROJECT_ROOT')
     if override:
         _require(selected == Path(override).expanduser().resolve())
-    if getattr(sys, 'frozen', False) and not override:
-        from agent_frontend.desktop.launcher import frozen_data_root
-        expected = frozen_data_root(sys.platform)
-        _require(selected == expected.resolve())
-        _require(not selected.is_relative_to(Path(sys.executable).resolve().parent))
+    if getattr(sys, 'frozen', False):
         _require(not selected.is_relative_to(Path(getattr(sys, '_MEIPASS', sys.executable)).resolve()))
+        if not override:
+            from agent_frontend.desktop.launcher import frozen_data_root
+            expected = frozen_data_root(sys.platform)
+            _require(selected == expected.resolve())
+            if sys.platform == 'win32':
+                _require(selected == Path(sys.executable).resolve().parent)
+            else:
+                _require(not selected.is_relative_to(Path(sys.executable).resolve().parent))
     previous = Path.cwd()
     try:
         os.chdir(root)
@@ -112,6 +116,11 @@ def _check_installation_boundary(root: Path) -> None:
         except PermissionError:
             continue
         raise RuntimeError('安装目录未受保护')
+    if sys.platform == 'win32':
+        from agent_core import config
+        project = Path(config.PROJECT_ROOT) / 'data' / 'projects' / 'default'
+        project.mkdir(parents=True, exist_ok=True)
+        workspaces.validate_path(str(project))
 
 
 def _check_qt(root: Path) -> None:

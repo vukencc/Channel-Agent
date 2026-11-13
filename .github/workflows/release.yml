@@ -83,6 +83,7 @@ jobs:
             'src/agent_test/tests/test_session_persistence_barrier.py',
             'src/agent_test/tests/test_web_sse_terminal.py',
             'src/agent_test/tests/test_config.py',
+            'src/agent_test/tests/test_portable_core_paths.py',
             'src/agent_test/tests/test_chunking.py',
             'src/agent_test/tests/test_context.py',
             'src/agent_test/tests/test_context_boundaries.py',
@@ -207,6 +208,8 @@ jobs:
         with:
           name: windows-package
           path: |
+            dist/*.exe
+            dist/*.exe.sha256
             dist/*.zip
             dist/*.zip.sha256
           if-no-files-found: error
@@ -228,5 +231,11 @@ jobs:
         with:
           generate_release_notes: true
           name: ${{ github.ref_name }}
+          body: |
+            Windows 用户可单独下载 `.exe`，放入本地可写 NTFS 文件夹后运行；ZIP 是附带清单与公开资料的分发包。首次运行会在程序旁初始化配置、数据、缓存和日志，目录不可写时可选择用户目录或手动指定位置。已有文件不覆盖，旧版用户数据不自动迁移。
+
+            Python、Qt 和所需 VC++ DLL 已内嵌，无需安装 .NET、Python、uv 或 Node。单文件运行库会临时展开到系统 TEMP；隔离命令仍可选依赖 WSL2，本地 RAG 模型权重另行准备。下载后可用同名 `.sha256` 文件核验。
+
+            使用与依赖边界：[Windows 指南](https://github.com/vukencc/Channel-Agent/blob/main/docs/windows.md) · [Linux 指南](https://github.com/vukencc/Channel-Agent/blob/main/docs/linux.md)
           files: artifacts/*
           fail_on_unmatched_files: true

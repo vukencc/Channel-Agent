@@ -1,9 +1,9 @@
 [project]
 name = "ai-agent-startup"
-version = "0.5.0"
+version = "0.6.0"
 description = "AgentCore、AgentTest 与 Frontend 的开发工作区"
 requires-python = ">=3.12"
-dependencies = ["ai-agent-frontend==0.5.0", "ai-agent-test==0.5.0"]
+dependencies = ["ai-agent-frontend==0.6.0", "ai-agent-test==0.6.0"]
 
 [project.optional-dependencies]
 web = ["ai-agent-frontend[web]"]

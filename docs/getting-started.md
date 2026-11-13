@@ -2,7 +2,7 @@
 
 > 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
 
-使用 Python 3.12 及以上、Git 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)；uv 可按安装指南安装 Python。下面的命令适用于 Linux 或 WSL，原生 GUI 需要图形会话，WSL 需要 WSLg。Windows 原生界面及隔离命令的独立环境配置见 [Windows 指南](windows.md)。
+Windows 便携成品可直接使用，首启与数据目录见 [Windows 指南](windows.md)。从源码运行时，使用 Python 3.12 及以上、Git 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)；uv 可按安装指南安装 Python。下面的命令适用于 Linux 或 WSL，原生 GUI 需要图形会话，WSL 需要 WSLg。Windows 原生界面及隔离命令的独立环境配置见 [Windows 指南](windows.md)。
 
 ## 安装与启动
 

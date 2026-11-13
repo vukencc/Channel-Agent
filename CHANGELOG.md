@@ -4,13 +4,19 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-13
+
 ### Added
+
+- Windows 默认构建为便携单 exe，首次运行在程序目录初始化配置、数据、缓存与日志；目录不可写时提供用户目录或手动选择，支持显式数据根和不覆盖文件的初始化诊断。源码及 Linux 默认布局保持。
 
 - 模型连接新增显式 Windows 系统代理来源，保留环境代理默认行为、排除规则、证书校验和原请求时限；不自动修改用户网络设置。
 
 - 工作区 `.channelagent/memory.json` 自动保存项目说明、进度与经验，供新会话和 Flow 节点继承；会话原文与私有记忆保持隔离，支持有界注入、并发合并、原子发布和原权限策略。详见 [工作区共享记忆](docs/workspace-memory.md)。
 
 ### Fixed
+
+- 修复 Windows 新文件已归当前用户所有但缺少 WRITE_OWNER 时的私有初始化失败；只省去重复设置 owner，保留受保护 DACL、已有凭据权限校验及其他 owner 的原有权限要求。
 
 - Flow 设计助手取消固定 90 秒总时限，保留停止、取消、网络空闲超时和费用保护；普通 Agent 时限与输出规则不变，所选推理强度保持。
 
@@ -128,7 +134,9 @@
 - 全量模型推理峰值内存、RAG p95/吞吐权衡、真实视觉服务、Windows/macOS 原生能力尚未验收，详见 `docs/optimization-delivery.md`。
 - 容器后端（Docker/Podman 作为命令沙箱）仅有设计契约，未实现，见 `docs/platform-design.md`。
 
-[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/vukencc/Channel-Agent/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/vukencc/Channel-Agent/compare/v0.4.1...v0.5.0
 [0.2.1]: https://github.com/vukencc/Channel-Agent/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vukencc/Channel-Agent/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/vukencc/Channel-Agent/compare/v0.1.0...v0.1.1

@@ -17,7 +17,7 @@ uv run --no-sync ai-agent-gui
 
 `--extra web` 用于保留现有 WebUI 的可选依赖；只使用桌面时可以仅安装 `--extra desktop`。桌面依赖为 `PySide6-Essentials`，包含原生控件，不安装 Qt WebEngine。Linux 需要可用的图形会话和中文字体；WSLg 可复用宿主已有的微软雅黑字体，普通 Linux 可安装 `fonts-noto-cjk`。Windows 宿主使用 WSL checkout 时，在 WSL 内用 Linux `uv` 启动 Qt，由 WSLg 显示窗口；不要对该 `.venv` 使用 Windows `uv`。Windows 原生和 Linux 成品另见 [Windows](windows.md)与 [Linux](linux.md)指南，使用各自独立的运行环境。
 
-默认继续使用根 `.env` 和既有会话目录。独立测试或需要单独的会话库时：
+源码运行默认继续使用根 `.env` 和既有会话目录；Windows 便携成品的数据根见 [Windows 指南](windows.md)。独立测试或需要单独的会话库时：
 
 ```bash
 uv run --no-sync ai-agent-gui --state-dir /绝对路径/独立状态目录
