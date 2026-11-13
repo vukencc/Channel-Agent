@@ -2,9 +2,17 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-13，本轮交付版本为 0.6.0，包含 Windows 便携单文件、工作区记忆及设计助手修复。代码入口为 [PR #52](https://github.com/vukencc/Channel-Agent/pull/52)，正式资产及发布状态以 [0.6.0 Release](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.0) 为准；标签工作流会从合并后的源码重新构建。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
+截至 2026-11-13，[0.6.0 已正式发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.0)，[PR #52](https://github.com/vukencc/Channel-Agent/pull/52) 的合并提交及注解标签指向 `65d082eaf212107144466499f24be30ac5ae53c6`。[发布运行 43356195115](https://github.com/vukencc/Channel-Agent/actions/runs/43356195115) 六项任务均成功；Release 于 03:16:03 UTC 发布，非预发布。Windows 独立 exe、ZIP 和 Linux tar.gz 各有 SHA256 侧车，共六项资产；文件名、摘要及验证边界见[便携验收记录](windows-portable-validation-2026-11-13.md)。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
+
+- 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
+- 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。
+- 本机候选真实只读 CLI 10/10、源码 Qt 离屏受控组件 5 passed；用户按 Esc 停止可见 GUI 检查，不能记为通过。候选包不等于正式标签构建，失败与中断证据见[便携验收记录](windows-portable-validation-2026-11-13.md)。
+
+## 历史工作快照
+
+以下记录保留当时状态，已由上面的正式发布信息取代。
 
 - 0.6.0 本机候选已通过真实 only-exe 15/15、自定义数据根/配置保留及真实只读 CLI；独立 exe 为 `D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.6.0-windows-x64.exe`，source `7873f4d`、331,131,240 字节，SHA256 `98392f3ed981c9b9907c3d9c5b55f61fc735c05f23983a1d7725a5ae8746e54e`。ZIP 命名已修复，清单、CRC 与全部文件哈希通过。内嵌三模块均 0.6.0，128 应用模块和 327 资源一致，没有实际凭据/会话/模型权重。正式 CI 资产不得用此候选冒充，详情见[便携验收记录](windows-portable-validation-2026-11-13.md)。
 - 续验发现并修复 Windows `os.open` 直接 PermissionError(errno13) 被错误归为 unsafe，无法弹默认回退框的问题（`7873f4d`）。真实 0.6.0 只读两例共10/10断言通过；最新本机 Linux 全量 2480 passed、50 skipped、5 deselected；[CI 43351849509](https://github.com/vukencc/Channel-Agent/actions/runs/43351849509) Linux2475/Windows950 passed。`7ab90be` 新增五项原生 Source Qt 离屏按钮/取消/拒绝回归，Native 5 passed（9.50 秒）。用户再次 Esc 停止桌面自动化后，已停止所属 GUI 测试进程并恢复临时 ACL，不再桌面输入；离屏组件不算可见交互验收。以下中断及初始候选状态保留为历史快照，最终 Git/发布状态以顶部链接为准。
