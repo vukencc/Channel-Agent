@@ -185,6 +185,25 @@ def test_owned_modify_file_can_be_protected_without_write_owner(modify_parent):
     assert source.read_bytes() == b'controlled-private-content'
 
 
+def test_readonly_root_lock_creation_is_unwritable(tmp_path):
+    from agent_frontend.desktop.portable import PortableError, initialize_layout
+    acl = NativeAcl()
+    root = tmp_path / 'readonly-portable'
+    with acl.current_user_default_owner():
+        root.mkdir()
+        try:
+            # 目录的 0x6 分别拒绝新建文件和子目录；保留修改 ACL 的权限供清理。
+            acl.apply(root, f'D:P(D;;0x6;;;{acl.current_sid})(A;;FA;;;SY)(A;;FA;;;{acl.current_sid})')
+            with pytest.raises(PermissionError):
+                (root / 'creation-probe').write_bytes(b'probe')
+            with pytest.raises(PortableError) as error:
+                initialize_layout(root)
+            assert error.value.kind == 'unwritable'
+            assert not (root / '.env').exists()
+        finally:
+            acl.apply(root, f'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{acl.current_sid})')
+
+
 def test_portable_first_start_and_atomic_report_work_below_modify_parent(modify_parent):
     from agent_core.core.windows_security import verify_private_path
     from agent_frontend.desktop.launcher import _write_info

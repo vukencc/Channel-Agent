@@ -156,7 +156,9 @@ def _lock(root: Path):
     except PortableError:
         raise
     except PermissionError as exc:
-        if (exc.__cause__ and getattr(exc.__cause__, 'errno', None) == errno.EACCES) or getattr(exc, 'winerror', None) == 5:
+        if (exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS)
+                or (exc.__cause__ and getattr(exc.__cause__, 'errno', None) == errno.EACCES)
+                or getattr(exc, 'winerror', None) == 5):
             raise _error(path, '访问初始化锁', exc) from exc
         raise PortableError(path, '检查初始化锁', 'unsafe') from exc
     except OSError as exc:

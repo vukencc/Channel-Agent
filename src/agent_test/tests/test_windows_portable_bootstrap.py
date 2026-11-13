@@ -442,6 +442,37 @@ def test_dotenv_bare_key_is_preserved_without_loading_environment(portable, tmp_
     assert 'NORMAL_VALUE' not in os.environ
 
 
+def test_lock_creation_permission_denial_is_unwritable(portable, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    root = tmp_path / 'portable'
+    root.mkdir()
+    original_open = portable.os.open
+    original_opened_path = portable.opened_path
+
+    @contextmanager
+    def windows_style_opened_path(*args, **kwargs):
+        guard = original_opened_path(*args, **kwargs)
+        descriptor = guard.__enter__()
+        try:
+            yield descriptor
+        finally:
+            guard.__exit__(None, None, None)
+
+    def denied_lock(path, *args, **kwargs):
+        if Path(path) == root / '.portable.lock':
+            raise PermissionError(errno.EACCES, 'controlled lock creation denial')
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(portable.os, 'open', denied_lock)
+    monkeypatch.setattr(portable.os, 'supports_dir_fd', portable.os.supports_dir_fd | {denied_lock})
+    monkeypatch.setattr(portable, 'opened_path', windows_style_opened_path)
+    with pytest.raises(portable.PortableError) as error:
+        portable.initialize_layout(root)
+    assert error.value.kind == 'unwritable'
+    assert not (root / '.env').exists()
+
+
 def test_write_denial_is_classified_without_leaving_partial_env(portable, tmp_path, monkeypatch):
     def denied(*args, **kwargs):
         raise PermissionError(errno.EACCES, 'controlled access denied')
