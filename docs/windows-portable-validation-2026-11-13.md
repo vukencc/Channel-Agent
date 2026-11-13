@@ -38,6 +38,22 @@ Linux 首轮完整回归为 3 failed、2464 passed、46 skipped、5 deselected�
 
 ## 实际成品与依赖
 
+### 正式 0.6.0 发布
+
+[PR #52](https://github.com/vukencc/Channel-Agent/pull/52) 的合并提交及注解标签 `v0.6.0` 指向 `65d082eaf212107144466499f24be30ac5ae53c6`。[正式 Release](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.0) 于 2026-11-13 03:16:03 UTC 发布，非预发布；[发布运行 43356195115](https://github.com/vukencc/Channel-Agent/actions/runs/43356195115) 六项任务均成功。资产共六项：Windows 独立 exe、ZIP、Linux tar.gz 及各自 SHA256 侧车。
+
+| 正式资产 | 字节 | SHA256 |
+| --- | ---: | --- |
+| `ChannelAgent-0.6.0-windows-x64.exe` | 331,163,213 | `31ea39fc78da36e5672bb4aaa2818d3976d53aeef8021c04c0b8e3c26b73d19f` |
+| `ChannelAgent-0.6.0-windows-x64-20261113-031426.zip` | 329,415,765 | `0432c9414765072e913ab5dab9b38f5e7446b49f61b85cd29f0788f25bd255a6` |
+| `ChannelAgent-0.6.0-linux-x64-20261113-031239.tar.gz` | 502,754,869 | `90978cd8c3f17a7fc70d470b8ac0e6f55af6572eb3b4da99631ef2b6f23ac69d` |
+
+最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected（212.00 秒），Windows 955 passed、48 skipped（158.43 秒）。正式标签首次 Windows job `131658698016` 失败：`test_runtime_models` 的权限用例辅助 PowerShell 冷启动进程在 15 秒超时，尚未触发权限断言。原用例本机 1 passed（2.62 秒）；未改代码或 15 秒期限，一次有界重跑为 955 passed、48 skipped（135.85 秒），随后双平台正式包构建成功。
+
+正式资产独立审计无发现。实际下载的 Windows ZIP SHA256 与上表一致，228 条目 CRC 和安全路径通过，manifest 所列 227 个文件的大小和 SHA256 全部匹配；manifest 记录版本 0.6.0、上述来源、干净工作树及仅 exe 默认根自检，ZIP 内 CI 自检记录为 15/15、无错误。128 应用代码模块、12 静态文件、91 WSL 源码和 224 公开资料与源码一致，三个包的内嵌元数据均为 0.6.0。ZIP 内 exe 的大小与 SHA256 与独立 exe 的 API 摘要及实际下载的侧车一致；没有重复下载独立 exe。
+
+三份 SHA256 侧车均实际下载并与各自服务端摘要核对。Linux tar.gz 仅核对成功的构建任务、API 摘要和实际侧车，未下载、解包或独立运行。此次审计未运行 exe、GUI 或模型；记录位于原生 `.cache/reports/release-v0.6.0-official-audit-20261113-110548-7064175eada6/audit-result.json`，同目录保留从 ZIP 提取的 exe。
+
 第一份真实 onefile 来源 `ac200c5`，331,131,146 字节，构建离线自检 15/15。独立审计确认 128 应用模块、12 静态文件、91 WSL Core 源码及 224 份公开资料一致，无 `_internal` 或外部归档依赖；未嵌入实际 `.env`、会话、项目或凭据。完整 ZIP 和清单校验通过，但**此包不能作为首启验收通过的交付**。
 
 仅复制该 exe 到普通可写目录后，首次 `--portable-info` 运行 37.153 秒，退出 1，仅留下 `.portable.lock`、没有初始化目录或报告。原始失败保存在本轮独立报告目录。独立 tiny console 冻结程序与 Native Python 都定位到 `protect_private_path`：新文件已经归当前用户所有，继承 ACL 允许 Modify，但没有 WRITE_OWNER；函数强制重复设置 owner 与私有 DACL，返回 WinError 5。同一新文件仅设置受保护 DACL 成功，重复 owner 或 owner+DACL 失败。构建自检使用的私有临时目录具有更充分的继承权限，不能覆盖这个普通目录场景。
