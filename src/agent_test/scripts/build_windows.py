@@ -299,6 +299,17 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
         smoke_environment = {**os.environ, 'PYTHON_DOTENV_DISABLED': '1', 'QT_QPA_PLATFORM': 'offscreen',
                              'AI_AGENT_PROJECT_ROOT': str(work / 'self-check-user'),
                              'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1'}
+        check_executable = executable
+        if bundle.is_file():
+            # 单文件必须在仅有 exe 的目录里完成默认首启，不能借用旁置资源或预设根。
+            portable_probe = work / 'only-exe'
+            portable_probe.mkdir()
+            check_executable = portable_probe / 'ChannelAgent.exe'
+            shutil.copyfile(executable, check_executable)
+            for name in ('AI_AGENT_PROJECT_ROOT', 'AI_AGENT_PORTABLE', 'AGENT_STATE_DIR',
+                         'SANDBOX_DIR', 'RAG_CACHE_DIR', 'RUNTIME_MODEL_DIR', 'DOC_DIR',
+                         'AUDIT_LOG', 'CONTEXT_SUPERVISOR_ENV_FILE'):
+                smoke_environment.pop(name, None)
         # 从任意目录启动，并移除开发 Python/工具 PATH，检查是否有源码或宿主依赖。
         smoke_environment.pop('PYTHONPATH', None)
         smoke_environment.pop('PYTHONHOME', None)
@@ -306,13 +317,16 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
             str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32'),
             os.environ.get('SystemRoot', 'C:/Windows')])
         check = work / 'self-check.json'
-        process = subprocess.run([str(destination / 'ChannelAgent.exe'), '--self-check', str(check)],
+        process = subprocess.run([str(check_executable), '--self-check', str(check)],
                                  cwd=work, env=smoke_environment, timeout=600)
         if process.returncode or not check.is_file():
             raise RuntimeError(f'成品自检失败，诊断目录：{work}')
         result = json.loads(check.read_text(encoding='utf-8'))
         if not result.get('ok'):
             raise RuntimeError(f'成品自检未通过，诊断目录：{work}')
+        if bundle.is_file() and not all((check_executable.parent / relative).exists()
+                                       for relative in ('.env', 'config', 'data/state', 'cache/rag', 'logs')):
+            raise RuntimeError(f'单文件默认数据根初始化未通过，诊断目录：{work}')
         shutil.copyfile(check, destination / 'self-check.json')
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True))
@@ -323,6 +337,7 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
                 'pyinstaller': importlib.metadata.version('pyinstaller'),
                 'verified_application_modules': verified_modules,
                 'verified_onefile_resources': verified_resources,
+                'smoke_layout': ('single-executable' if bundle.is_file() else 'distribution-directory') if smoke else None,
                 'files': file_manifest(destination)}
     (destination / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     archive = output_dir / f'{name}.zip'
