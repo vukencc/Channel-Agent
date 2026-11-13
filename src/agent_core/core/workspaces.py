@@ -43,8 +43,21 @@ class SessionWorkspaces:
 
     def protected_paths(self):
         """应用自身的源码、凭据、状态、知识库与只读根不能被授予写权限。"""
+        portable = bool(getattr(sys, 'frozen', False) and sys.platform == 'win32'
+                        and config.PORTABLE_MODE)
+        # 便携根包含用户项目，不能整体授权；exe 和私有子树仍逐一保护。
+        application = ([config.PROJECT_ROOT / name for name in
+                        ('config', 'cache', 'logs', '.env', '.env.supervisor')]
+                       if portable else [config.PROJECT_ROOT])
+        if config.RUNTIME_MODEL_DIR is not None:
+            application.append(config.RUNTIME_MODEL_DIR)
+        if config.CONTEXT_SUPERVISOR_ENV_FILE is not None:
+            application.append(config.CONTEXT_SUPERVISOR_ENV_FILE)
+        registry = getattr(self.manager, 'model_registry', None)
+        if getattr(registry, 'root', None) is not None:
+            application.append(registry.root)
         paths = [Path(path).resolve() for path in (
-            config.PROJECT_ROOT, self.manager.store.root, self.manager.store.workspace_root,
+            *application, self.manager.store.root, self.manager.store.workspace_root,
             config.AGENT_STATE_DIR, config.AUDIT_LOG, config.DOC_DIR, config.RAG_CACHE_DIR,
             *(entry['path'] for entry in config.TOOL_ROOTS.values()),
             *(entry['path'] for entry in config.RAG_SOURCES.values()))]

@@ -93,3 +93,17 @@ def test_distribution_preserves_licenses_without_collecting_package_configuratio
     assert (notices / 'sample-library-1.0/LICENSE.txt').read_text() == 'Dependency copyright and permission'
     assert not list(output.rglob('.env'))
     assert 'LESSER GENERAL PUBLIC LICENSE' in (notices / 'Qt-LGPL/LGPL-3.0-only.txt').read_text()
+
+
+def test_onefile_is_default_and_onedir_is_explicit():
+    import inspect
+    assert inspect.signature(build_windows.build).parameters["layout"].default == "onefile"
+    spec = (source_root() / "src/agent_test/packaging/windows/ChannelAgent.spec").read_text(encoding="utf-8")
+    assert "CHANNEL_AGENT_BUILD_LAYOUT" in spec
+    assert "a.binaries, a.datas" in spec
+
+
+def test_preflight_reports_missing_packaging_extras(monkeypatch):
+    monkeypatch.setattr(build_windows.importlib.util, "find_spec", lambda name: None if name == "docx" else object())
+    with pytest.raises(SystemExit, match="documents.*vision"):
+        build_windows.check_build_dependencies()

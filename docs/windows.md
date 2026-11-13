@@ -6,13 +6,46 @@ Windows 可运行原生 Qt 桌面、Web 界面及 Core，Flow 和会话状态支
 
 ## 使用免安装成品
 
-成品面向 Windows 10/11 x64。解压 `ChannelAgent-<版本>-windows-x64-<构建时间>.zip` 到本地盘，双击 `ChannelAgent.exe`。运行不需要 Windows Python、uv 或开发源码。`_internal` 是应用运行库，须与 exe 一起保留和搬移；这不是单文件自解压程序。首次使用在「模型管理」添加模型服务，再创建项目或 Flow 模板。
+成品目标为 Windows 10/11 x64。将 `ChannelAgent.exe` 放在本地可写目录并双击；首次在「模型管理」添加连接，再创建项目或 Flow 模板。默认构建为 PyInstaller 单 exe：Python、Qt、Core、文档/图片和本地检索运行依赖均打包，无需另装 Windows Python、uv、Node 或 .NET。启动时 bootloader 将运行库解包到系统临时目录，持久数据仍在选定的数据根。模型权重不随包分发，本地 RAG 首次使用可能下载模型，也可配置已有模型或云端 Embedding。系统 Visual C++ 运行库依赖需以实际 exe 审计为准，不能据此假定所有干净系统均无额外前提；当前包未进行商业代码签名。
 
-默认配置与数据根为 `%LOCALAPPDATA%\ChannelAgent`，不受启动目录、快捷方式的「起始位置」或应用目录搬移影响。会话在该根下的 `.agent`，日志在 `logs`，默认工作区在 `crud_tests`。也可显式设置 `AI_AGENT_PROJECT_ROOT`，或用 `--state-dir` 选择独立状态目录。应用不会导入开发机的配置、会话或项目。安装目录和运行库不能被选为可写项目。更新时替换程序目录，保留独立的用户数据目录。
+### 数据根与首次启动
 
-需要环境配置时，将成品中的 `configuration.example.env` 复制为用户数据根下的 `.env` 再修改，勿覆盖已有文件。模型凭据也可直接在界面管理。成品包含本地 RAG 的运行依赖及文档/图片工具依赖，不包含模型权重；本地检索首次使用可能下载模型，也可配置已有模型或云端 Embedding。当前包未进行商业代码签名。
+默认数据根是 exe 所在目录，与启动工作目录无关。首次启动自动创建下列目录及最小 `.env`；已有文件和凭据不会覆盖，也不会自动迁移旧版用户目录数据：
 
-隔离命令仍需准备 WSL2。成品内 `使用说明.txt` 提供独立 Linux 虚拟环境的配置步骤，`WSL/requirements.txt` 是从锁文件导出的 Core 依赖，可用 Linux 环境的 pip 通过 `--require-hashes` 安装。执行器源码随应用保存在 `_internal/wsl_runtime/agent_core`，不会引用开发 checkout。此依赖环境与 Windows 运行库相互独立。
+```text
+数据根/
+  .env                         应用环境配置
+  config/                      模型连接等配置
+  data/state/                  会话状态
+  data/workspaces/             默认工作区
+  data/projects/default/       默认项目
+  data/raw/                    原始资料
+  cache/rag/                   RAG 缓存
+  cache/huggingface/           Hugging Face 缓存（含 hub、modules）
+  cache/sentence-transformers/、cache/fastembed/、cache/torch/、cache/tmp/
+  logs/                        日志
+```
+
+启动时还会将内嵌的 `configuration.example.env`、`使用说明.txt`、许可证及 `WSL/requirements.txt` 复制到数据根，仅创建缺失文件。`.env` 已自动生成，请参考模板按需编辑它，不要覆盖现有文件。部分模板路径是源码默认值；显式填写后会覆盖便携默认路径。搬移或备份时保留所选数据根及用户项目。`--state-dir` 只选择独立会话状态目录，不改变整个数据根；独立状态目录使用独立配置，不共享默认便携根的凭据。
+
+数据根优先级为 `--data-dir`、进程环境变量 `AI_AGENT_PROJECT_ROOT`、exe 所在目录。也可显式使用 `--use-user-data` 选择 `%LOCALAPPDATA%\ChannelAgentPortable`（未设置 `LOCALAPPDATA` 时为用户目录下 `AppData\Local\ChannelAgentPortable`）；它与 `--data-dir` 互斥。示例：
+
+```powershell
+& .\ChannelAgent.exe --data-dir "D:\ChannelAgentData"
+& .\ChannelAgent.exe --use-user-data
+```
+
+默认目录无法写入时，界面提供用户目录、手选目录或取消；显式指定的数据根失败时显示错误，不自动转移到其他目录。安全检查或其他 I/O 错误也会报错。使用非交互初始化诊断可输出新建的 JSON 文件，不启动界面或覆盖已有报告：
+
+```powershell
+Start-Process -FilePath .\ChannelAgent.exe -ArgumentList '--portable-info', 'D:\portable-info.json' -Wait
+```
+
+报告包含实际数据根和各路径，失败时记录错误；输出文件的父目录必须已存在。诊断会初始化选定的数据根并释放内嵌资料，不调用模型。源码运行和 Linux 成品的默认目录不受此便携规则影响。
+
+### 可选隔离命令
+
+没有 WSL 也可使用桌面界面和文件功能；隔离命令需要 WSL2、Linux Python 及依赖，环境不可用时拒绝执行。成品内 `使用说明.txt` 提供独立 Linux 虚拟环境步骤，`WSL/requirements.txt` 从锁文件导出，可用 Linux pip 的 `--require-hashes` 安装。Linux 执行器源码内嵌于包，运行时使用解包资源，不引用开发 checkout；其依赖环境与 Windows 运行库独立。
 
 成品支持离线自检，不调用模型或下载模型，报告仅记录能力通过状态和异常类型：
 
@@ -20,7 +53,7 @@ Windows 可运行原生 Qt 桌面、Web 界面及 Core，Flow 和会话状态支
 & .\ChannelAgent.exe --self-check "$env:TEMP\ChannelAgent-check.json"
 ```
 
-该命令是窗口程序；在 PowerShell 需要等待完成时使用 `Start-Process -Wait`，随后查看报告的 `ok`。配置好 WSL 后，可先设置 `$env:CHANNEL_AGENT_SELF_CHECK_WSL = "1"` 再运行，附加验证真实隔离写入。`manifest.json` 给出成品文件 SHA256，ZIP 旁的 `.sha256` 给出压缩包校验值。测试使用独立临时目录。
+该命令是窗口程序；在 PowerShell 需要等待完成时使用 `Start-Process -Wait`，随后查看报告的 `ok`。报告路径必须不存在，自检也会先初始化所选便携数据根。配置好 WSL 后，可先设置 `$env:CHANNEL_AGENT_SELF_CHECK_WSL = "1"` 再运行，附加验证真实隔离写入。`manifest.json` 给出成品文件 SHA256，ZIP 旁的 `.sha256` 给出压缩包校验值。测试使用独立临时目录。
 
 ## 从源码构建成品
 
@@ -31,7 +64,7 @@ uv sync --locked --group packaging --extra desktop --extra web --extra documents
 uv run --no-sync python -m agent_test.scripts.build_windows
 ```
 
-构建使用锁定的 PyInstaller；窗口包带 Python、Qt、Core、Web/Debug 资源及 CPU 推理依赖。因包含 PyTorch/ONNX 运行库，体积较大。`dist/` 保存免安装目录、ZIP 和校验值；每次构建使用独立名称，不覆盖已有成品。构建和自检记录放在新建的 `.cache/reports/windows-package-*`。构建逐一核对 exe 内的应用字节码与当前源码，从其他工作目录启动实际 exe，移除开发 Python 的路径并执行自检，通过后才生成分发 ZIP。`--skip-self-check` 仅用于定位构建问题，不能据此宣称成品验收通过。
+构建使用锁定的 PyInstaller，默认 `--layout onefile`；需要目录版时传入 `--layout onedir`，该版须保留 exe 同级的 `_internal`。窗口包带 Python、Qt、Core、Web/Debug 资源及 CPU 推理依赖。因包含 PyTorch/ONNX 运行库，体积较大。`dist/` 保存免安装目录、ZIP 和校验值；每次构建使用独立名称，不覆盖已有成品。构建和自检记录放在新建的 `.cache/reports/windows-package-*`。构建逐一核对 exe 内的应用字节码与当前源码，从其他工作目录启动实际 exe，移除开发 Python 的路径并执行自检，通过后才生成分发 ZIP。`--skip-self-check` 仅用于定位构建问题，不能据此宣称成品验收通过。
 
 构建子进程收窄 PATH，避免借用宿主开发工具的 DLL。Qt 依赖 Windows 的系统 ICU，成品排除不兼容的同名 `icuuc.dll` 及其孤立数据 DLL；不要从其他工具目录手动复制这些库进成品。
 
@@ -95,9 +128,9 @@ Windows 的 `local` 命令执行、托管后台命令任务和维护清理当前
 
 状态目录和审计使用当前用户与 SYSTEM 的私有 ACL，所有者显式设为当前用户；管理员身份启动也遵循同一规则。已有模型密钥文件出现非私有所有者或额外授权时拒绝读取，不能通过重新保存自动放宽权限。Windows 状态发布保留文件刷新和句柄重命名。Windows 没有与 POSIX 目录 `fsync` 完全相同的持久化保证，发布后刷新失败时需要重新读取磁盘记录确认结果。
 
-## 本轮验证范围
+## 历史验证范围（2026-11-07）
 
-2026-11-07 在 Windows 原生 CPython 3.12 和 Ubuntu WSL 中验证。所有项目、会话与审计均使用独立临时目录。
+以下为历史验证，不能代表本轮单 exe 的实际验证。2026-11-07 在 Windows 原生 CPython 3.12 和 Ubuntu WSL 中验证。所有项目、会话与审计均使用独立临时目录。
 
 - Windows 原生回归覆盖安全文件、项目持久化、会话复用、模型设置 ACL、Qt、Web、CLI 和上下文归档。新 Windows CI 运行同一类原生用例，真实 WSL 桥接测试通过环境变量显式启用。
 - Windows 到 WSL 的实际测试包含项目写入、拒绝确认、取消后子进程收尾、外部硬链接和 junction 边界，以及原生审计写入失败后阻止执行。

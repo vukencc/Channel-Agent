@@ -6,6 +6,8 @@
 
 ## 当前工作与 Git
 
+- 2026-11-13，Windows 便携单 exe 正在验收：冻结入口默认实际 exe 父目录，先安全初始化再导入配置，支持 `--data-dir` / `--use-user-data` 和默认目录不可写时的选择；配置/会话/缓存分区，内嵌公开资源首次释放不覆盖，PyInstaller 默认 onefile、可显式 onedir。Linux/源码布局不变。新专项 Linux 107 passed、4 项 Windows 句柄用例待原生执行；真实 Bubblewrap/prlimit 通过。此项尚未构建实际单 exe，不能沿用下面旧目录包的验证结论；最终状态将继续更新。
+
 - 2026-11-12，用户明确批准设计助手独立有界总生成预算 192,000 字符，正文仍 48,000；新增 `FLOW_DESIGNER_TOTAL_OUTPUT_CHARS`，请求隔离并按有效总量保守预留费用，普通 Agent 和停止/取消不变。原提示词、原模型及 `xhigh` 真实生成/导入通过：116.923 秒，五节点、四边、四动态工具，8 结构及 8 导入/导出/重载幂等检查通过；未运行节点/工具。成功轮总量 39,342 低于旧 48,000，不能归因于额度增加或宣称性能提升。源码实现 `fa9b455`，44 项新回归 `4b497e3`，Linux 全量 2388 passed、Native 专项 147 passed；[CI 43225207933](https://github.com/vukencc/Channel-Agent/actions/runs/43225207933) Linux 2382、Windows 850 passed。实际模板的 Chromium 1440/416 与 Qt 离屏导入导出均通过，未改 UI。最终过程见[长请求记录](designer-long-running-validation-2026-11-12.md)，交付状态查看 [PR #51](https://github.com/vukencc/Channel-Agent/pull/51)。
 - 本轮新 exe：`D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.5.0-windows-x64-20261112-135746\ChannelAgent.exe`，干净来源 `4b497e3`；构建及独立实际 exe 离线自检各 **15/15**，127 应用模块、11 静态资源和 91 WSL Core 源码一致，ZIP CRC/全文件哈希通过。ZIP SHA256 为 `75ac1a2e6e060ac880041d364bffb42388b4dbf8e9895957360d408b1a1a1cd2`。首次构建漏装文档 extra 导致 14/15，按既有指南补齐后重建，失败保留、不削弱验收。关闭旧版后打开新成品，保留 `_internal`；原用户数据不变，本轮无新标签。
 - 授权前的验证：取消固定总时限的 `cd58187` 对应进行中的 [PR #51](https://github.com/vukencc/Channel-Agent/pull/51)。普通 Agent 90 秒、网络空闲、预算、停止/清空取消保留。原 588 字符客服需求逐字固定，Windows 原生 `xhigh` 在 164.497 秒触及旧 48,000 合计输出上限（48,001 推理、0 正文），当时未生成或导入模板，没有降强度、简化或盲目重试。后续明确授权及成功结果见上项。以下旧成品不包含本项修复。

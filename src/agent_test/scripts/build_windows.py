@@ -5,6 +5,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import marshal
 import os
@@ -68,6 +69,17 @@ def build_environment(root: Path, icon: Path) -> dict[str, str]:
             'PYTHON_DOTENV_DISABLED': '1',
             'PATH': os.pathsep.join([str(Path(sys.executable).parent), str(Path(sys.base_prefix)),
                                    str(system / 'System32'), str(system)])}
+
+
+def check_build_dependencies() -> None:
+    """构建前检查必需的打包和可选功能依赖，不修改环境。"""
+    required = ('PyInstaller', 'PySide6', 'fastapi', 'docx', 'pypdf', 'PIL',
+                'numpy', 'torch', 'onnxruntime', 'fastembed', 'transformers',
+                'sentence_transformers', 'jieba')
+    missing = [name for name in required if importlib.util.find_spec(name) is None]
+    if missing:
+        raise SystemExit('缺少构建依赖：' + ', '.join(missing) +
+                         '\n请运行 uv sync --locked --group packaging --extra desktop --extra web --extra documents --extra vision --python 3.12')
 
 
 def copy_dependency_licenses(destination: Path) -> None:
@@ -144,19 +156,44 @@ def verify_application_code(executable: Path) -> int:
     return count + 1
 
 
-def _write_readme(destination: Path, version: str) -> None:
+def verify_onefile_resources(executable: Path, resources: Path) -> int:
+    """核对单文件归档中的静态文件、WSL 源码及分发资源。"""
+    from PyInstaller.archive.readers import CArchiveReader
+    archive = CArchiveReader(str(executable))
+    names = {name.replace('\\', '/'): name for name in archive.toc}
+    root = source_root()
+    expected: list[tuple[str, Path]] = []
+    for package, relative in (('agent_frontend', 'desktop/assets'),
+                              ('agent_frontend', 'web/static'), ('agent_test', 'static')):
+        base = root / 'src' / package / relative
+        expected.extend((f'{package}/{relative}/{path.name}', path)
+                        for path in base.iterdir() if path.is_file())
+    core = root / 'src/agent_core'
+    expected.extend((f'wsl_runtime/agent_core/{path.relative_to(core).as_posix()}', path)
+                    for path in core.rglob('*.py') if '__pycache__' not in path.parts and not path.is_symlink())
+    expected.extend((f'portable_resources/{path.relative_to(resources).as_posix()}', path)
+                    for path in resources.rglob('*') if path.is_file())
+    for name, path in expected:
+        if name not in names or archive.extract(names[name]) != path.read_bytes():
+            raise RuntimeError(f'成品资源与当前源码不一致：{name}')
+    return len(expected)
+
+
+def _write_readme(destination: Path, version: str, layout: str = 'onefile') -> None:
     text = f'''ChannelAgent {version} · Windows x64 免安装版
 
 一、打开应用
-将整个文件夹解压到本地盘，双击 ChannelAgent.exe。无需安装 Windows Python。
-请保留 _internal 目录，不能只移动 exe。首次打开后在左下角「模型管理」添加模型连接。
+将 ChannelAgent.exe 放到本地盘可写目录并双击。无需安装 Windows Python。
+单文件启动时运行库临时解压到系统临时目录，退出后由启动器清理。
+首次打开后在左下角「模型管理」添加模型连接。
 新建项目时选择您自己的项目目录；也可以先设计 Flow 模板，运行时再绑定项目。
 
 二、您的数据
-默认配置、会话、日志和缓存放在 %LOCALAPPDATA%\\ChannelAgent。
-可将 configuration.example.env 复制为该目录下的 .env 后按需修改；已有配置不会覆盖。
+默认配置、会话、日志和缓存放在 exe 所在目录。
+首次运行自动创建 .env；按需编辑已有文件，configuration.example.env 仅供参考。
+若程序目录不可写，会提示使用用户目录、选择其他目录或取消；不需要管理员权限。
 模型连接可在界面里管理。此包不附带任何用户凭据、会话、项目或本地模型权重。
-程序文件夹可以搬移；更新时替换程序目录即可，用户数据保留在上述独立目录。
+搬移时请一并保留您的配置和数据。可通过 --data-dir 或 --use-user-data 选择其他数据根。
 
 三、隔离命令（可选 WSL2）
 Windows 负责桌面、Core、文件操作与 Flow；运行命令需要 WSL2 Linux 环境。
@@ -180,12 +217,19 @@ Windows 负责桌面、Core、文件操作与 Flow；运行命令需要 WSL2 Lin
 自检使用临时数据，不请求模型服务。需要测试 WSL 时先设置 CHANNEL_AGENT_SELF_CHECK_WSL=1。
 manifest.json 提供文件校验值；程序尚未进行商业代码签名。
 '''
+    if layout == 'onedir':
+        text = text.replace('将 ChannelAgent.exe 放到本地盘可写目录并双击。',
+                            '将整个文件夹放到本地盘可写目录，保留 _internal 并双击 ChannelAgent.exe。')
+        text = text.replace('单文件启动时运行库临时解压到系统临时目录，退出后由启动器清理。', '')
     (destination / '使用说明.txt').write_text(text, encoding='utf-8-sig')
 
 
-def build(output_dir: Path, *, uv: str, smoke: bool = True) -> Path:
+def build(output_dir: Path, *, uv: str, smoke: bool = True, layout: str = 'onefile') -> Path:
     if sys.platform != 'win32':
         raise SystemExit('Windows 成品必须使用 Windows 原生 Python 构建。')
+    if layout not in ('onefile', 'onedir'):
+        raise ValueError('无效的 Windows 构建布局')
+    check_build_dependencies()
     root = source_root()
     report_parent = root / '.cache' / 'reports'
     report_parent.mkdir(parents=True, exist_ok=True)
@@ -193,14 +237,38 @@ def build(output_dir: Path, *, uv: str, smoke: bool = True) -> Path:
     icon = work / 'ChannelAgent.ico'
     create_icon(icon)
     environment = build_environment(root, icon)
+    resources = work / 'portable_resources'
+    resources.mkdir()
+    prepare_resources(resources, uv=uv, layout=layout)
+    environment['CHANNEL_AGENT_BUILD_LAYOUT'] = layout
+    environment['CHANNEL_AGENT_BUILD_RESOURCES'] = str(resources)
     spec = root / 'src/agent_test/packaging/windows/ChannelAgent.spec'
     _run([sys.executable, '-m', 'PyInstaller', '--noconfirm',
           '--distpath', str(work / 'dist'), '--workpath', str(work / 'build'), str(spec)],
          cwd=root, env=environment)
-    return assemble(work / 'dist' / 'ChannelAgent', output_dir, work=work, uv=uv, smoke=smoke)
+    bundle = work / 'dist' / ('ChannelAgent.exe' if layout == 'onefile' else 'ChannelAgent')
+    return assemble(bundle, output_dir, work=work, uv=uv, smoke=smoke, resources=resources)
 
 
-def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool = True) -> Path:
+def prepare_resources(destination: Path, *, uv: str, layout: str = 'onefile') -> None:
+    """构建前生成随 exe 内嵌且同时提供给分发包的资源。"""
+    root = source_root()
+    version = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+    shutil.copyfile(root / '.env.example', destination / 'configuration.example.env')
+    if (root / 'LICENSE').is_file():
+        shutil.copyfile(root / 'LICENSE', destination / 'LICENSE.txt')
+    copy_dependency_licenses(destination)
+    _write_readme(destination, version, layout)
+    wsl = destination / 'WSL'
+    wsl.mkdir()
+    subprocess.run([uv, 'export', '--locked', '--package', 'ai-agent-core', '--no-dev',
+                    '--no-emit-workspace', '--emit-index-url', '--format', 'requirements-txt',
+                    '--output-file', str(wsl / 'requirements.txt')],
+                   cwd=root, check=True, stdout=subprocess.DEVNULL)
+
+
+def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool = True,
+             resources: Path | None = None) -> Path:
     """把冻结结果整理为可分发成品；实际 exe 验收通过后才生成 ZIP。"""
     root = source_root()
     version = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
@@ -211,19 +279,22 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
     destination = output_dir / name
     if destination.exists():
         raise FileExistsError('目标成品目录已存在，请选择其他输出目录。')
-    shutil.copytree(bundle, destination)
+    if bundle.is_file():
+        destination.mkdir()
+        shutil.copyfile(bundle, destination / 'ChannelAgent.exe')
+    else:
+        shutil.copytree(bundle, destination)
     verified_modules = verify_application_code(destination / 'ChannelAgent.exe')
-    shutil.copyfile(root / '.env.example', destination / 'configuration.example.env')
-    if (root / 'LICENSE').is_file():
-        shutil.copyfile(root / 'LICENSE', destination / 'LICENSE.txt')
-    copy_dependency_licenses(destination)
-    _write_readme(destination, version)
-    wsl = destination / 'WSL'
-    wsl.mkdir()
-    subprocess.run([uv, 'export', '--locked', '--package', 'ai-agent-core', '--no-dev',
-                    '--no-emit-workspace', '--emit-index-url', '--format', 'requirements-txt',
-                    '--output-file', str(wsl / 'requirements.txt')],
-                   cwd=root, check=True, stdout=subprocess.DEVNULL)
+    if resources is None:
+        resources = work / 'portable_resources'
+        resources.mkdir()
+        prepare_resources(resources, uv=uv)
+    verified_resources = verify_onefile_resources(destination / 'ChannelAgent.exe', resources) if bundle.is_file() else None
+    shutil.copytree(resources, destination, dirs_exist_ok=True)
+    executable = destination / 'ChannelAgent.exe'
+    with executable.open('rb') as stream:
+        exe_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    (destination / 'ChannelAgent.exe.sha256').write_text(f'{exe_digest}  ChannelAgent.exe\n', encoding='utf-8')
     if smoke:
         smoke_environment = {**os.environ, 'PYTHON_DOTENV_DISABLED': '1', 'QT_QPA_PLATFORM': 'offscreen',
                              'AI_AGENT_PROJECT_ROOT': str(work / 'self-check-user'),
@@ -251,6 +322,7 @@ def assemble(bundle: Path, output_dir: Path, *, work: Path, uv: str, smoke: bool
                 'python': sys.version.split()[0],
                 'pyinstaller': importlib.metadata.version('pyinstaller'),
                 'verified_application_modules': verified_modules,
+                'verified_onefile_resources': verified_resources,
                 'files': file_manifest(destination)}
     (destination / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     archive = output_dir / f'{name}.zip'
@@ -269,9 +341,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, default=source_root() / 'dist')
     parser.add_argument('--uv', default=shutil.which('uv') or 'uv')
+    parser.add_argument('--layout', choices=('onefile', 'onedir'), default='onefile')
     parser.add_argument('--skip-self-check', action='store_true', help='仅用于定位构建问题，不得作为验收通过发布')
     arguments = parser.parse_args()
-    build(arguments.output_dir, uv=arguments.uv, smoke=not arguments.skip_self_check)
+    build(arguments.output_dir, uv=arguments.uv, smoke=not arguments.skip_self_check, layout=arguments.layout)
 
 
 if __name__ == '__main__':

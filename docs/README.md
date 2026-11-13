@@ -7,7 +7,7 @@
 ## 开始使用与现行指南
 
 - [快速上手](getting-started.md)：安装、模型连接、首个会话与 Flow 项目。
-- [Windows 指南](windows.md)：原生界面、独立 WSL 隔离命令环境与当前限制。
+- [Windows 指南](windows.md)：单 exe 首启、数据目录、依赖、独立 WSL 隔离命令环境与当前限制。
 - [Linux 成品指南](linux.md)：免安装桌面、系统依赖、XDG 数据目录与构建验证。
 - [项目阶段状态](project-status.md)：交付、验证类型与当前边界。
 

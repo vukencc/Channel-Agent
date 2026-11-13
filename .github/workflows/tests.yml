@@ -79,6 +79,7 @@ jobs:
             'src/agent_test/tests/test_session_persistence_barrier.py',
             'src/agent_test/tests/test_web_sse_terminal.py',
             'src/agent_test/tests/test_config.py',
+            'src/agent_test/tests/test_portable_core_paths.py',
             'src/agent_test/tests/test_chunking.py',
             'src/agent_test/tests/test_context.py',
             'src/agent_test/tests/test_context_boundaries.py',

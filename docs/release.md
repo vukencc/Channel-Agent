@@ -13,7 +13,7 @@
 
 ## 发布清单
 
-Windows ZIP 与 Linux x64 tar.gz 的本地构建、自检和校验值见 [Windows 指南](windows.md)及 [Linux 成品指南](linux.md)。构建包不包含 `.env`、会话、项目、日志或模型权重。对外分发须保留完整目录和依赖许可证；本地未提交源码构建须按清单中的 `working_tree_modified` 标记，不得冒充已发布 tag。
+Windows ZIP 与 Linux x64 tar.gz 的本地构建、自检和校验值见 [Windows 指南](windows.md)及 [Linux 成品指南](linux.md)。构建包不包含 `.env`、会话、项目、日志或模型权重。Windows 默认构建为单 exe，目录版需保留 `_internal`；对外分发须保留依赖许可证及随包资料。本地未提交源码构建须按清单中的 `working_tree_modified` 标记，不得冒充已发布 tag。
 
 1. 同步根和 `src/agent_core/`、`src/agent_test/`、`src/agent_frontend/` 中的包版本及精确模块依赖，运行 `uv lock`；在 `CHANGELOG.md` 添加对应版本标题。通过 PR 合入 `main`，不要直接 push `main`。
 2. 确认没有待保留的未提交改动，再拉取和快进本地 `main`；有开发工作时先完成交付或使用独立工作区，不能重置或清理：

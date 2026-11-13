@@ -218,7 +218,7 @@ def fsync_directory(path: Path) -> None:
         pass
 
 
-def rename_noreplace(source: Path, target: Path) -> None:
+def rename_noreplace(source: Path, target: Path, *, file_only: bool = False) -> None:
     """锁定父目录并以源句柄原子移动，不覆盖目标。"""
     source, target = Path(source), Path(target)
     _validate(source)
@@ -235,6 +235,8 @@ def rename_noreplace(source: Path, target: Path) -> None:
                     raise ctypes.WinError(ctypes.get_last_error())
                 if info.attributes & 0x400:
                     raise PermissionError('源路径不允许重解析点')
+                if file_only and (info.attributes & 0x10 or info.links != 1):
+                    raise PermissionError('源路径必须是单链接普通文件')
                 name = str(target).encode('utf-16-le')
                 class _RenameInfo(ctypes.Structure):
                     _fields_ = [('replace', wintypes.BOOLEAN),
