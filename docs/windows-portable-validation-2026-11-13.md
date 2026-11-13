@@ -4,6 +4,8 @@
 
 本轮将 Windows 冻结入口改为默认使用实际 exe 所在目录，而不是开发 checkout、当前工作目录或旧版用户目录。目标为 Windows 10/11 x64；Linux 与源码运行的默认布局保持。技术栈为 CPython 3.12、PySide6/Qt、现有 AgentCore、FastAPI/Web 资源及 CPU 检索依赖，采用 PyInstaller onefile，保留显式 onedir 选项。
 
+当前验证分为真实 exe、原生源码与受控 Qt 组件三类：0.6.0 候选默认首启离线自检 15/15、真实 NTFS 只读回归 10/10、独立 exe/ZIP 字节与校验通过；源码 Qt 离屏五项通过。可见窗口交互曾被用户 Esc 停止，未计为通过。代码与发布入口为 [PR #52](https://github.com/vukencc/Channel-Agent/pull/52) 和 [0.6.0 Release](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.0)。以下本机候选哈希不代替正式标签流水线资产的摘要。
+
 ## 初始化与路径边界
 
 1. bootloader 先将内嵌运行库展开到操作系统临时目录；`sys.executable` 仍指向用户拿到的 exe，`_MEIPASS` 仅供读取运行资源。
@@ -24,10 +26,11 @@
 | Linux 新增/相关专项 | 107 passed、4 Windows 专属 skipped |
 | Windows 原生专项 | 110 passed、21 skipped；包含实际 Windows 文件句柄分支，跳过项含宿主缺少符号链接权限及 POSIX 专项 |
 | 真实隔离探针 | Bubblewrap + prlimit 通过，未放宽沙箱 |
-| Linux 完整回归 | 最新修复后 2476 passed、49 skipped、5 deselected（187.10 秒），独立网络命名空间、临时数据路径，未改变测试断言；先前轮为 2476 passed、46 skipped（185.79 秒） |
-| 双平台 CI | [43348181678](https://github.com/vukencc/Channel-Agent/actions/runs/43348181678)，来源 `9fa4e7f`，Windows 945 passed、48 skipped，两任务通过；此前 `ac200c5` 的 [43344439705](https://github.com/vukencc/Channel-Agent/actions/runs/43344439705) 也通过 |
+| Linux 完整回归 | 最新 2480 passed、50 skipped、5 deselected（200.11 秒），真实隔离探针通过；此前 2476 passed、49 skipped、5 deselected（187.10 秒），独立网络命名空间、临时数据路径，未改变测试断言；更早为 2476 passed、46 skipped（185.79 秒） |
+| 双平台 CI | [43351849509](https://github.com/vukencc/Channel-Agent/actions/runs/43351849509)：Linux 2475 passed、55 skipped、5 deselected；Windows 950 passed、48 skipped，均通过。此前 [43348181678](https://github.com/vukencc/Channel-Agent/actions/runs/43348181678) 来源 `9fa4e7f`，Windows 945 passed、48 skipped；`ac200c5` 的 [43344439705](https://github.com/vukencc/Channel-Agent/actions/runs/43344439705) 也通过 |
 | 只读审查 | 最终实现无新增确定缺陷；原先两项审查发现已有红测及修复 |
-| 实际单 exe | 修复版构建自检 15/15；默认根首启、重复保留配置和中文空格路径搬移通过。显式根、只读回退与可见 GUI 的最终结果待补 |
+| 实际单 exe | 0.6.0 候选仅 exe 自检 15/15；实际只读 CLI 负例通过，具体范围见下文。可见 GUI 交互未完成 |
+| Source Qt 离屏组件 | 5 passed（9.50 秒）；真实 NTFS 拒绝创建触发真实 QMessageBox，验证用户目录、手选目录、取消、选择器取消和不安全配置拒绝。只有系统目录选择器被替换，frozen 元数据及公开资源为受控夹具，不是实际 exe 可见交互 |
 
 Linux 首轮完整回归为 3 failed、2464 passed、46 skipped、5 deselected（232.13 秒）。一个失败来自配置模板漏列两个新设置，已补齐并用原配置覆盖断言验证；另一个是测试更新期间收集的旧 bare-key 夹具，新专项已按 dotenv 真正语法错误验证。第三个旧代理用例期望连接 `127.0.0.1:1` 立即被拒，但本机 WSL 该端口实际超时。原用例隔离重跑仍失败；相同原用例在独立网络命名空间 1 passed（0.11 秒），直接 socket 对照分别为超时和 `ECONNREFUSED`。未改代理实现、宿主网络、时限或原断言，保留原环境失败。
 
@@ -45,7 +48,27 @@ Linux 首轮完整回归为 3 failed、2464 passed、46 skipped、5 deselected�
 
 `077bb74` 的 [CI 43347227648](https://github.com/vukencc/Channel-Agent/actions/runs/43347227648) Windows 为 942 passed、48 skipped、3 errors：管理员运行器的默认 token owner 是 Administrators，测试夹具不能假定新文件已归 token user。`9fa4e7f` 仅修复夹具：复制线程令牌，将副本的默认 owner 设为当前用户并禁用副本特权，结束时恢复原线程身份，保留 OWNER 重写必须被拒绝等断言；没有修改原进程令牌、系统安全设置或产品权限。Native 3 passed（4.33 秒），管理员 CI 随后通过。
 
-修复版 `ChannelAgent.exe` 为 331,131,590 字节，构建自检从仅含 exe 的默认根运行，离线 15/15；128 应用模块一致。实际复制单 exe 的首次启动、重复保留配置与中文空格路径搬移通过。显式根、只读回退和可见 GUI 在中断前未完成，不能记为通过；最终成品来源、SHA256 与后续结果待补。此前 onedir 成品及第一份 onefile 的构建通过均不能代替它们。
+旧修复版 `ChannelAgent.exe` 为 331,131,590 字节，构建自检从仅含 exe 的默认根运行，离线 15/15；128 应用模块一致。实际复制单 exe 的首次启动、重复保留配置与中文空格路径搬移通过；其六项 CLI 正例通过，两项只读用例出错，见下文。中断前可见 GUI 未完成。此前 onedir 成品及第一份 onefile 的构建通过均不能代替它们。
+
+### NTFS 拒绝创建与回退修复
+
+继续验证 `020226` 成品时，在真实 NTFS 根对当前用户 SID 拒绝创建权限（`0x6`）：界面只显示初始化锁安全检查错误，没有出现回退选择。命令行复现退出 1、耗时 41.143 秒，报告 `error.type=unsafe`；独立写入权限检查确认目录确实不可写。证据分别位于本轮 `portable-fallback-resume-20261113-d5e1a047` 和 `portable-cli-remaining-20261113-d9030196` 独立报告目录。该成品的回退验证因此失败。
+
+`7873f4d` 修复初始化锁处理：直接由操作系统返回的 `EACCES`、`EPERM` 或 `EROFS` 按不可写处理；没有 errno 的手工安全检查仍判为不安全，不放宽原边界。有效 WSL 红测后转绿，两文件 82 passed、8 skipped；Windows 原生修复后 70 passed、20 skipped（79.55 秒），包含真实 ACL 拒绝创建回归。最初红测夹具的 monkeypatch 曾误触 `os.supports_dir_fd`，纠正后才得到有效复现，不能把夹具错误记作产品红测。
+
+第一次 0.6.0 构建为加入此修复，在 Analysis 阶段主动停止，未形成成品。上述自动回归不能代替新成品验证。
+
+### 0.6.0 候选成品
+
+新冻结来源 `7873f4d`，实际 exe 为 331,131,240 字节；三个模块内嵌元数据和随包说明均为 0.6.0。128 个应用代码模块及 327 项资源（12 静态、91 WSL 源码、224 公开资料）核对一致；实际仅 exe、默认根的离线自检 15/15。manifest 标记工作树干净，227 个文件哈希通过。第三方索引无 userinfo，包内没有实际 `.env`、会话、凭据或模型权重。
+
+独立 exe 位于原生构建目录 `dist/ChannelAgent-0.6.0-windows-x64.exe`，旁有 `.sha256`。独立 exe、ZIP 内 exe、输入及仅 exe 自检副本的 SHA256 均为 `98392f3ed981c9b9907c3d9c5b55f61fc735c05f23983a1d7725a5ae8746e54e`。ZIP `ChannelAgent-0.6.0-windows-x64-20261113-024134.zip` 为 329,384,863 字节，228 项 CRC 与逐字节核对通过，SHA256 为 `42542a67501eccb5676393aad411d904af096f384bc68b5ffd513ce9c98c7167`。
+
+真实 NTFS 只读负例使用两个实际 exe 进程：默认根退出 1（58.940 秒），显式只读根退出 1（58.476 秒），均报告 `unwritable` 且未初始化其他根；10/10 断言通过、无超时，finally 恢复 ACL 并以实际写入验证。报告位于 `portable-cli-readonly-060-20261113-62871b25`。这是 CLI 负例，不证明 GUI 回退选择已通过。
+
+用户再次按 Esc 停止 Computer Use 后，已停止本轮所属 GUI 测试进程并恢复 ACL；没有继续桌面输入。可见 GUI 交互未完成，不能记为通过。随后在独立原生源码测试中，以离屏 Qt 和真实 NTFS 拒绝创建，驱动实际消息框按钮完成五项受控组件检查；手选目录仅替换系统选择器的返回值，取消及不安全现有配置仍拒绝且不修改原文。五项 9.50 秒通过，不能追认为实际 exe 可见交互通过。
+
+正式发布由合并后的注解标签触发双平台回归、镜像及成品构建。发布后的实际状态与资产摘要以 [0.6.0 Release](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.0) 及对应工作流为准，不能把本机候选重命名成正式构建。
 
 不依赖 .NET、外部 Windows Python、uv 或 Node 才能打开 GUI。修复版所选 PE 导入审计未发现缺失导入或 CLR，Python、Qt 与所需 VC 运行库随包提供；这不是干净虚拟机测试，不能据此宣称所有系统兼容。隔离命令仍可选依赖 WSL2 及 Linux 执行依赖，模型连接和本地检索权重由用户自行配置。
 

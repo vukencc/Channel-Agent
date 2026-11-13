@@ -2,9 +2,12 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-12，稳定版 0.5.0 已发布；本轮修复设计助手连接与对话布局，未发布新标签。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。最新源码、PR、CI 与本地成品状态以以下记录为准。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
+截至 2026-11-13，本轮交付版本为 0.6.0，包含 Windows 便携单文件、工作区记忆及设计助手修复。代码入口为 [PR #52](https://github.com/vukencc/Channel-Agent/pull/52)，正式资产及发布状态以 [0.6.0 Release](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.0) 为准；标签工作流会从合并后的源码重新构建。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent，源码同步至 WSL 仓库。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
+
+- 0.6.0 本机候选已通过真实 only-exe 15/15、自定义数据根/配置保留及真实只读 CLI；独立 exe 为 `D:\AI\AgentSrcCode\ChannelAgent\dist\ChannelAgent-0.6.0-windows-x64.exe`，source `7873f4d`、331,131,240 字节，SHA256 `98392f3ed981c9b9907c3d9c5b55f61fc735c05f23983a1d7725a5ae8746e54e`。ZIP 命名已修复，清单、CRC 与全部文件哈希通过。内嵌三模块均 0.6.0，128 应用模块和 327 资源一致，没有实际凭据/会话/模型权重。正式 CI 资产不得用此候选冒充，详情见[便携验收记录](windows-portable-validation-2026-11-13.md)。
+- 续验发现并修复 Windows `os.open` 直接 PermissionError(errno13) 被错误归为 unsafe，无法弹默认回退框的问题（`7873f4d`）。真实 0.6.0 只读两例共10/10断言通过；最新本机 Linux 全量 2480 passed、50 skipped、5 deselected；[CI 43351849509](https://github.com/vukencc/Channel-Agent/actions/runs/43351849509) Linux2475/Windows950 passed。`7ab90be` 新增五项原生 Source Qt 离屏按钮/取消/拒绝回归，Native 5 passed（9.50 秒）。用户再次 Esc 停止桌面自动化后，已停止所属 GUI 测试进程并恢复临时 ACL，不再桌面输入；离屏组件不算可见交互验收。以下中断及初始候选状态保留为历史快照，最终 Git/发布状态以顶部链接为准。
 
 - 2026-11-13 续做：用户明确要求完成回退与 ZIP 收尾、合并 PR 并发布包含独立 exe 的新版本。目标版本 **0.6.0**，四包及精确依赖已同步，锁定依赖同步通过；发布工作流增加版本化独立 exe 与 SHA256，保留 ZIP/Linux 包和原完整自检。旧 0.5.0 冻结包仅用于相同启动逻辑的回退验收，正式 0.6.0 将重新冻结并由标签工作流构建。以下中断记录为当时快照，当前验证和发布结果将继续补充。
 

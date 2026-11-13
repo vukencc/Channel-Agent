@@ -6,7 +6,7 @@ Windows 可运行原生 Qt 桌面、Web 界面及 Core，Flow 和会话状态支
 
 ## 使用免安装成品
 
-成品目标为 Windows 10/11 x64。从 [Releases](https://github.com/vukencc/Channel-Agent/releases) 下载独立 exe 和对应的 `.sha256` 校验文件；ZIP 为可选分发形式。将 `ChannelAgent.exe` 放在本地可写 NTFS 目录并双击；首次在「模型管理」添加连接，再创建项目或 Flow 模板。默认构建为 PyInstaller 单 exe：Python、Qt、Core、文档/图片和本地检索运行依赖均打包，无需另装 Windows Python、uv、Node 或 .NET。启动时 bootloader 将运行库解包到系统临时目录，持久数据仍在选定的数据根。模型权重不随包分发，本地 RAG 首次使用可能下载模型，也可配置已有模型或云端 Embedding。本轮修复版所选 PE 导入审计显示 Python、Qt 和所需 VC 运行库随包提供，未发现缺失导入或 CLR；这不是干净虚拟机兼容性测试。当前包未进行商业代码签名。
+成品目标为 Windows 10/11 x64。从 [Releases](https://github.com/vukencc/Channel-Agent/releases) 下载独立 exe 和对应的 `.sha256` 校验文件；ZIP 为可选分发形式。将独立 `ChannelAgent-<版本>-windows-x64.exe`（或 ZIP 内的 `ChannelAgent.exe`）放在本地可写 NTFS 目录并双击，不需要改名；首次在「模型管理」添加连接，再创建项目或 Flow 模板。默认构建为 PyInstaller 单 exe：Python、Qt、Core、文档/图片和本地检索运行依赖均打包，无需另装 Windows Python、uv、Node 或 .NET。启动时 bootloader 将运行库解包到系统临时目录，持久数据仍在选定的数据根。模型权重不随包分发，本地 RAG 首次使用可能下载模型，也可配置已有模型或云端 Embedding。本轮修复版所选 PE 导入审计显示 Python、Qt 和所需 VC 运行库随包提供，未发现缺失导入或 CLR；这不是干净虚拟机兼容性测试。当前包未进行商业代码签名。
 
 ### 数据根与首次启动
 
@@ -35,7 +35,9 @@ Windows 可运行原生 Qt 桌面、Web 界面及 Core，Flow 和会话状态支
 & .\ChannelAgent.exe --use-user-data
 ```
 
-默认目录无法写入时，界面提供用户目录、手选目录或取消；显式指定的数据根失败时显示错误，不自动转移到其他目录。安全检查或其他 I/O 错误也会报错。使用非交互初始化诊断可输出新建的 JSON 文件，不启动界面或覆盖已有报告：
+默认目录无法写入时，界面提供用户目录、手选目录或取消；显式指定的数据根失败时显示错误，不自动转移到其他目录。安全检查或其他 I/O 错误也会报错。0.6.0 候选成品已验证真实只读目录的命令行错误分类；可见 GUI 回退交互尚未完成，过程见[验证记录](windows-portable-validation-2026-11-13.md)。
+
+使用非交互初始化诊断可输出新建的 JSON 文件，不启动界面或覆盖已有报告：
 
 ```powershell
 Start-Process -FilePath .\ChannelAgent.exe -ArgumentList '--portable-info', 'D:\portable-info.json' -Wait
