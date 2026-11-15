@@ -105,6 +105,7 @@ jobs:
             'src/agent_test/tests/test_history_search.py',
             'src/agent_test/tests/test_structured_sessions.py',
             'src/agent_test/tests/test_audit_writer_directory.py',
+            'src/agent_test/tests/test_perf08_audit.py',
             'src/agent_test/tests/test_flow_handoff_finalization.py',
             'src/agent_test/tests/test_flow_working.py',
             'src/agent_test/tests/test_working_child_turn.py',
