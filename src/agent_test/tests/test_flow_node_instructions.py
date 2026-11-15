@@ -37,7 +37,9 @@ def test_each_node_receives_its_scope_after_handoff(tmp_path, monkeypatch, struc
         for history, title, prompt in zip(seen, ("需求", "实现"), ("只写规格", "只实现前端")):
             assert any(prompt in m["content"] for m in history if m["role"] == "system")
             message = history[-1]["content"]
-            assert message.index("总体背景") < message.index(title) < message.index(prompt)
+            assert prompt not in message
+            assert message.index("总体背景") < message.index(title) < message.index("当前节点任务")
+            assert "遵循系统消息中的当前节点任务与输出约束" in message
             assert "只执行当前节点" in message and "后续" in message
         assert "第一阶段实际输出" in seen[1][-1]["content"]
         await manager.flush()

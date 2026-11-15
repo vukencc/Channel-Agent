@@ -95,6 +95,7 @@ jobs:
             'src/agent_test/tests/test_free16_prompt_templates.py',
             'src/agent_test/tests/test_web_flow_ui.py',
             'src/agent_test/tests/test_flow_handoff_contract.py',
+            'src/agent_test/tests/test_flow_handoff_context.py',
             'src/agent_test/tests/test_flow_handoff_finalization.py',
             'src/agent_test/tests/test_flow_working.py',
             'src/agent_test/tests/test_working_child_turn.py',
