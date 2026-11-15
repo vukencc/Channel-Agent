@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager, ExitStack
 from contextvars import copy_context
 import hashlib
 import json
@@ -23,6 +23,7 @@ from agent_core.core.messages import is_user_request
 from agent_core.core.session_limits import limit as session_limit
 from agent_core.core.storage import now, wait_for_io_completion
 from agent_core.core.instrumentation import operation_span, traced
+from agent_core.core.files import opened_path
 
 if TYPE_CHECKING:
     from agent_core.core.sessions import Session, SessionManager
@@ -148,20 +149,88 @@ class HistoryContext:
         return await wait_for_io_completion(future)
 
     def _folder(self, session):
-        directory = self.manager.store.directory(session.id) / 'context'
-        for path in (directory, directory / 'chunks'):
-            if path.is_symlink() or path.exists() and not path.is_dir():
-                raise PermissionError('私有上下文目录不能是链接或其他文件')
-        return directory
+        return self.manager.store.directory(session.id) / 'context'
+
+    @contextmanager
+    def _directories(self, session, *, create=False):
+        """固定本次操作的会话与历史目录。"""
+        root = self.manager.store.root
+        session_dir = self.manager.store.directory(session.id)
+        folder = session_dir / 'context'
+        with ExitStack() as stack:
+            root_fd = stack.enter_context(opened_path(root, root, directory=True))
+            try:
+                if os.name == 'nt':
+                    if create:
+                        try:
+                            session_dir.mkdir(mode=0o700)
+                        except FileExistsError:
+                            pass
+                    parent = stack.enter_context(opened_path(root, session_dir, directory=True))
+                else:
+                    if create:
+                        try:
+                            os.mkdir(session.id, 0o700, dir_fd=root_fd)
+                        except FileExistsError:
+                            pass
+                    parent = os.open(session.id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=root_fd)
+                    stack.callback(os.close, parent)
+            except FileNotFoundError:
+                if create:
+                    raise
+                yield folder, None, None, None
+                return
+            except OSError as exc:
+                raise PermissionError('会话目录无效') from exc
+            descriptors = [parent]
+            current = session_dir
+            for name in ('context', 'chunks'):
+                current = current / name
+                try:
+                    if os.name == 'nt':
+                        if create:
+                            try:
+                                current.mkdir(mode=0o700)
+                            except FileExistsError:
+                                pass
+                        descriptor = stack.enter_context(opened_path(root, current, directory=True))
+                    else:
+                        if create:
+                            try:
+                                os.mkdir(name, 0o700, dir_fd=parent)
+                            except FileExistsError:
+                                pass
+                        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                             dir_fd=parent)
+                        stack.callback(os.close, descriptor)
+                except FileNotFoundError:
+                    if create:
+                        raise
+                    descriptors.extend([None] * (3 - len(descriptors)))
+                    break
+                except OSError as exc:
+                    raise PermissionError('私有上下文目录无效') from exc
+                descriptors.append(descriptor)
+                parent = descriptor
+            yield folder, *descriptors
 
     @staticmethod
-    def _read_json(path):
-        if path.is_symlink():
-            raise PermissionError('历史文件不能是符号链接')
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
-                             | getattr(os, 'O_NONBLOCK', 0))
-        with os.fdopen(descriptor, 'rb') as stream:
-            info = os.fstat(stream.fileno())
+    def _read_json(path, directory_fd=None):
+        if os.name == 'nt' or directory_fd is None:
+            with opened_path(path.parent, path) as descriptor:
+                return HistoryContext._read_descriptor(descriptor)
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory_fd)
+        try:
+            return HistoryContext._read_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _read_descriptor(descriptor):
+        with os.fdopen(os.dup(descriptor), 'rb') as stream:
+            info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 64 * 1024 * 1024:
                 raise ValueError('历史文件必须是有界普通文件')
             payload = stream.read(64 * 1024 * 1024 + 1)
@@ -170,14 +239,14 @@ class HistoryContext:
             return json.loads(payload)
 
     def _load(self, session):
-        folder = self._folder(session)
-        path = folder / 'manifest.json'
-        if path.is_symlink():
-            raise PermissionError('上下文索引不能是符号链接')
-        if not path.exists():
+        with self._directories(session) as (folder, _, context_fd, _):
+            try:
+                manifest = self._read_json(folder / 'manifest.json', context_fd) if context_fd is not None else None
+            except FileNotFoundError:
+                manifest = None
+        if manifest is None:
             return {'version': 1, 'owner_id': session.id, 'revision': 0, 'session_summary': '',
                     'chunks': [], 'summary_kind': 'none', 'updated_at': ''}
-        manifest = self._read_json(path)
         if manifest.get('version') != 1 or manifest.get('owner_id') != session.id:
             raise PermissionError('上下文索引归属无效')
         if (type(manifest.get('revision')) is not int or manifest['revision'] < 0
@@ -216,7 +285,6 @@ class HistoryContext:
         return manifest
 
     async def _manifest(self, session):
-        self._folder(session)
         if session.id not in self.cache:
             self.cache[session.id] = await self._io(self._load, session)
         return self.cache[session.id]
@@ -390,26 +458,66 @@ class HistoryContext:
         return summary[:maximum], summary_kind
 
     def _existing_chunk(self, session, chunk):
-        path = self._folder(session) / 'chunks' / (chunk['ID'] + '.json')
-        if path.is_symlink():
-            raise PermissionError('历史块不能是符号链接')
-        if not path.exists():
-            return None
-        record = self._read_json(path)
+        with self._directories(session) as (folder, _, _, chunks_fd):
+            if chunks_fd is None:
+                return None
+            try:
+                record = self._read_json(folder / 'chunks' / (chunk['ID'] + '.json'), chunks_fd)
+            except FileNotFoundError:
+                return None
         if (record.get('session_id') != session.id or record.get('ID') != chunk['ID']
                 or record.get('digest') != chunk['digest']
                 or record.get('RawHistory') != _json(chunk['messages'])):
             raise ValueError('历史块标识冲突或原文不匹配')
         return record
 
+    def _write_history(self, path, directory_fd, text, *, immutable=False):
+        """同步临时文件，再原子提交目录项。"""
+        if os.name == 'nt':
+            if immutable:
+                temporary = path.parent / ('.staging-' + uuid.uuid4().hex)
+                try:
+                    self.manager.store.atomic_write(temporary, text)
+                    os.link(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            else:
+                try:
+                    self._read_json(path, directory_fd)
+                except FileNotFoundError:
+                    pass
+                self.manager.store.atomic_write(path, text)
+            return
+        temporary = '.writing-' + uuid.uuid4().hex
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory_fd)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if immutable:
+                os.link(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+                        follow_symlinks=False)
+            else:
+                try:
+                    self._read_json(path, directory_fd)
+                except FileNotFoundError:
+                    pass
+                os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
     def _publish(self, session, records, manifest):
-        directory = self._folder(session)
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (directory / 'chunks').mkdir(mode=0o700, exist_ok=True)
+        with self._directories(session, create=True) as directories:
+            self._publish_locked(session, records, manifest, *directories)
+
+    def _publish_locked(self, session, records, manifest, directory, session_fd, context_fd, chunks_fd):
         audit = self.manager.store.directory(session.id) / 'audit.jsonl'
-        if (audit.is_symlink() or audit.exists()
-                and (not stat.S_ISREG(audit.stat().st_mode) or audit.stat().st_nlink != 1)):
-            raise PermissionError('上下文审计文件无效')
         metadata = {'event': 'context_compact_requested', 'revision': manifest['revision'],
                     'chunk_ids': [item['ID'] for item in records], 'created_at': now()}
         for source, key in (('last_compact_utilization', 'before_utilization'),
@@ -417,26 +525,25 @@ class HistoryContext:
                             ('last_compact_reason', 'reason')):
             if source in manifest:
                 metadata[key] = manifest[source]
-        append_audit(audit, _json(metadata), sync=config.AUDIT_SYNC)
+        options = {'directory_fd': session_fd} if os.name != 'nt' else {}
+        append_audit(audit, _json(metadata), sync=config.AUDIT_SYNC, **options)
         for record in records:
             path = directory / 'chunks' / (record['ID'] + '.json')
-            if path.exists() or path.is_symlink():
-                existing = self._read_json(path)
+            try:
+                existing = self._read_json(path, chunks_fd)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
                 if existing != record:
                     raise ValueError('拒绝覆盖不可变历史块')
                 continue
-            temporary = directory / 'chunks' / ('.staging-' + uuid.uuid4().hex)
-            try:
-                self.manager.store.atomic_write(temporary, _json(record))
-                os.link(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self._write_history(path, chunks_fd, _json(record), immutable=True)
+            if self._read_json(path, chunks_fd) != record:
+                raise ValueError('历史块发布后内容不匹配')
         path = directory / 'manifest.json'
-        if path.is_symlink():
-            raise PermissionError('上下文索引不能是符号链接')
-        self.manager.store.atomic_write(path, _json(manifest))
+        self._write_history(path, context_fd, _json(manifest))
         try:
-            append_audit(audit, _json({**metadata, 'event': 'context_compact_committed'}), sync=config.AUDIT_SYNC)
+            append_audit(audit, _json({**metadata, 'event': 'context_compact_committed'}), sync=config.AUDIT_SYNC, **options)
         except OSError:
             # requested 已持久保存，文件已提交不能对外伪报未提交。
             pass
@@ -719,14 +826,17 @@ class HistoryContext:
 
     def _read_records(self, session, selected):
         records = []
-        for metadata in selected:
-            path = self._folder(session) / 'chunks' / (metadata['ID'] + '.json')
-            record = self._read_json(path)
-            if (record.get('session_id') != session.id or record.get('ID') != metadata['ID']
-                    or record.get('digest') != metadata['digest']
-                    or _digest(json.loads(record['RawHistory'])) != record['digest']):
-                raise PermissionError('历史原文与私有索引不匹配')
-            records.append(record)
+        with self._directories(session) as (folder, _, _, chunks_fd):
+            if chunks_fd is None:
+                raise FileNotFoundError('历史块目录不存在')
+            for metadata in selected:
+                path = folder / 'chunks' / (metadata['ID'] + '.json')
+                record = self._read_json(path, chunks_fd)
+                if (record.get('session_id') != session.id or record.get('ID') != metadata['ID']
+                        or record.get('digest') != metadata['digest']
+                        or _digest(json.loads(record['RawHistory'])) != record['digest']):
+                    raise PermissionError('历史原文与私有索引不匹配')
+                records.append(record)
         return records
 
     async def read(self, session: Session, chunk_id: str, before: int = 0, after: int = 0,

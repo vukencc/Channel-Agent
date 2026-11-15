@@ -353,14 +353,14 @@ def test_failed_manifest_publish_keeps_previous_revision(context_env, monkeypatc
             await service.prepare(session, messages)
             path = context_env.directory(session.id) / 'context' / 'manifest.json'
             before = path.read_bytes()
-            original_write = context_env.atomic_write
+            original_write = service._write_history
 
-            def fail_manifest(target, text):
+            def fail_manifest(target, directory_fd, text, *, immutable=False):
                 if target == path:
                     raise OSError('injected manifest failure')
-                return original_write(target, text)
+                return original_write(target, directory_fd, text, immutable=immutable)
 
-            monkeypatch.setattr(context_env, 'atomic_write', fail_manifest)
+            monkeypatch.setattr(service, '_write_history', fail_manifest)
             appended = messages + [
                 {'role': 'assistant', 'content': 'new answer ' + 'x' * 300},
                 {'role': 'user', 'content': 'new request'},

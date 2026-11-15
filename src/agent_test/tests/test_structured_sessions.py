@@ -245,8 +245,8 @@ def test_history_search_via_real_tool_does_not_deadlock_single_default_worker(st
             assert not timed_out, 'history_search blocked on its own single-worker executor'
             assert json.loads(result)
         finally:
-            executor.shutdown(wait=True)
             await manager.shutdown()
+            executor.shutdown(wait=True)
 
     try:
         asyncio.run(run())
