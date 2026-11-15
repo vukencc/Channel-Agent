@@ -690,7 +690,7 @@ class FlowService:
                        + handoff_output_instruction(node["handoff_contract"])
                        if node["handoff_contract"] is not None else
                        "\n只执行当前节点的职责；后续任务留在交接中。最后总结已改动、验证、未完成事项和风险。")
-                ), flow_id=value["id"])
+                ), flow_id=value["id"], handoff_contract=node["handoff_contract"])
                 result["turn_id"] = session.record["last_run"]["turn_id"]
                 try:
                     await session.task

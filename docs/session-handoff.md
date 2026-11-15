@@ -8,7 +8,7 @@
 
 - 2026-11-15 设计助手 Windows 端到端工作进行中：原环境代理拒连，同模型在隔离进程显式使用 Windows 系统代理的短请求成功；用户随后授权将原「测试」连接仅改为系统代理，运行中的旧 EXE 须重启加载。正式 0.6.0 EXE 已真实生成并导入五节点模板，但独立项目首轮运行失败：确认超时竞态使动态工具被拦截，严格 JSON 交接失败，四个下游节点未运行。原案例复跑与新 EXE 验证尚未完成；0.6.1 未发布。失败及待验见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
 
-- 续验：真实 Native↔WSL 九项通过，实际 Web 源码界面同模型连接检查及桌面→Web 模板导入导出通过，业务运行仍未通过；新版 EXE 构建和自检进行中。用户再次按 Esc 停止 Computer Use，已停止界面输入并等待恢复授权。草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 的 Linux/Windows CI 当前成功，精确数量待补；本机全量的失败与定点验证不合并为全量通过。详见[记录](designer-windows-e2e-validation-2026-11-15.md)。
+- 续验：真实 Native↔WSL 九项、实际 Web 同模型连接检查及桌面→Web 模板导入导出通过。非 GUI 原模型复跑中读取工具真实成功，仍因最终 JSON 附带说明而失败；正在补同轮一次禁工具格式纠正。较早 `3ed5a28` Windows 候选包单 EXE 15/15 自检通过，但不含该修复，不能作为最终版本。用户再次 Esc 后明确选择「仅继续不操作桌面的工作」，不得继续操作桌面或现有浏览器。草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 的 `3ed5a28` 双端 CI 成功；后续全量一次失败及定点修复、真实模型与成品验证边界见[记录](designer-windows-e2e-validation-2026-11-15.md)。
 
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
 - 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。

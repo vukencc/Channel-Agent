@@ -186,7 +186,9 @@ def test_failed_contract_preserves_queued_run(tmp_path, monkeypatch):
         snapshot = service.get(flow["id"])
         assert snapshot["run"]["status"] == "failed"
         assert [item["input_text"] for item in snapshot["pending_runs"]] == ["等待输入"]
-        assert len(calls) == 1
+        # 同轮最多增加一次格式纠正；等待队列不能被取走或触发第三次调用。
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
         reloaded_service = FlowService(manager)
         ProjectService(manager, reloaded_service)
         reloaded = reloaded_service.get(flow["id"])
@@ -237,7 +239,8 @@ def test_flow_validation_and_forwarding(tmp_path, monkeypatch, answer, success):
             assert result["status"] == "failed"
             assert result["nodes"]["a"]["output_handoff"] == ""
             assert result["nodes"]["b"]["status"] == "blocked"
-            assert len(seen) == 1
+            assert len(seen) == 2
+            assert "请只修正上一条回答的输出格式" in seen[1]
             assert answer not in result["error"]
         await manager.flush()
 

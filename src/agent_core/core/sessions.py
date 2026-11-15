@@ -17,7 +17,8 @@ from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, limits_scope, effective_limits, validate_limits, preset
 from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, permission_mode_guide
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
-from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history
+from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
+from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
 from agent_core.core.storage import SessionStore, finish_pending_tools, wait_for_io_completion
 from agent_core.core.session_service import session_service_context
 from agent_core.core.communication import SessionCommunication
@@ -351,7 +352,9 @@ class SessionManager:
             await asyncio.sleep(0)
 
     def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
-               completion_error: asyncio.Future[str] | None = None):
+               completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None):
+        contract = (HandoffContract.model_validate(handoff_contract).model_dump(exclude_none=True)
+                    if handoff_contract is not None else None)
         if self.sessions.get(session.id) is not session:
             raise ValueError('会话已删除，不能继续执行')
         if self.closing or self.maintenance:
@@ -386,14 +389,14 @@ class SessionManager:
             self.observer.event('turn.started', session_id=session.id,
                 turn_id=session.record['last_run']['turn_id'],
                 parent_session_id=session.record.get('delegated_from'), state='queued')
-        session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error))
+        session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error, contract))
 
         def finish(task: asyncio.Task) -> None:
             if task is session.task and task.cancelled() and session.turn_active:
                 # 直接取消未启动的任务时，由同一轮继续排空保存。
                 session.cancelled.set()
                 session.record['status'] = 'stopping'
-                session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error))
+                session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error, contract))
                 session.task.add_done_callback(finish)
             self.notify()
 
@@ -748,11 +751,11 @@ class SessionManager:
         session.summary_task.add_done_callback(self.summary_tasks.discard)
 
     @traced('model.total')
-    async def _call_model(self, history, **kwargs):
+    async def _call_model(self, history, *, disable_tools=False, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
             session = self.sessions.get(kwargs.get('session_id'))
-            names = self._effective_session_tools(session) if session else config.MODEL_TOOL_NAMES
+            names = [] if disable_tools else (self._effective_session_tools(session) if session else config.MODEL_TOOL_NAMES)
             with self._concurrency_lock:
                 self._active_model_calls += 1
                 identifier = kwargs.get('session_id')
@@ -769,7 +772,7 @@ class SessionManager:
                 # 使用本轮准备上下文时绑定的连接快照，不能在请求前切到另一容量。
                 endpoint = (active_endpoint.get() if active_profile.get() == profile
                             else self.model_registry.resolve(profile))
-                schemas = self._session_schemas(session) if session else None
+                schemas = [] if disable_tools else (self._session_schemas(session) if session else None)
                 with model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
                     with operation_span('model.request'):
                         return await self.model(history, **kwargs)
@@ -1108,7 +1111,8 @@ class SessionManager:
 
     @traced('agent.run')
     async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None],
-                             completion_error: asyncio.Future[str] | None = None) -> None:
+                             completion_error: asyncio.Future[str] | None = None,
+                             handoff_contract: dict | None = None) -> None:
         input_committed = False
         try:
             # 已提交的 queued 快照包含本轮输入。先验证写入结果，再允许任何模型调用或工具副作用。
@@ -1120,7 +1124,7 @@ class SessionManager:
             input_committed = True
             if session.cancelled.is_set():
                 raise asyncio.CancelledError
-            await self._run_with_budget(session)
+            await self._run_with_budget(session, handoff_contract)
         except asyncio.CancelledError:
             session.record.update(status='cancelled', error='任务已停止；已执行的文件操作不会自动回滚。')
         except Exception as exc:
@@ -1130,17 +1134,21 @@ class SessionManager:
                 error = '保存失败：本轮排队记录写入失败，模型和工具尚未启动。'
                 session.record['last_run']['stop_reason'] = 'persistence_failed'
             session.record.update(status='error', error=error)
-        await self._finish_turn(session, workspace_memory_allowed=input_committed)
+        await self._finish_turn(session, workspace_memory_allowed=(input_committed and
+            not session.record['last_run'].get('handoff_validation_failed', False)))
         if completion_error is not None and not completion_error.done():
             completion_error.set_result(session.record.get('error', ''))
 
-    async def _run_with_budget(self, session):
+    async def _run_with_budget(self, session, handoff_contract=None):
         from agent_core.core.images import image_scope
         profile = session.record.get('model_profile')
         endpoint = self.model_registry.resolve(profile)
         with model_profile(profile, endpoint), budget_scope(self.budget_ledger, session.record.get('budget_owner_id', session.id)), limits_scope(session.record, endpoint=endpoint), image_scope(self.store.directory(session.id) / 'attachments'):
             with observation_context(turn_id=session.record.get('last_run', {}).get('turn_id')):
-                await self._run(session)
+                if handoff_contract is None:
+                    await self._run(session)
+                else:
+                    await self._run(session, handoff_contract)
 
     @traced('communication.inbox')
     async def _drain_inbox(self, session):
@@ -1158,7 +1166,7 @@ class SessionManager:
         session.record['inbox_cursor'] = page['next_seq']
         await self.save(session)
 
-    async def _run(self, session):
+    async def _run(self, session, handoff_contract=None):
         contexts = []
         policy = TaskExecutionPolicy.for_session(session.record, session_limit('MAX_TOOL_ROUNDS'))
 
@@ -1338,8 +1346,6 @@ class SessionManager:
                 await self.save(session)
                 calls = reply.get('tool_calls', [])
                 if not calls:
-                    self.observer.event('model.final', session_id=session.id,
-                        turn_id=session.record['last_run']['turn_id'], message_index=reply_index, state='completed')
                     if policy.automatic:
                         unfinished, waiting = execution_state(self, session)
                         if waiting:
@@ -1354,10 +1360,97 @@ class SessionManager:
                                 '继续当前可执行步骤；用 plan_get 核对并更新验收证据，'
                                 '用 wait_agent_task 等待自己创建的子任务并验证产物。不能仅用进度说明结束。')
                             continue
-                    if config.MEMORY_AUTO_EXTRACT:
+                    unfinished, waiting = execution_state(self, session)
+                    content = reply.get('content')
+                    failure = (validate_handoff(content if isinstance(content, str) else '', handoff_contract)[1]
+                               if handoff_contract is not None else None)
+                    if failure:
+                        session.record['last_run']['handoff_validation_failed'] = True
+                    if (failure and failure['code'] == 'invalid_json' and isinstance(content, str) and content.strip()
+                            and not unfinished and not waiting
+                            and (policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds)):
+                        # 格式修正属于同一轮，只允许一次，且不开放工具。
+                        instruction = ('请只修正上一条回答的输出格式，保留已有业务内容，不新增事实、操作或工具调用。'
+                                       '只输出符合交接契约的单个 JSON 对象，不要代码围栏或附加文字。'
+                                       + handoff_output_instruction(handoff_contract))
+                        repair_message = {'role': 'user', 'content': instruction, '_context_reference': True}
+                        repair_history = history + [reply, repair_message]
+                        metrics = {'sent_chars': history_size(repair_history),
+                                   'sent_tokens': request_tokens(repair_history)}
+                        session.record['last_run']['handoff_finalization'] = {'status': 'attempted'}
+                        self.observer.event('handoff.finalization', session_id=session.id,
+                            turn_id=session.record['last_run']['turn_id'], state='attempted')
+                        if (metrics['sent_chars'] > session_limit('MODEL_INPUT_CHARS') or
+                                metrics['sent_tokens'] > session_limit('MODEL_INPUT_TOKENS')):
+                            session.record['last_run']['handoff_finalization']['status'] = 'context_budget'
+                            self.observer.event('handoff.finalization', session_id=session.id,
+                                turn_id=session.record['last_run']['turn_id'], state='context_budget')
+                            raise ContextBudgetError(metrics)
+                        session.record['messages'].append(repair_message)
+                        try:
+                            await self.save(session)
+                        except BaseException:
+                            session.record['last_run']['handoff_finalization']['status'] = 'error'
+                            self.observer.event('handoff.finalization', session_id=session.id,
+                                turn_id=session.record['last_run']['turn_id'], state='error')
+                            raise
+                        if session.cancelled.is_set():
+                            session.record['last_run']['handoff_finalization']['status'] = 'cancelled'
+                            self.observer.event('handoff.finalization', session_id=session.id,
+                                turn_id=session.record['last_run']['turn_id'], state='cancelled')
+                            raise asyncio.CancelledError
+                        session.record['last_run']['model_rounds'] = round_index + 2
+                        if config.ENABLE_SESSION_BUDGETS:
+                            session.record['last_run']['budget']['rounds_remaining'] = (
+                                None if policy.maximum_rounds is None else policy.maximum_rounds - round_index - 2)
+                        session.phase = '修正交接格式'
+                        self._observe_phase(session, 'handoff_finalization')
+                        self.notify()
+                        repair_metrics_start = len(session.record['last_run']['model_calls'])
+                        try:
+                            reply = await self._call_model(repair_history, disable_tools=True, session_id=session.id,
+                                emit=lambda kind, text: self.emit(session, kind, text))
+                            if self.observer.enabled and len(session.record['last_run']['model_calls']) == repair_metrics_start:
+                                self.observer.event('model.completed', session_id=session.id,
+                                    turn_id=session.record['last_run']['turn_id'], metrics={'tokens_source': 'unknown'})
+                            if session.cancelled.is_set():
+                                raise asyncio.CancelledError
+                            session.record['messages'].append(reply)
+                            reply_index = len(session.record['messages']) - 1
+                            session.partial = session.partial_reasoning = ''
+                            if reply.get('tool_calls'):
+                                for call in reply['tool_calls']:
+                                    session.record['messages'].append({'role': 'tool', 'tool_call_id': call['id'],
+                                        'content': '[已拒绝] 格式修正请求不允许工具调用，尚未执行。'})
+                                session.record['last_run']['handoff_finalization']['status'] = 'tool_calls_rejected'
+                                raise ValueError('交接格式修正请求不能调用工具')
+                            repair_failure = validate_handoff(reply.get('content') or '', handoff_contract)[1]
+                            failure = repair_failure
+                            if failure is None:
+                                session.record['last_run'].pop('handoff_validation_failed', None)
+                            session.record['last_run']['handoff_finalization']['status'] = (
+                                'passed' if repair_failure is None else 'failed')
+                            await self.save(session)
+                        except asyncio.CancelledError:
+                            session.record['last_run']['handoff_finalization']['status'] = 'cancelled'
+                            raise
+                        except BaseException:
+                            if session.record['last_run']['handoff_finalization']['status'] == 'attempted':
+                                session.record['last_run']['handoff_finalization']['status'] = 'error'
+                            raise
+                        finally:
+                            self.observer.event('handoff.finalization', session_id=session.id,
+                                turn_id=session.record['last_run']['turn_id'],
+                                state=session.record['last_run']['handoff_finalization']['status'])
+                    if failure:
+                        session.record['last_run']['handoff_validation_failed'] = True
+                    self.observer.event('model.final', session_id=session.id,
+                        turn_id=session.record['last_run']['turn_id'], message_index=reply_index,
+                        state='failed' if failure else 'completed')
+                    if not failure and config.MEMORY_AUTO_EXTRACT:
                         self._start_memory_candidates(session,
                             next(m['content'] for m in reversed(history) if is_user_request(m)), reply.get('content', ''))
-                    if config.RAG_ASSESS and contexts:
+                    if not failure and config.RAG_ASSESS and contexts:
                         self._start_assessment(session,
                             next(m['content'] for m in reversed(history) if is_user_request(m)),
                             contexts, reply.get('content', ''))
