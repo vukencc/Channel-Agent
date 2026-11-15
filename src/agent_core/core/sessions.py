@@ -347,9 +347,13 @@ class SessionManager:
         except RuntimeError:
             with self.observer.scope(session.id), self.observer.span('persistence.save'):
                 self.store.save(session.record)
+            if self._configuration_batch_session is session:
+                self._configuration_batch_dirty = False
             self.notify()
             return None
         future = self.store.save_async(session.record)
+        if self._configuration_batch_session is session:
+            self._configuration_batch_dirty = False
         self.observer.track_future(future, session.id, 'persistence.save')
         self.pending_saves.add(future)
         def finished(done):
