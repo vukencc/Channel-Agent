@@ -98,6 +98,8 @@ jobs:
             'src/agent_test/tests/test_flow_handoff_context.py',
             'src/agent_test/tests/test_tool_observations.py',
             'src/agent_test/tests/test_tool_observation_context.py',
+            'src/agent_test/tests/test_context_wire_metrics.py',
+            'src/agent_test/tests/test_session_commit_scope.py',
             'src/agent_test/tests/test_flow_configuration_batch.py',
             'src/agent_test/tests/test_agent_flows.py',
             'src/agent_test/tests/test_flow_session_reuse.py',

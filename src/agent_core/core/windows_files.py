@@ -178,9 +178,12 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
         for index, part in enumerate(parts):
             current /= part
             is_directory = directory or index < len(parts) - 1
-            options = {'allow_replace': True} if allow_replace and not is_directory else {}
-            handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory, **options)
-            handles.append(handle)
+            if index < len(parts) - 1:
+                handle, _ = open_ancestor(current)
+            else:
+                options = {'allow_replace': True} if allow_replace and not is_directory else {}
+                handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory, **options)
+                handles.append(handle)
         if not parts and not directory:
             raise ValueError('只支持普通文本文件或目录预览')
         handle = handles.pop()

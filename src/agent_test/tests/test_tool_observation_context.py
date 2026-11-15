@@ -37,9 +37,82 @@ def test_delivered_observation_body_fits_without_changing_original(monkeypatch):
     assert history[3]['content'].startswith(header)
     assert header2 in history[3]['content']
     assert '历史快照不可用' in history[3]['content']
+    assert history[3]['content'].count('正文已省略；重新查询当前来源，历史快照不可用。') == 1
     assert body not in history[3]['content']
     assert history[5] == messages[5]
     assert metrics['compacted_tool_observations'] == 1
+
+
+def test_small_delivered_file_observation_is_compacted_but_latest_is_protected(monkeypatch):
+    monkeypatch.setattr(config, 'MODEL_INPUT_CHARS', 1800)
+    monkeypatch.setattr(config, 'MODEL_INPUT_TOKENS', 10000)
+    body = '文' * 1564
+    value = observe_text(body, reader_tool='read_file', body_spans=((0, len(body)),),
+                         recovery_notice='请用原参数重新读取当前文件，内容不是历史快照。')
+    metadata = extract_observation(value)
+    def call(ident):
+        return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': ident, 'type': 'function',
+                'function': {'name': 'read_file', 'arguments': '{"path":"a"}'}}]}
+    result = lambda ident: {'role': 'tool', 'tool_call_id': ident, 'content': str(value),
+                            '_provenance': 'executed', '_context_observation': metadata}
+    schemas = [{'type': 'function', 'function': {'name': 'read_file', 'parameters': {}}}]
+    messages = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u'},
+                call('old'), result('old'), call('new'), {'role': 'tool', 'tool_call_id': 'new', 'content': '最新'}]
+    with pytest.raises(ContextBudgetError):
+        build_model_history(messages, schemas=schemas)
+    history, metrics = build_model_history(messages, schemas=schemas,
+        eligible_observations={('old', metadata['sha256'])})
+    assert body not in history[3]['content'] and metrics['compacted_tool_observations'] == 1
+    messages[-1] = result('new')
+    with pytest.raises(ContextBudgetError):
+        build_model_history(messages, schemas=schemas,
+            eligible_observations={('old', metadata['sha256']), ('new', metadata['sha256'])})
+
+
+def test_observed_file_cannot_use_legacy_compaction_without_delivery(monkeypatch):
+    monkeypatch.setattr(config, 'MODEL_INPUT_CHARS', 2500)
+    monkeypatch.setattr(config, 'MODEL_INPUT_TOKENS', 10000)
+    monkeypatch.setattr(config, 'FILE_READ_CHARS', 1000)
+    body = '文' * 6000
+    value = observe_text(body, reader_tool='read_file', body_spans=((0, len(body)),),
+                         recovery_notice='重新读取当前文件，不是历史快照。')
+    metadata = extract_observation(value)
+    messages = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u'},
+                {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'x', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': '{"path":"a"}'}}]},
+                {'role': 'tool', 'tool_call_id': 'x', 'content': body, '_provenance': 'executed',
+                 '_context_observation': metadata}]
+    with pytest.raises(ContextBudgetError):
+        build_model_history(messages, schemas=[{'function': {'name': 'read_file'}}])
+
+
+def test_session_real_read_file_stores_observation(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'CONTEXT_SUMMARY', False)
+    work = tmp_path / 'work'
+    work.mkdir()
+    count = 0
+    async def model(history, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 1:
+            return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'read', 'type': 'function',
+                    'function': {'name': 'read_file', 'arguments': '{"path":"a.txt"}'}}]}
+        return {'role': 'assistant', 'content': 'done'}
+    async def run():
+        store = SessionStore(tmp_path / 'state', work)
+        manager = SessionManager(store, model=model)
+        session = manager.create()
+        (manager.workspace(session) / 'a.txt').write_text('实际文件🙂', encoding='utf-8')
+        manager.submit(session, '读取')
+        await session.task
+        messages = store.load_all()[0]['messages']
+        result = next(m for m in messages if m.get('tool_call_id') == 'read')
+        assert result['content'] == '实际文件🙂'
+        assert result['_provenance'] == 'executed'
+        assert result['_context_observation']['reader_tool'] == 'read_file'
+        await manager.shutdown()
+        store.close()
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('case', ['undelivered', 'no_reader', 'unexecuted', 'digest',

@@ -16,8 +16,14 @@ def estimate_tokens(text: str) -> int:
     return len(text) - ascii_chars + (ascii_chars + 3) // 4
 
 
+def _budget_messages(messages: list[dict]) -> list[dict]:
+    """与请求构建器保持一致；图片引用另保留用于图像预算估算。"""
+    return [{key: value for key, value in message.items()
+             if not key.startswith('_') or key == '_attachments'} for message in messages]
+
+
 def request_tokens(messages, schemas=None):
-    return sum(attachment_tokens(message) for message in messages) + estimate_tokens(json.dumps(messages, ensure_ascii=False)) + (
+    return sum(attachment_tokens(message) for message in messages) + estimate_tokens(json.dumps(_budget_messages(messages), ensure_ascii=False)) + (
         estimate_tokens(json.dumps(schemas, ensure_ascii=False)) if schemas else 0)
 
 
@@ -37,7 +43,7 @@ def annotate_context_metrics(metrics, schemas=None):
 
 
 def history_size(messages: list[dict]) -> int:
-    return len(json.dumps(messages, ensure_ascii=False))
+    return len(json.dumps(_budget_messages(messages), ensure_ascii=False))
 
 
 def append_context_notice(history: list[dict], notice: str) -> tuple[int, int]:
@@ -139,6 +145,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 compact_call(i, call_index)
         if (i < current and message['role'] == 'tool'
                 and names.get(message.get('tool_call_id')) == 'read_file'
+                and '_context_observation' not in message
                 and len(message.get('content', '')) > config.FILE_READ_CHARS):
             message['content'] = '[历史文件读取内容已省略；当前文件可能已修改，请按需重新 read_file。]'
             compacted += 1
@@ -163,6 +170,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
             break
         if (i < recent and message['role'] == 'tool'
                 and names.get(message.get('tool_call_id')) == 'read_file'
+                and '_context_observation' not in message
                 and len(message.get('content', '')) > 2000):
             message['content'] = '[较早的文件页已移出工作上下文；需要该片段时用 read_file 的 offset/search 重新读取。完整原文仍保存在会话记录。]'
             compacted += 1
@@ -222,16 +230,21 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 continue
             content = message['content']
             for start, end in reversed(observation.body_spans):
-                content = content[:start] + observation.recovery_notice + content[end:]
-            if len(content) >= len(message['content']):
+                content = content[:start] + '[正文已省略]' + content[end:]
+            content += '\n' + observation.recovery_notice
+            value = model_json({**message, 'content': content})
+            size = len(value) + 2
+            ascii_count = len(value.encode('ascii', errors='ignore')) + 2
+            token_count = estimate_tokens(value) + 1 + image_tokens[i]
+            # 不能为某个超限维度增加负担，也不能采用没有实际收益的替换。
+            chars_binding = current_chars > budget
+            tokens_binding = current_tokens > session_limit('MODEL_INPUT_TOKENS') - 100
+            if ((chars_binding and size > sizes[i]) or (tokens_binding and token_count > tokens[i])
+                    or not ((chars_binding and size < sizes[i]) or (tokens_binding and token_count < tokens[i]))):
                 continue
             message['content'] = content
             compacted_observations += 1
             budget = limit - 300
-            value = model_json(message)
-            size = len(value) + 2
-            ascii_count = len(value.encode('ascii', errors='ignore')) + 2
-            token_count = estimate_tokens(value) + 1 + image_tokens[i]
             current_chars += size - sizes[i]
             current_ascii += ascii_count - ascii_sizes[i]
             current_tokens += token_count - tokens[i]

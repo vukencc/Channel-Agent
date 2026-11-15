@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import concurrent.futures
+from contextlib import nullcontext
 import shutil
 import threading
 import hashlib
@@ -242,6 +243,15 @@ class SessionStore:
 
     def _commit_session(self, record: dict) -> None:
         directory = self.directory(record['id'])
+        if os.name == 'nt':
+            from agent_core.core.windows_files import pinned_scope
+            scope = pinned_scope(directory)
+        else:
+            scope = nullcontext()
+        with scope:
+            self._commit_session_in_scope(record, directory)
+
+    def _commit_session_in_scope(self, record: dict, directory: Path) -> None:
         directory.mkdir(exist_ok=True, mode=0o700)
         if not (directory / 'memory.md').exists():
             (directory / 'memory.md').touch(mode=0o600, exist_ok=True)
