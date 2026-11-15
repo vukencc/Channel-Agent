@@ -149,6 +149,7 @@ if (typeof window !== "undefined") (() => {
   let designerController = null, designerRequestId = null, designerGeneration = 0, designerHistory = [], designerVisible = false, designerModel = "", designerEffort = "", designerDraft = "", inspectorVisible = false;
   let scale = 1, pickerGeneration = 0, selectionVersion = 0, summaries = [], projects = [], pending = false, lastError = "", fitReset = false;
   let designerError = "", designerPendingImport = null;
+  let designerStartedAt = 0;
   let designerModelTouched = false, designerModels = [], designerModelsLoading = false, designerCreated = null, modelCatalogGeneration = 0;
   let designerDefaultAvailable = null, designerRecords = [];
   const runInputs = new Map(), drafts = new Map(), dirty = new Set(), projectDirty = new Set(), requestVersions = new Map(), inspectorModes = new Map(), refreshDeferred = new Set();
@@ -655,7 +656,7 @@ if (typeof window !== "undefined") (() => {
     header.append(el("h2", "", "对话设计 Flow"), button("清空", () => { stopDesigner(); designerHistory = []; designerDraft = ""; designerError = ""; designerPendingImport = null; designerCreated = null; drawDesigner(); }), button("关闭", () => { designerVisible = false; if (active && current()) render(); else panel.remove(); }));
     designerHistory.forEach((item) => { const message = el("article", "flow-designer-message " + item.role); message.append(el("strong", "flow-designer-role", item.role === "user" ? "你" : "助手"), el("div", "flow-designer-text", item.display)); history.append(message); if (item.warning) history.append(el("p", "field-hint", item.warning)); });
     if (!designerHistory.length) history.append(el("p", "flow-designer-empty", "描述你的目标，助手会帮你设计和调整流程。"));
-    if (designerController) { const status = el("p", "flow-designer-status", "正在设计流程…"); status.setAttribute("role", "status"); history.append(status); }
+    if (designerController) { const status = el("p", "flow-designer-status", `正在设计流程 · 已等待 ${Math.max(0, Math.floor((performance.now() - designerStartedAt) / 1000))} 秒。复杂任务可能需要较长时间。`); status.setAttribute("role", "status"); history.append(status); }
     const choices = [...(designerDefaultAvailable ? [["", "默认模型"]] : []), ...designerChoices()];
     choices.forEach(([value, label]) => { const o = el("option", "", label); o.value = value; models.append(o); });
     [["", "默认强度"], ...catalog.reasoning_efforts.map((v) => [v, v])].forEach(([value, label]) => { const o = el("option", "", label); o.value = value; effort.append(o); });
@@ -665,7 +666,7 @@ if (typeof window !== "undefined") (() => {
       const retryImport = retry && designerPendingImport;
       const text = input.value.trim(); if ((!retry && !text) || designerController || (!retryImport && !designerCanSend(models.value))) return;
       designerError = ""; if (!retry) { designerPendingImport = null; designerHistory.push({ role: "user", display: text, content: text }); designerHistory = flowDesignerTrim(designerHistory); designerDraft = ""; }
-      const ticket = ++designerGeneration, controller = new AbortController(), requestId = retryImport ? retryImport.requestId : crypto.randomUUID().replaceAll("-", ""); designerController = controller; designerRequestId = requestId; drawDesigner();
+      const ticket = ++designerGeneration, controller = new AbortController(), requestId = retryImport ? retryImport.requestId : crypto.randomUUID().replaceAll("-", ""); designerController = controller; designerRequestId = requestId; designerStartedAt = performance.now(); drawDesigner();
       try {
         if (!retryImport) {
           const response = await bridge.api("/api/flow-designer/chat", { method: "POST", signal: controller.signal, body: { messages: designerHistory.map(({role, content}) => ({role, content})), model_profile: models.value || null, reasoning_effort: effort.value || null, request_id: requestId } });
@@ -686,10 +687,15 @@ if (typeof window !== "undefined") (() => {
     models.addEventListener("change", updateSend); updateSend(); const stop = button("停止", () => { stopDesigner(); drawDesigner(); }); stop.hidden = !designerController; send.hidden = Boolean(designerController);
     if (designerCreated) controls.append(button("打开生成的 Flow", () => { const created = designerCreated; designerCreated = null; openCreated(created, { preserveDesigner: true }); }));
     if (designerError && designerHistory.length) problem.append(document.createTextNode(" "), button(designerPendingImport ? "重试导入" : "重试", () => runRequest(true)));
+    if (designerError && !designerPendingImport) problem.append(document.createTextNode(" "), button("检查模型和代理", () => bridge.openModels()));
     const composer = el("div", "flow-designer-composer"); controls.append(models, effort, send, stop); composer.append(input, controls); panel.append(header, history, problem, guidance, composer); if (old) old.replaceWith(panel); else layout.append(panel); history.scrollTop = follow ? history.scrollHeight : previousScroll;
   }
   function init(options) {
     bridge = options; $("flow-refresh").addEventListener("click", refreshList);
+    setInterval(() => {
+      const status = $("flow-view").querySelector(".flow-designer-status");
+      if (designerController && status) status.textContent = `正在设计流程 · 已等待 ${Math.max(0, Math.floor((performance.now() - designerStartedAt) / 1000))} 秒。复杂任务可能需要较长时间。`;
+    }, 1000);
     $("flow-import").addEventListener("click", importDialog); $("flow-designer").addEventListener("click", openDesigner);
     bridge.api("/api/flow-tools").then((data) => {
       catalog = data;

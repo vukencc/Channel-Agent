@@ -5,6 +5,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 import sys
 import threading
 import uuid
@@ -58,6 +59,8 @@ class RuntimeBridge(QObject):
         self._mutations: asyncio.Lock | None = None
         self._commands: set[asyncio.Task] = set()
         self._design_task: asyncio.Task | None = None
+        self._model_test_task: asyncio.Task | None = None
+        self._model_test_id: str | None = None
         self._design_generation = 0
         self._design_pending_import: dict | None = None
         self._secrets: set[str] = set()
@@ -148,6 +151,8 @@ class RuntimeBridge(QObject):
         finally:
             self._closing = True
             self._cancel_design()
+            if self._model_test_task and not self._model_test_task.done():
+                self._model_test_task.cancel()
             # 先让当前可信用户操作结束，再取消 Agent 并排空工具和 writer。
             if self._commands:
                 await asyncio.gather(*list(self._commands), return_exceptions=True)
@@ -185,7 +190,11 @@ class RuntimeBridge(QObject):
         if action == 'flow_design_cancel':
             self._cancel_design()
             return
-        if action == 'flow_design':
+        if action == 'model_test_connection':
+            task = asyncio.create_task(self._model_test(arguments))
+        elif action == 'model_test_cancel':
+            task = asyncio.create_task(self._model_test_cancel(arguments))
+        elif action == 'flow_design':
             pending = self._design_pending_import
             self._cancel_design(keep_import=bool(pending and
                 arguments.get('retry_import_request_id') == pending['request_id']))
@@ -198,6 +207,70 @@ class RuntimeBridge(QObject):
             task = asyncio.create_task(self._command(action, arguments))
         self._commands.add(task)
         task.add_done_callback(self._commands.discard)
+
+    @staticmethod
+    def _test_nonce(value):
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value) else None
+
+    def _test_finished(self, action, request_id, model_id, category, message):
+        payload = {'request_id': request_id, 'model_id': model_id, 'ok': False,
+                   'status': 'error', 'error_category': category, 'message': message,
+                   'proxy_mode': None, 'model': None, 'elapsed_s': 0.0}
+        self.finished.emit(action, json.dumps(payload, ensure_ascii=False))
+
+    async def _model_test(self, arguments):
+        from agent_core.core.model_diagnostics import check_model_connection
+        request_id = self._test_nonce(arguments.get('request_id'))
+        model_id = arguments.get('model_id')
+        safe_model_id = (model_id if isinstance(model_id, str) and len(model_id) <= 200
+                         and all(ord(char) >= 32 and ord(char) != 127 for char in model_id) else None)
+        task = asyncio.current_task()
+        audit_started = False
+        busy = False
+        try:
+            if request_id:
+                busy = bool(self._model_test_task and not self._model_test_task.done())
+                if not busy:
+                    self._model_test_task, self._model_test_id = task, request_id
+            async with self._mutations:
+                if self._closing:
+                    self._test_finished('model_test_connection', request_id, safe_model_id, 'cancelled', '模型连接检查已取消。')
+                    return
+                if not request_id or not isinstance(model_id, str) or not self._manager.model_registry.contains(model_id):
+                    self._test_finished('model_test_connection', request_id, safe_model_id, 'configuration', '模型或请求标识无效。')
+                    return
+                if busy:
+                    self._test_finished('model_test_connection', request_id, safe_model_id, 'busy', '已有模型连接检查正在进行。')
+                    return
+                self._audit('model_connection_test', model_profile=model_id)
+                audit_started = True
+            result = await check_model_connection(self._manager, model_id)
+            async with self._mutations:
+                self._audit('model_connection_test_finished', model_profile=model_id, category=result['error_category'] or 'ok')
+            self.finished.emit('model_test_connection', json.dumps({'request_id': request_id, 'model_id': model_id, **result}, ensure_ascii=False))
+        except asyncio.CancelledError:
+            if audit_started:
+                try:
+                    async with self._mutations:
+                        self._audit('model_connection_test_finished', model_profile=model_id, category='cancelled')
+                except Exception:
+                    pass
+            self._test_finished('model_test_connection', request_id, safe_model_id, 'cancelled', '模型连接检查已取消。')
+        except Exception:
+            self._test_finished('model_test_connection', request_id, safe_model_id, 'unknown', '模型连接检查失败。')
+        finally:
+            if self._model_test_task is task:
+                self._model_test_task, self._model_test_id = None, None
+
+    async def _model_test_cancel(self, arguments):
+        request_id = self._test_nonce(arguments.get('request_id'))
+        task = self._model_test_task if request_id and request_id == self._model_test_id else None
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._test_finished('model_test_cancel', request_id, None, 'cancelled', '模型连接检查已取消。')
+        else:
+            self._test_finished('model_test_cancel', request_id, None, 'configuration', '没有匹配的模型连接检查。')
 
     def _cancel_design(self, *, keep_import: bool = False) -> None:
         self._design_generation += 1

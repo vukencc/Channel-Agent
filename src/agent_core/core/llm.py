@@ -333,7 +333,8 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
     """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
     runtime = active_endpoint.get()
     # Global fallbacks belong to the environment provider; custom endpoints are isolated.
-    endpoints = [runtime.endpoint()] if runtime is not None else [{'model': selected_model()}, *config.MODEL_FALLBACKS]
+    from agent_core.core.model_settings import active_model_fallbacks
+    endpoints = [runtime.endpoint()] if runtime is not None else [{'model': selected_model()}, *(config.MODEL_FALLBACKS if active_model_fallbacks.get() else [])]
     route = _route.get()
     if route is None:
         route = {'model': selected_model(), 'fallbacks': []}
