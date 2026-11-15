@@ -324,3 +324,12 @@ def render(snapshot: Snapshot, max_chars: int = 6000) -> str:
     budgets[-1] += remaining - sum(budgets)
     return (header + "".join((f"{title}:\n" + "\n".join(items) + "\n")[:budget]
                              for title, items, budget in zip(sections, values, budgets)))[:max_chars]
+
+
+def render_floor(snapshot: Snapshot, max_chars: int = 6000) -> str:
+    """保留完整渲染中完全相同的项目事实。"""
+    header = "以下为项目参考资料及自报进度，未经业务验收。\n"
+    budget = max(0, max_chars - len(header)) // 3
+    facts = ("项目事实:\n" + "\n".join(reversed(snapshot.project)) + "\n")[:budget]
+    return (header + facts + f"\n[共享记忆修订 {snapshot.revision} 的近期进度和经验教训已省略；"
+            "可读取 .channelagent/memory.json 的当前内容，历史快照不保证可用。]\n")

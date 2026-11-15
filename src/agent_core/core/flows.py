@@ -44,6 +44,19 @@ def _pinned_write(method):
     return wrapped
 
 
+def _pinned_get(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if os.name == 'nt':
+            from agent_core.core.windows_files import pinned_scope
+            scope = pinned_scope(self.directory.parent)
+        else:
+            scope = nullcontext()
+        with scope:
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class Node(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
@@ -241,6 +254,7 @@ class FlowService:
         if stored.id != identifier or self.file_identities.get(identifier) != identity:
             raise PermissionError("Flow 文件已在外部变化")
 
+    @_pinned_get
     def get(self, flow_id):
         self._path(flow_id)
         value = self.records[flow_id]

@@ -97,17 +97,22 @@ def pinned_scope(prefix: Path):
     stack = getattr(_scopes, 'stack', None)
     if stack is None:
         stack = _scopes.stack = []
-    if stack and stack[-1][0] == prefix:
-        yield
-        return
-    handles = {}
+    shared = False
+    if stack:
+        try:
+            prefix.relative_to(stack[-1][0])
+            shared = True
+        except ValueError:
+            pass
+    handles = stack[-1][1] if shared else {}
     stack.append((prefix, handles))
     try:
         yield
     finally:
         stack.pop()
-        for handle, _ in reversed(list(handles.values())):
-            _close(handle)
+        if not shared:
+            for handle, _ in reversed(list(handles.values())):
+                _close(handle)
 
 
 def _pinned_directory(path: Path, target: Path):

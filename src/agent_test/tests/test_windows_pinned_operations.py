@@ -1,6 +1,7 @@
 """受控验证 Windows 操作内目录句柄的复用和释放。"""
 import ctypes
 import importlib.util
+import inspect
 import os
 from pathlib import Path, PureWindowsPath
 import stat
@@ -150,3 +151,72 @@ def test_same_drive_sibling_does_not_borrow_cached_ancestors(windows_files, monk
         assert len(opened) == 8
         assert set(closed) == {5, 6, 7}
     assert set(closed) == {1, 2, 3, 5, 6, 7}
+
+
+def test_descendant_scope_shares_parent_handles_until_outer_exit(windows_files, monkeypatch):
+    module = windows_files
+    opened, closed = [], []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append((str(path), handle))
+        return handle, (1, handle)
+    def info(handle, pointer):
+        pointer._obj.attributes = 0x10
+        return True
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', closed.append)
+    monkeypatch.setattr(module, '_info', info)
+    monkeypatch.setattr(module, '_identity', lambda handle: (1, handle))
+    state = PureWindowsPath('C:/state')
+    flows = state / 'flows'
+    with module.pinned_scope(state):
+        with module.opened_path(flows, flows / 'first.json'):
+            pass
+        with module.pinned_scope(flows):
+            with module.opened_path(flows, flows / 'second.json'):
+                pass
+        assert set(closed) == {3}
+        assert len(opened) == 6  # 公共祖先复用；两个叶文件仍分别打开
+    assert set(closed) == {1, 2, 3, 5}
+
+
+def test_flow_get_keeps_scope_through_link_verification(windows_files, monkeypatch):
+    from agent_core.core import flows as flow_module
+    module = windows_files
+    monkeypatch.setitem(sys.modules, 'agent_core.core.windows_files', module)
+    monkeypatch.setattr(flow_module, 'os', types.SimpleNamespace(name='nt'))
+    service = flow_module.FlowService.__new__(flow_module.FlowService)
+    service.directory = PureWindowsPath('C:/state/flows')
+    service.records = {'flow': {'id': 'flow', 'project_id': 'project'}}
+    def check_path(identifier):
+        assert module._scopes.stack[-1][0] == service.directory.parent
+    def check_link(value):
+        assert module._scopes.stack[-1][0] == service.directory.parent
+    service._path = check_path
+    service._check_project_link = check_link
+    assert not inspect.iscoroutinefunction(flow_module.FlowService.get)
+    assert service.get('flow') == service.records['flow']
+    assert not module._scopes.stack
+
+
+@pytest.mark.parametrize('inner', ['C:/state/projects', 'C:/state'])
+def test_sibling_and_ancestor_nested_scopes_are_independent(windows_files, monkeypatch, inner):
+    module = windows_files
+    opened, closed = [], []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append(handle)
+        return handle, (1, handle)
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', closed.append)
+    outer = PureWindowsPath('C:/state/flows')
+    nested = PureWindowsPath(inner)
+    with module.pinned_scope(outer):
+        with module.opened_path(outer, outer / 'first.json'):
+            pass
+        with module.pinned_scope(nested):
+            with module.opened_path(nested, nested / 'second.json'):
+                pass
+        assert {5, 6}.issubset(closed)
+        assert not {1, 2, 3}.intersection(closed)
+    assert {1, 2, 3, 5, 6}.issubset(closed)
