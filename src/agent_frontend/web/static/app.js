@@ -1152,12 +1152,14 @@
         }
       });
       test.dataset.modelTest = "true"; test.disabled = Boolean(modelTestController); actions.append(test);
-      const select = element("button", "text-button", "选择"); select.type = "button";
-      select.addEventListener("click", () => {
-        // Saving the surrounding session form applies the selection.
-        fillSelect("settings-model", state.meta.models, model.id, "model");
-        $("models-dialog").close(); toast("已选择模型，保存会话设置后生效。");
-      }); actions.append(select);
+      if (state.settingsId && $("settings-dialog").open) {
+        const select = element("button", "text-button", "选择"); select.type = "button";
+        select.addEventListener("click", () => {
+          // Saving the surrounding session form applies the selection.
+          fillSelect("settings-model", state.meta.models, model.id, "model");
+          $("models-dialog").close(); toast("已选择模型，保存会话设置后生效。");
+        }); actions.append(select);
+      }
       if (model.editable) {
         const edit = element("button", "text-button", "编辑"); edit.type = "button";
         edit.addEventListener("click", () => { resetModelForm(); state.editingModel = model.id; $("model-name").value = model.name || ""; $("model-id").value = model.model || ""; $("model-base-url").value = model.base_url || ""; $("model-context-tokens").value = model.context_tokens ?? ""; $("model-response-reserve").value = model.response_reserve_tokens ?? ""; $("model-proxy-mode").value = model.proxy_mode || "environment"; setText("model-form-title", "编辑模型"); setText("model-key-hint", "留空保留现有密钥；修改服务地址须重新输入对应密钥。"); $("model-name").focus(); });
@@ -1413,6 +1415,7 @@
     { label: "新建项目", keywords: "new create session flow", icon: "＋", run: openNew },
     { label: "查看全部会话", keywords: "sessions list", icon: "◇", run: () => switchSidebar("sessions") },
     { label: "工作区文件", keywords: "files explorer", icon: "▤", run: () => switchSidebar("files") },
+    { label: "模型管理", keywords: "model models 连接 代理", icon: "✧", run: openModels },
     { label: "会话设置", keywords: "settings policy model workspace permissions", icon: "⚙", requireSession: true, run: openSettings },
     { label: "查看与编辑会话记忆", keywords: "memory", icon: "◈", requireSession: true, run: openMemory },
     { label: "查看任务计划与步骤证据", keywords: "plan steps 计划 步骤", icon: "☷", requireSession: true, run: openPlan },
@@ -1514,7 +1517,7 @@
   $("workspace-parent").addEventListener("click", () => browseWorkspace(state.workspaceBrowseParent));
   $("workspace-select").addEventListener("click", () => { $("settings-project-path").value = state.workspaceBrowsePath; $("workspace-picker").hidden = true; state.workspaceBrowseGeneration++; });
   $("reset-workspace").addEventListener("click", () => { $("settings-project-path").value = ""; $("workspace-picker").hidden = true; state.workspaceBrowseGeneration++; });
-  $("manage-models").addEventListener("click", openModels); $("model-form").addEventListener("submit", saveModel); $("model-reset").addEventListener("click", resetModelForm);
+  ["manage-models", "sidebar-models"].forEach((id) => $(id).addEventListener("click", openModels)); $("model-form").addEventListener("submit", saveModel); $("model-reset").addEventListener("click", resetModelForm);
   $("models-dialog").addEventListener("close", () => { cancelModelTest(); $("model-api-key").value = ""; });
   $("open-memory").addEventListener("click", openMemory); $("memory-form").addEventListener("submit", saveMemory);
   $("refresh-plan").addEventListener("click", () => refreshPlan());

@@ -1293,6 +1293,8 @@ class MainWindow(QMainWindow):
         return box.exec() == QMessageBox.StandardButton.Yes
 
     def _show_confirmation(self) -> None:
+        if self._closing:
+            return
         value = self.current_session
         flow = self.state.get('selected_flow') if self.state else None
         if flow:
@@ -1303,10 +1305,11 @@ class MainWindow(QMainWindow):
         key = (value['id'], pending['id']) if pending else None
         if self._confirmation_key == key:
             return
-        if self.confirmation_dialog is not None:
-            self.confirmation_dialog.reject()
+        previous = self.confirmation_dialog
         self._confirmation_key = key
         self.confirmation_dialog = None
+        if previous is not None:
+            previous.reject()
         if not pending:
             return
         dialog = QDialog(self)
@@ -1333,10 +1336,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
 
         def decided(result: int) -> None:
-            # 捕获会话和请求 ID；切换或新一轮确认不能继承旧批准。
+            # 仅当前对话的用户决定有效；状态刷新主动关闭旧框不发送决定。
+            if self.confirmation_dialog is not dialog or self._confirmation_key != key or self._closing:
+                return
+            self.confirmation_dialog = None
             self.bridge.request('decide', session_id=key[0], confirmation_id=key[1], allowed=result == QDialog.DialogCode.Accepted)
-            if self.confirmation_dialog is dialog:
-                self.confirmation_dialog = None
 
         dialog.finished.connect(decided)
         self.confirmation_dialog = dialog
@@ -1405,8 +1409,11 @@ class MainWindow(QMainWindow):
 
     def _begin_shutdown(self) -> None:
         self._closing = True
-        if self.confirmation_dialog:
-            self.confirmation_dialog.reject()
+        previous = self.confirmation_dialog
+        self.confirmation_dialog = None
+        self._confirmation_key = None
+        if previous:
+            previous.reject()
         self.phase_label.setText('正在停止任务并保存会话，请稍候…')
         self.composer.setEnabled(False)
         self._update_buttons()

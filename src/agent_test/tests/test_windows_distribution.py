@@ -1,12 +1,19 @@
 """分发清单应覆盖全部文件并明确拒绝可跳出成品目录的链接。"""
 import hashlib
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from agent_test.scripts.build_windows import file_manifest, source_root
 from agent_test.scripts import build_windows
+
+
+@pytest.fixture
+def package_version() -> str:
+    """发布资产夹具随当前项目版本变化。"""
+    return tomllib.loads((source_root() / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
 
 
 def test_distribution_manifest_hashes_nested_manifests_and_excludes_only_itself(tmp_path):
@@ -109,7 +116,7 @@ def test_preflight_reports_missing_packaging_extras(monkeypatch):
         build_windows.check_build_dependencies()
 
 
-def test_single_exe_smoke_keeps_distribution_archive_name(tmp_path, monkeypatch):
+def test_single_exe_smoke_keeps_distribution_archive_name(tmp_path, monkeypatch, package_version):
     """受控子进程替身仅验证组装命名，不作为真实 exe 自检证据。"""
     from types import SimpleNamespace
     bundle = tmp_path / 'ChannelAgent.exe'
@@ -143,17 +150,17 @@ def test_single_exe_smoke_keeps_distribution_archive_name(tmp_path, monkeypatch)
     assert (destination.parent / f'{destination.name}.zip').is_file()
     assert (destination.parent / f'{destination.name}.zip.sha256').is_file()
     assert not (destination.parent / 'CONTEXT_SUPERVISOR_ENV_FILE.zip').exists()
-    standalone = destination.parent / 'ChannelAgent-0.6.0-windows-x64.exe'
+    standalone = destination.parent / f'ChannelAgent-{package_version}-windows-x64.exe'
     assert standalone.read_bytes() == (destination / 'ChannelAgent.exe').read_bytes()
     digest = hashlib.sha256(standalone.read_bytes()).hexdigest()
     assert standalone.with_suffix('.exe.sha256').read_text() == f'{digest}  {standalone.name}\n'
 
 
 @pytest.mark.parametrize('suffix', ['.exe', '.exe.sha256'])
-def test_standalone_asset_never_overwrites_existing_file(tmp_path, suffix):
+def test_standalone_asset_never_overwrites_existing_file(tmp_path, suffix, package_version):
     output = tmp_path / 'output'
     output.mkdir()
-    existing = output / f'ChannelAgent-0.6.0-windows-x64{suffix}'
+    existing = output / f'ChannelAgent-{package_version}-windows-x64{suffix}'
     existing.write_bytes(b'existing asset')
     bundle = tmp_path / 'ChannelAgent.exe'
     bundle.write_bytes(b'controlled input')

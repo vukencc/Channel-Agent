@@ -163,14 +163,10 @@ def main():
             with condition:
                 pending.add(key)
             emit('confirm', request_id=key, prompt=prompt, timeout=timeout)
-            deadline = time.monotonic() + timeout
             with condition:
                 while key not in decisions and not cancelled.is_set():
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        pending.discard(key)
-                        return False
-                    condition.wait(remaining)
+                    # 确认期限由原生宿主统一裁决；总期限计时器只设置事件，需定期检查。
+                    condition.wait(.1)
                 pending.discard(key)
                 allowed = decisions.pop(key, False) and not cancelled.is_set()
             return allowed

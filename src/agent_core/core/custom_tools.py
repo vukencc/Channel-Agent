@@ -211,6 +211,7 @@ class CustomTool:
         }}
 
     def run(self, arguments: str) -> str:
+        from agent_core.core.command_review import CommandReview, command_review
         from agent_core.tools.command import run_command
         from agent_core.tools.sandbox import audit
 
@@ -246,8 +247,11 @@ class CustomTool:
         audit("custom_tool_execution", tool=self.name,
               code_digest=hashlib.sha256(self.definition["code"].encode()).hexdigest(),
               network=self.definition["network"], strict=True)
-        return run_command(command=command, reason=f"执行节点自定义工具 {self.name}",
-                           network=self.definition["network"])
+        review = CommandReview(command=command, name=self.name, network=self.definition['network'],
+                               code=self.definition['code'], arguments_json=json.dumps(data, ensure_ascii=False, allow_nan=False))
+        with command_review(review):
+            return run_command(command=command, reason=f"执行节点自定义工具 {self.name}",
+                               network=self.definition["network"])
 
 
 def _reject_constant(value: str):

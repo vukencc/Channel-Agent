@@ -125,6 +125,7 @@ function jsonApi(path, options) {
 }
 async function main() {
   renderModels();
+  assert.equal(allButtons.some(b => b.textContent === '选择'),false);
   const firstButton=allButtons.find(b => b.dataset.modelTest);
   const firstRun=firstButton.handlers.click();
   assert.equal(firstButton.disabled,true);

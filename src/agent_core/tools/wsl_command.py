@@ -11,7 +11,7 @@ import uuid
 
 from agent_core import config
 from agent_core.core.files import directory_identity, opened_path
-from agent_core.tools.sandbox import SandboxError, _context, audit, confirm, current_policy, sandbox_root, execution_authority
+from agent_core.tools.sandbox import SandboxError, _context, audit, confirm, current_policy, sandbox_root, execution_authority, format_confirmation_prompt
 
 
 CONFIG_KEYS = '''COMMAND_CPU_SECONDS COMMAND_FILE_MB COMMAND_NETWORK
@@ -97,10 +97,32 @@ def execute_wsl_tool(operation: str, arguments: dict) -> str:
                 'AI_AGENT_PROJECT_ROOT=/tmp/channel-agent-wsl-worker',
                 config.WINDOWS_WSL_PYTHON, '-B', '-u', script]
         audit('wsl_tool_started', strict=True, operation=operation, request_id=identifier)
-        return _exchange(argv, request, context.cancelled if context else None)
+        from agent_core.core.command_review import bound_review
+        command = arguments.get('command') if operation == 'run_command' else None
+        review = bound_review(command, arguments.get('network', False)) if isinstance(command, str) else None
+        if review is None:
+            return _exchange(argv, request, context.cancelled if context else None)
+        return _exchange(argv, request, context.cancelled if context else None, review=review)
 
 
-def _exchange(argv: list[str], request: dict, cancelled) -> str:
+def _review_confirmation_prompt(prompt, request, review):
+    """只增强与原请求完整一致的 run_command 确认，保留原始提示。"""
+    arguments = request.get('arguments', {})
+    command = arguments.get('command')
+    network = arguments.get('network', False)
+    reason = arguments.get('reason', '')
+    valid = (review and request.get('operation') == 'run_command' and isinstance(command, str)
+             and type(network) is bool and isinstance(reason, str) and review.command == command
+             and review.network == network and arguments.get('runtime_profile', 'system') == 'system'
+             and arguments.get('resource_profile', 'standard') == 'standard')
+    detail = command + (f"\n联网白名单：{request.get('config', {}).get('COMMAND_NETWORK_ALLOWLIST', [])}" if network else '') if valid else None
+    if valid and prompt == format_confirmation_prompt('run_command', detail, reason):
+        from agent_core.core.command_review import format_review
+        return format_review(review) + '\n原始确认提示：\n' + prompt
+    return prompt
+
+
+def _exchange(argv: list[str], request: dict, cancelled, *, review=None) -> str:
     process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=_environment(), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     events = queue.Queue(maxsize=64)
@@ -171,7 +193,8 @@ def _exchange(argv: list[str], request: dict, cancelled) -> str:
                 if event == 'ready' and not ready:
                     ready = True
                 elif event == 'confirm' and ready:
-                    allowed = not sent_cancel and confirm(record['prompt'], float(record['timeout']))
+                    prompt = _review_confirmation_prompt(record['prompt'], request, review)
+                    allowed = not sent_cancel and confirm(prompt, float(record['timeout']))
                     send({'type': 'decision', 'request_id': record['request_id'], 'allowed': bool(allowed)})
                 elif event == 'audit' and ready and isinstance(record.get('entry'), dict):
                     entry = record['entry']
