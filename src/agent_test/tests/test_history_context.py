@@ -240,7 +240,7 @@ def test_read_page_under_metadata_sized_output_limit_must_advance_or_reject(cont
     asyncio.run(run())
 
 
-def test_private_context_symlink_is_rejected(context_env, tmp_path):
+def test_private_context_symlink_is_rejected(context_env, tmp_path, symlink_capable):
     async def run():
         manager, session = await _manager(context_env)
         try:
@@ -356,7 +356,7 @@ def test_failed_manifest_publish_keeps_previous_revision(context_env, monkeypatc
             original_write = context_env.atomic_write
 
             def fail_manifest(target, text):
-                if str(target).endswith('/context/manifest.json'):
+                if target == path:
                     raise OSError('injected manifest failure')
                 return original_write(target, text)
 

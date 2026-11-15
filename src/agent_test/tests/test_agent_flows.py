@@ -369,12 +369,15 @@ def test_failed_turn_drains_real_background_job_before_release(
 ):
     """离线模型/执行双替身；真实命令队列验证取消、排空和项目预约。"""
     import threading
+    from types import SimpleNamespace
     from agent_core import config
     from agent_core.core import command_jobs
     from agent_core.tools import command
     from agent_core.tools.sandbox import ToolContext, tool_context
     monkeypatch.setattr(config, "RAG_ASSESS", False)
     monkeypatch.setattr(config, "ENABLE_COMMAND_JOBS", True)
+    # 仅替换命令队列的平台注册视图；执行已受控替身接管，不改变全局路径或宿主权限。
+    monkeypatch.setattr(command_jobs, "os", SimpleNamespace(**{**vars(command_jobs.os), "name": "posix"}))
     monkeypatch.setattr(command_jobs, "isolated_command", lambda argv, **kwargs: argv)
     entered, release = threading.Event(), threading.Event()
     def execute(*args, **kwargs):
