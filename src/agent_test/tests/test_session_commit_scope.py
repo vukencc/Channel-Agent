@@ -69,7 +69,12 @@ def test_commit_scope_closes_and_failure_does_not_publish(tmp_path, monkeypatch,
         if fail:
             raise OSError('controlled failure before index publication')
         original_write(path, text)
-    monkeypatch.setitem(sys.modules, 'agent_core.core.windows_files', types.SimpleNamespace(pinned_scope=scope))
+    scoped_module = types.SimpleNamespace(pinned_scope=scope)
+    if os.name == 'nt':
+        # 保留真实 Windows 原子写盘后端；这里只替换被测作用域入口。
+        from agent_core.core.windows_files import atomic_replace
+        scoped_module.atomic_replace = atomic_replace
+    monkeypatch.setitem(sys.modules, 'agent_core.core.windows_files', scoped_module)
     monkeypatch.setattr(storage, 'os', WindowsOS())
     monkeypatch.setattr(store, 'atomic_write', write)
     try:
@@ -86,6 +91,7 @@ def test_commit_scope_closes_and_failure_does_not_publish(tmp_path, monkeypatch,
         store.close()
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='仅验证 Linux 提交分支，Windows 分支另有覆盖')
 def test_linux_commit_does_not_enter_windows_scope(tmp_path, monkeypatch):
     store = storage.SessionStore(tmp_path / 'state', tmp_path / 'workspace')
     monkeypatch.setitem(sys.modules, 'agent_core.core.windows_files', types.SimpleNamespace(
