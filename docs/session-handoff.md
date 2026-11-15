@@ -8,7 +8,7 @@
 
 - 2026-11-15 设计助手 Windows 端到端工作进行中：原环境代理拒连，同模型在隔离进程显式使用 Windows 系统代理的短请求成功；用户随后授权将原「测试」连接仅改为系统代理，运行中的旧 EXE 须重启加载。正式 0.6.0 EXE 已真实生成并导入五节点模板，但独立项目首轮运行失败：确认超时竞态使动态工具被拦截，严格 JSON 交接失败，四个下游节点未运行。原案例复跑与新 EXE 验证尚未完成；0.6.1 未发布。失败及待验见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
 
-- 续验：真实 Native↔WSL 九项、实际 Web 同模型连接检查及桌面→Web 模板导入导出通过。非 GUI 原模型运行曾因 JSON 附带说明失败；`3e18332` 下一轮前三节点通过严格验收，但服务节点进入上下文检查点。`a7c110d` 再次真实运行仍在服务节点因上下文失败，七条路由正确但一条严重度不符，回复和人工未运行；Linux 本机全量 2565 passed，远端 CI 成功，Native 额外选择集仍保留七项失败及后续夹具定点结果。旧式上下文 RAG 正文周转及配置批处理正在验证，尚未提交，新案例尚未运行。较早 `3ed5a28` 候选包不是最终版本。用户明确选择「仅继续不操作桌面的工作」；不得操作桌面或现有浏览器。草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 与[记录](designer-windows-e2e-validation-2026-11-15.md)保留失败和验证边界。
+- 续验：Native 与 WSL 已同步并推送测试夹具修复 `3916987`，草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 仍未合并。该提交本机 WSL 全量 2636 passed、Native 安全专项 89 passed，远端双平台 CI 成功；此前原五秒 Native 队列仍三次超时。最新 `0969106` 非 GUI 真实原案例前三节点严格通过，服务节点在 18,528/16,000 估计 tokens 处进入检查点，人工节点阻断，业务验收未通过。设计助手按节点职责明确工具范围的新方向正在准备，尚未调用模型或验证新模板。旧 `3ed5a28` 候选 EXE 非最终成品，新 EXE 可见验收未完成，0.6.1 未发布。用户明确选择「仅继续不操作桌面的工作」；不得操作桌面或现有浏览器。失败及验证边界见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
 
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
 - 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。

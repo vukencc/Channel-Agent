@@ -2,6 +2,38 @@ import asyncio
 import pytest
 
 
+def test_designer_guides_tool_selection_and_preserves_model_choices(tmp_path):
+    import json
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    nodes = [
+        {'id': 'a', 'title': 'A', 'prompt': '检索', 'tool_names': ['read_file', 'list_files', 'rag_search']},
+        {'id': 'b', 'title': 'B', 'prompt': '继承', 'tool_names': None},
+    ]
+    seen = []
+
+    async def model(history, *, session_id, emit):
+        seen.append(history)
+        return {'role': 'assistant', 'content': json.dumps({'reply': '完成', 'template': {
+            'format': 'agent-flow', 'version': 1, 'title': '设计', 'nodes': nodes, 'edges': []}})}
+
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        messages = [{'role': 'user', 'content': '第二节点继承全部工具'}]
+        result = asyncio.run(design_flow(SessionManager(store, model=model), messages))
+        prompt = seen[0][0]['content']
+        for instruction in ('每个节点显式填写 tool_names', 'read_file', 'list_files', 'rag_search',
+                            'custom_tools', 'run_command', 'delegate', 'wait', 'null'):
+            assert instruction in prompt
+        assert seen[0][1:] == messages
+        assert [node['tool_names'] for node in result['template']['nodes']] == [
+            ['read_file', 'list_files', 'rag_search'], None]
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize(('kind', 'expected'), [('timeout', '超时'), ('connection', '连接')])
 @pytest.mark.parametrize('wrapped', [False, True])
 def test_designer_reports_sdk_transport_errors(tmp_path, kind, expected, wrapped):
