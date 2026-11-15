@@ -1,5 +1,7 @@
 """持久化项目身份及其独立流程副本。"""
 import copy
+from contextlib import nullcontext
+from functools import wraps
 import json
 import os
 import re
@@ -10,6 +12,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent_core.core.files import opened_path, fsync_directory
 from agent_core.core.flows import Definition, _order
+
+
+def _pinned_read(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if os.name == 'nt':
+            from agent_core.core.windows_files import pinned_scope
+            scope = pinned_scope(self.manager.store.root)
+        else:
+            scope = nullcontext()
+        with scope:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class Project(BaseModel):
@@ -68,6 +83,7 @@ class ProjectService:
                     errors.append("部分项目与 Flow 的关联无效，已隔离")
         return errors
 
+    @_pinned_read
     def _check_link(self, project_id, flow_id):
         project = self.records[project_id]
         stored = self._read(project_id)
@@ -122,6 +138,7 @@ class ProjectService:
                 continue
         return values
 
+    @_pinned_read
     def get(self, project_id):
         self.records[project_id]  # 只允许已加载的项目身份
         value = self._read(project_id)

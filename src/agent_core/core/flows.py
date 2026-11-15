@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from contextlib import nullcontext
+from functools import wraps
 import hashlib
 import json
 import os
@@ -27,6 +29,19 @@ from agent_core.tools.sandbox import ToolContext, audit, tool_context
 MAX_FLOW_INPUT_CHARS = 16000
 MAX_PENDING_FLOW_RUNS = 16
 logger = get_logger(__name__)
+
+
+def _pinned_write(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if os.name == 'nt':
+            from agent_core.core.windows_files import pinned_scope
+            scope = pinned_scope(self.directory)
+        else:
+            scope = nullcontext()
+        with scope:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class Node(BaseModel):
@@ -168,6 +183,7 @@ class FlowService:
             raise PermissionError("Flow 文件不能是符号链接")
         return path
 
+    @_pinned_write
     def _write(self, value, *, notify=True):
         path = self._path(value["id"])
         if not path.exists() and value["id"] in self.records:
