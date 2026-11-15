@@ -52,6 +52,20 @@ const open=new Function('el','document','button','bridge','openCreated','return 
 ''')
 
 
+def test_flow_toolbar_uses_workspace_width_and_keeps_mobile_actions():
+    static = Path(__file__).resolve().parents[2] / 'agent_frontend/web/static'
+    css = (static / 'flow.css').read_text(encoding='utf-8')
+    js = (static / 'flow.js').read_text(encoding='utf-8')
+    assert '.flow-view{container-type:inline-size;min-width:0}' in css
+    container = css.split('@container (max-width:700px){', 1)[1].split('}', 4)
+    assert any('.flow-controls{display:none' in rule for rule in container)
+    assert any('.flow-mobile-action{display:block' in rule for rule in container)
+    for label in ('删除所选', '缩小', '放大', '适配'):
+        assert f'["{label}",' in js
+    assert '[toggleInspector.textContent, toggleInspector]' in js
+    assert 'const mobileAdd = button("＋ 添加"' in js
+
+
 def test_contract_draft_keeps_invalid_input_and_clears(tmp_path):
     run_flow_js(tmp_path, r'''
 const {flowContractDraft, flowContractInvalid, flowDefinition} = api;
