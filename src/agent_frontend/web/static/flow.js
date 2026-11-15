@@ -585,14 +585,16 @@ if (typeof window !== "undefined") (() => {
   }
   function importDialog() {
     const dialog = el("dialog", "standard-dialog flow-import-dialog"), body = el("div", "dialog-body"), file = document.createElement("input"), inherit = document.createElement("input"), label = el("label"), problem = el("p", "inline-error");
+    problem.hidden = true; problem.setAttribute("role", "alert");
     file.type = "file"; file.accept = ".json,application/json"; inherit.type = "checkbox"; label.append(inherit, document.createTextNode("缺失模型时显式改为继承默认模型"));
     const submit = button("导入", async () => {
+      problem.hidden = true; problem.textContent = "";
       try {
         if (!file.files.length || file.files[0].size > 1048576) throw new Error("请选择不超过 1 MiB 的 JSON 文件。");
         const template = JSON.parse(await file.files[0].text()); submit.disabled = true;
         const result = await bridge.api("/api/flows/import", { method: "POST", body: { template, missing_models: inherit.checked ? "inherit" : "error" } });
         dialog.close(); openCreated(result);
-      } catch (e) { problem.textContent = e instanceof SyntaxError ? "JSON 格式无效。" : e.message; submit.disabled = false; }
+      } catch (e) { problem.textContent = e instanceof SyntaxError ? "JSON 格式无效。" : e.message; problem.hidden = false; submit.disabled = false; }
     }, "button primary");
     body.append(el("h2", "", "导入 Flow 模板"), file, label, problem, submit, button("取消", () => dialog.close())); dialog.append(body); document.body.append(dialog); dialog.addEventListener("close", () => dialog.remove()); dialog.showModal();
   }

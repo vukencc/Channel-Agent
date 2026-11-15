@@ -46,6 +46,10 @@
 - [Codex 多代理](codex-multiagent.md)：本地代理配置和协作约定；技术配置以当前 Codex 配置和官方 schema 为准。
 - [当前会话交接](session-handoff.md)：维护者接手时的状态、环境与 Git 边界；[历史会话交接](session-history.md)保留各阶段记录。
 
+## 进行中的验证
+
+- [Windows 设计助手端到端验证（2026-11-15）](designer-windows-e2e-validation-2026-11-15.md)：真实连接诊断与模板生成、修复及待验边界。
+
 ## 历史 Flow 验证记录
 
 以下记录保留当时的执行和问题，不代表当前质量或性能。

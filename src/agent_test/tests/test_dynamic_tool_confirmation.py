@@ -145,6 +145,8 @@ def test_smart_sandbox_decision_and_audit_use_original_command(tmp_path, monkeyp
     context = sandbox.ToolContext(tmp_path, tmp_path / 'audit.jsonl',
                                   lambda prompt, timeout: prompts.append(prompt) or allowed,
                                   threading.Event(), permission_policy='smart', execution_environment='sandbox')
+    # 这是受控 POSIX 决策测试；Windows WSL 桥接由独立用例验证。
+    monkeypatch.setattr(command, 'os', SimpleNamespace(name='posix'))
     monkeypatch.setattr(command, 'check_workspace_quota', lambda: None)
     monkeypatch.setattr(command, 'check_command', lambda value: [value])
     monkeypatch.setattr(command, 'isolated_command', lambda argv, **kwargs: argv)

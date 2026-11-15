@@ -37,6 +37,21 @@ const flow={id:'a'.repeat(32),project_id:'project-1',title:'受控流程',nodes:
 ''' + body)
 
 
+def test_import_error_is_hidden_until_a_failure(tmp_path):
+    run_flow_js(tmp_path, r'''
+const fs=require('node:fs');
+const source=fs.readFileSync(process.argv[2],'utf8');
+const definition=source.match(/  function importDialog\(\) \{[\s\S]*?\n  \}/)[0];
+let problem, submit;
+function el(tag, cls='', text='') { const item={tag,cls,textContent:text,hidden:false,children:[],setAttribute(k,v){this[k]=v},append(...x){this.children.push(...x)},addEventListener(){},showModal(){},close(){},remove(){}}; if(cls==='inline-error')problem=item; return item; }
+const file={files:[]};
+const document={createElement(tag){return tag==='input' && !file.type ? file : {type:'',checked:false}},createTextNode(text){return text},body:{append(){}}};
+function button(text, handler){const item={text,handler,disabled:false};if(text==='导入')submit=item;return item;}
+const open=new Function('el','document','button','bridge','openCreated','return ('+definition+')')(el,document,button,{},()=>{});
+(async()=>{open();assert.equal(problem.hidden,true);assert.equal(problem.role,'alert');await submit.handler();assert.equal(problem.hidden,false);assert.match(problem.textContent,/请选择/);})().catch(e=>{console.error(e);process.exitCode=1});
+''')
+
+
 def test_contract_draft_keeps_invalid_input_and_clears(tmp_path):
     run_flow_js(tmp_path, r'''
 const {flowContractDraft, flowContractInvalid, flowDefinition} = api;

@@ -6,6 +6,8 @@
 
 ## 当前工作与 Git
 
+- 2026-11-15 设计助手 Windows 端到端工作进行中：原环境代理拒连，同模型在隔离进程显式使用 Windows 系统代理的短请求成功；用户随后授权将原「测试」连接仅改为系统代理，运行中的旧 EXE 须重启加载。正式 0.6.0 EXE 已真实生成并导入五节点模板，但独立项目首轮运行失败：确认超时竞态使动态工具被拦截，严格 JSON 交接失败，四个下游节点未运行。审计修复和原案例复跑、Web 往返与新 EXE 验证尚未完成；0.6.1 未发布。失败及待验见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
+
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
 - 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。
 - 本机候选真实只读 CLI 10/10、源码 Qt 离屏受控组件 5 passed；用户按 Esc 停止可见 GUI 检查，不能记为通过。候选包不等于正式标签构建，失败与中断证据见[便携验收记录](windows-portable-validation-2026-11-13.md)。
