@@ -3,12 +3,14 @@ from time import perf_counter
 
 from agent_core import config
 from agent_core.core.instrumentation import operation_span
+from agent_core.core.tool_observations import observe_text
 from agent_core.rag.cancellation import check_cancelled
 from agent_core.rag.fusion import reciprocal_rank_fusion
 from agent_core.rag.index import DocLoader, RetrievalIndex, get_index
 from agent_core.rag.rerank import get_reranker
 
 _BREADTH_TOP_K = {'narrow': 2, 'normal': 4, 'wide': 8}
+_RECOVERY_NOTICE = '正文已省略；如需原文，请使用原参数重新调用 rag_search；返回当前知识库内容，不是历史快照。'
 
 
 def resolve_params(strictness: str = 'normal', breadth: str = 'normal', thresholds=None) -> tuple[float, int]:
@@ -107,12 +109,24 @@ def rag_search(query: str, top_k: int | None = None, strictness: str = 'normal',
     if not selected:
         return status + '：没有候选达到重排阈值；可放宽 strictness 或改写 query 后重试。'
     body = []
+    body_spans = []
+    offset = len(status) + 2
     for number, row in enumerate(selected, 1):
         parent = index.by_id[row['id']]
         metadata = parent['metadata']
         detail = ' / '.join(f'{name}={scores[name][row["id"]]:.4f}'
                             if row['id'] in scores[name] else f'{name}=未召回'
                             for name in stages)
-        body.append(f'[{number}] 来源: {metadata["filename"]} '
-                    f'({metadata["start"]}:{metadata["end"]}; {detail})\n{parent["document"]}')
-    return status + '\n\n' + '\n\n'.join(body)
+        header = (f'[{number}] 来源: {metadata["filename"]} '
+                  f'({metadata["start"]}:{metadata["end"]}; {detail})\n')
+        document = parent['document']
+        # 在生成正文时记录字符边界，正文中的伪标题不能改变可信边界。
+        if document:
+            body_spans.append((offset + len(header), offset + len(header) + len(document)))
+        body.append(header + document)
+        offset += len(header) + len(document) + 2
+    text = status + '\n\n' + '\n\n'.join(body)
+    if not body_spans:
+        return text
+    return observe_text(text, reader_tool='rag_search', body_spans=tuple(body_spans),
+                        recovery_notice=_RECOVERY_NOTICE)

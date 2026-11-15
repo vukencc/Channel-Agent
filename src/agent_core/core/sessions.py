@@ -110,6 +110,8 @@ class SessionManager:
         self._active_tools = {}
         self.budget_ledger = BudgetLedger(store.root) if (config.SESSION_COST_LIMIT or config.DAILY_COST_LIMIT or config.MODEL_REQUESTS_PER_MINUTE) else None
         self.pending_saves = set()
+        self._configuration_batch_session = None
+        self._configuration_batch_dirty = False
         self.plan_operations = set()
         self.context_operations = set()
         self.tool_workers = set()
@@ -275,6 +277,31 @@ class SessionManager:
             from agent_core.core.command_jobs import CommandJobs
             self.command_jobs = CommandJobs(self.store)
 
+    @contextmanager
+    def configuration_batch(self, session: Session):
+        """仅合并同步配置保存；异常时仍保存已完成的更改。"""
+        if self._configuration_batch_session is not None:
+            raise RuntimeError('不能嵌套会话配置批次')
+        self._configuration_batch_session = session
+        self._configuration_batch_dirty = False
+        try:
+            yield
+        finally:
+            dirty = self._configuration_batch_dirty
+            self._configuration_batch_session = None
+            self._configuration_batch_dirty = False
+            if dirty:
+                self.save(session)
+
+    def _save_configuration(self, session: Session):
+        if self._configuration_batch_session is session:
+            if self.sessions.get(session.id) is not session or session.deleting:
+                raise ValueError('会话已删除或正在删除，拒绝重新创建记录')
+            self._configuration_batch_dirty = True
+            self.notify()
+        else:
+            self.save(session)
+
     def set_execution_environment(self, session: Session, value: str | None):
         if session.record.get('delegated_from'):
             raise PermissionError('子 Agent 执行环境由父会话管理')
@@ -287,7 +314,7 @@ class SessionManager:
         if (value or config.COMMAND_EXECUTION_ENVIRONMENT) == 'local':
             self._ensure_local_command_jobs()
         session.record['execution_environment'] = value
-        self.save(session)
+        self._save_configuration(session)
         self.notify()
 
     def set_workspace_mode(self, session: Session, mode: str):
@@ -897,7 +924,7 @@ class SessionManager:
             raise ValueError('部署未启用 run_command')
         with self._tool_authority_lock:
             session.record['custom_tools'] = definitions
-        self.save(session)
+        self._save_configuration(session)
 
     def set_tool_names(self, session, names: list[str] | None):
         if getattr(self, '_tool_ceiling_archive', False):
@@ -913,7 +940,7 @@ class SessionManager:
             raise ValueError('子会话工具超出父会话上限')
         with self._tool_authority_lock:
             session.record['tool_names'] = None if names is None else [row['function']['name'] for row in schemas]
-        self.save(session)
+        self._save_configuration(session)
 
     def set_permission_policy(self, session, policy: str | None):
         if session.busy:
@@ -922,7 +949,7 @@ class SessionManager:
         if policy is not None and policy not in ACCEPTED_PERMISSION_POLICIES:
             raise ValueError('权限策略必须为 full_access/smart/readonly')
         session.record['permission_policy'] = policy
-        self.save(session)
+        self._save_configuration(session)
 
     def session_deletion_targets(self, session, *, cascade=False):
         """用户删除按委派关系级联；手动分支仍是独立会话。"""
@@ -1098,7 +1125,7 @@ class SessionManager:
         if name and not self.model_registry.contains(name):
             raise ValueError('未知模型 profile')
         session.record['model_profile'] = name or None
-        self.save(session)
+        self._save_configuration(session)
 
     def set_limits(self, session, values):
         if not config.ENABLE_SESSION_BUDGETS:
@@ -1168,6 +1195,9 @@ class SessionManager:
 
     async def _run(self, session, handoff_contract=None):
         contexts = []
+        # 仅在此运行中产生并完整交付的观察可用于后续工作窗口。
+        trusted_observations = {}
+        delivered_observations = set()
         policy = TaskExecutionPolicy.for_session(session.record, session_limit('MAX_TOOL_ROUNDS'))
 
         def checkpoint(reason, message):
@@ -1287,7 +1317,8 @@ class SessionManager:
                     history, context_metrics = await prepare_model_history(history, judge=partial(self._complete, session_id=session.id),
                         cache=session.context_summaries, builder=build_model_history, schemas=schemas,
                         schedule_summary=schedule_summary,
-                        memory_chars=len(memory), extra_chars=extra_chars)
+                        memory_chars=len(memory), extra_chars=extra_chars,
+                        eligible_observations=delivered_observations)
                 session.record['last_run']['context'] = context_metrics
                 self._observe_context_sample(session, context_metrics)
                 session.record['last_run'].pop('recovery_context', None)
@@ -1334,8 +1365,18 @@ class SessionManager:
                             history, recovery_context = await prepare_model_history(history, judge=partial(self._complete, session_id=session.id),
                                 cache=session.context_summaries, builder=build_model_history, schemas=schemas,
                                 schedule_summary=schedule_summary,
-                                memory_chars=len(memory), extra_chars=extra_chars + len(recovery_notice))
+                                memory_chars=len(memory), extra_chars=extra_chars + len(recovery_notice),
+                                eligible_observations=delivered_observations)
                         session.record['last_run']['recovery_context'] = recovery_context
+                from agent_core.core.tool_observations import validate_observation
+                for sent in history:
+                    ident = sent.get('tool_call_id')
+                    metadata = trusted_observations.get(ident)
+                    if metadata is None or sent.get('role') != 'tool':
+                        continue
+                    observation = validate_observation(sent.get('content'), metadata)
+                    if observation is not None:
+                        delivered_observations.add((ident, observation.sha256))
                 session.record['messages'].append(reply)
                 reply_index = len(session.record['messages']) - 1
                 if self.observer.enabled and len(session.record['last_run']['model_calls']) == model_metrics_start:
@@ -1516,9 +1557,14 @@ class SessionManager:
                     for call, (result, metrics) in zip(batch, results):
                         session.record['last_run']['tools'].append(metrics)
                         logger.info('tool_metrics session=%s %s', session.id, metrics)
-                        message = {'role': 'tool', 'tool_call_id': call['id'], 'content': result}
+                        from agent_core.core.tool_observations import extract_observation
+                        metadata = extract_observation(result) if metrics['source'] == 'executed' else None
+                        message = {'role': 'tool', 'tool_call_id': call['id'], 'content': str(result)}
                         message['_provenance'] = metrics['source']
                         message['_event_id'] = metrics['event_id']
+                        if metadata is not None:
+                            message['_context_observation'] = metadata
+                            trusted_observations[call['id']] = metadata
                         session.record['messages'].append(message)
                         if call['function']['name'] == 'rag_search':
                             contexts.append(result)

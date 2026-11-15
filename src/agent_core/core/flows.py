@@ -598,10 +598,7 @@ class FlowService:
                 and not session.record.get("delegated_from") and not session.record.get("branch")):
             workspace = self.manager.workspaces.owner_binding(session)
             if workspace.owner_id == session.id and workspace.path == path and workspace.identity == identity:
-                self.manager.set_execution_environment(session, settings["execution_environment"])
                 same_prompt = session.record["messages"][0] == {"role": "system", "content": prompt}
-                session.record["messages"][0] = {"role": "system", "content": prompt}
-                session.record["title"] = node["title"]
                 return session, True, same_prompt
         session = open_session(self.manager, node["title"], prompt=prompt, workspace_path=path,
                                execution_environment=settings["execution_environment"])
@@ -630,20 +627,27 @@ class FlowService:
                 run["current_node"] = key
                 result["status"] = "running"
                 session, reused, same_prompt = self._node_session(value, node, path, identity, settings)
-                session.record.update(flow_id=value["id"], flow_node_id=key, flow_run_id=run["id"])
-                session.flow_task_ids.clear()
-                result["started_at"] = now()
-                if self.manager.project_reservations.get(identity) != value["id"]:
-                    raise PermissionError("项目预约已变化")
-                self.manager.project_reservation_nodes[identity] = session.id
-                self.manager.set_permission_policy(session, settings["permission_policy"])
-                self.manager.set_model_profile(session, node["model_profile"] or settings["model_profile"])
-                self.manager.set_custom_tools(session, node.get('custom_tools', []))
-                if node['tool_names'] is not None:
-                    from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES
-                    self.manager.set_tool_names(session, list(dict.fromkeys([*node['tool_names'], *REQUIRED_TOOL_NAMES])))
-                elif reused:
-                    self.manager.set_tool_names(session, None)
+                with self.manager.configuration_batch(session):
+                    if reused:
+                        self.manager.set_execution_environment(session, settings["execution_environment"])
+                        prompt = node['prompt'] + (handoff_output_instruction(node['handoff_contract'])
+                                                   if node['handoff_contract'] is not None else '')
+                        session.record["messages"][0] = {"role": "system", "content": prompt}
+                        session.record["title"] = node["title"]
+                    session.record.update(flow_id=value["id"], flow_node_id=key, flow_run_id=run["id"])
+                    session.flow_task_ids.clear()
+                    result["started_at"] = now()
+                    if self.manager.project_reservations.get(identity) != value["id"]:
+                        raise PermissionError("项目预约已变化")
+                    self.manager.project_reservation_nodes[identity] = session.id
+                    self.manager.set_permission_policy(session, settings["permission_policy"])
+                    self.manager.set_model_profile(session, node["model_profile"] or settings["model_profile"])
+                    self.manager.set_custom_tools(session, node.get('custom_tools', []))
+                    if node['tool_names'] is not None:
+                        from agent_core.core.flow_templates import REQUIRED_TOOL_NAMES
+                        self.manager.set_tool_names(session, list(dict.fromkeys([*node['tool_names'], *REQUIRED_TOOL_NAMES])))
+                    elif reused:
+                        self.manager.set_tool_names(session, None)
                 session.record.update(reasoning_effort=node['reasoning_effort'], thinking_mode=node['thinking_mode'])
                 parts = [settings["handoff"], node["handoff"]]
                 if node["handoff_file"]:

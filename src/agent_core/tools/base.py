@@ -4,6 +4,7 @@ from typing import Callable
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel
+from agent_core.core.tool_observations import ObservedText
 
 
 @dataclass
@@ -25,7 +26,8 @@ class Tool:
     def run(self, arguments: str) -> str:
         # 用统一的参数模型校验模型传来的 JSON，再执行函数；类型错了会在这里暴露
         args = self.args_model.model_validate_json(arguments or "{}")
-        return str(self.fn(**args.model_dump()))
+        result = self.fn(**args.model_dump())
+        return result if type(result) is ObservedText else str(result)
 
 
 # 全局注册表：名字 → Tool。主循环只认这张表，不认识任何具体工具
