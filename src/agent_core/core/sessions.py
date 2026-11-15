@@ -15,7 +15,7 @@ from typing import Callable
 
 from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, limits_scope, effective_limits, validate_limits, preset
-from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, permission_mode_guide
+from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, permission_mode_guide, rag_protocol
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
 from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
 from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
@@ -1299,12 +1299,17 @@ class SessionManager:
                     with operation_span('plan.summary'):
                         budget_text += await self.task_plans.summary(session)
                 from agent_core.core.execution_guidance import repeated_read_notice, work_progress_context
-                budget_text += repeated_read_notice(session.record)
+                custom_names = set(self._session_custom_registry(session))
+                budget_text += repeated_read_notice(session.record, custom_names)
                 if self.history_context is not None:
-                    budget_text += work_progress_context(session.record)
+                    budget_text += work_progress_context(session.record, custom_names)
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
                 schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
+                protocol = rag_protocol()
+                if (any(schema['function']['name'] == 'rag_search' for schema in schemas)
+                        and protocol not in history[0].get('content', '')):
+                    budget_text += '\n' + protocol
                 budget_text += '\n' + delegation_guide([schema['function']['name'] for schema in schemas],
                                                        session.record.get('delegated_from'), concise=round_index > 0)
                 extra_chars = len(memory_text) - len(memory) + len(FILE_WORKFLOW_GUIDE) + 1 + len(budget_text)

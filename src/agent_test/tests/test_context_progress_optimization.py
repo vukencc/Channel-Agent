@@ -200,6 +200,40 @@ def test_only_completed_plan_update_clears_read_stall(status, still_stalled):
     assert bool(repeated_read_notice(record)) is still_stalled
 
 
+def test_custom_progress_requires_registered_successful_pair_and_preserves_distinct_receipts():
+    from agent_core.core.execution_guidance import work_progress_context
+    names = ['read_file', 'list_files'] * 3 + ['custom_action', 'custom_action']
+    record = _progress_record(names)
+    for index, identifier in ((6, 'item-1'), (7, 'item-2')):
+        record['messages'][1 + index * 2]['tool_calls'][0]['function']['arguments'] = json.dumps(
+            {'item_id': identifier, 'body': 'x' * 5000})
+        record['last_run']['tools'][index]['outcome'] = 'completed'
+    assert repeated_read_notice(record)
+    assert not repeated_read_notice(record, {'custom_action'})
+    assert work_progress_context(record) == ''
+    text = work_progress_context(record, {'custom_action'})
+    assert 'item-1' in text and 'item-2' in text
+    assert 'x' * 200 not in text and len(text) < 2000
+    record['last_run']['tools'][-1]['outcome'] = 'error'
+    record['messages'][-1]['content'] = '[失败] error'
+    text = work_progress_context(record, {'custom_action'})
+    assert 'item-1' in text and 'item-2' not in text
+    failed = _progress_record(names[:7])
+    failed['last_run']['tools'][-1]['outcome'] = 'error'
+    failed['messages'][-1]['content'] = '[失败] error'
+    assert repeated_read_notice(failed, {'custom_action'})
+    assert work_progress_context(failed, {'custom_action'}) == ''
+    failed['last_run']['tools'][-1].update(source='not_executed', outcome='completed')
+    assert repeated_read_notice(failed, {'custom_action'})
+    assert work_progress_context(failed, {'custom_action'}) == ''
+    for message in record['messages']:
+        if message.get('role') == 'tool':
+            message['_provenance'] = 'executed'
+    record['last_run'] = {'tools': []}
+    text = work_progress_context(record, {'custom_action'})
+    assert 'item-1' in text and 'item-2' not in text
+
+
 def test_hard_budget_batches_protected_tool_groups_into_one_session_summary(context_store, monkeypatch):
     monkeypatch.setattr(config, 'MODEL_INPUT_CHARS', 23_000)
     monkeypatch.setattr(config, 'MODEL_INPUT_TOKENS', 100_000)
@@ -298,6 +332,43 @@ def test_private_provenance_does_not_consume_model_context_budget(monkeypatch):
     assert actual['sent_tokens'] == baseline['sent_tokens']
     assert actual['sent_chars'] == baseline['sent_chars']
     assert decorated[-1]['_provenance'] == 'executed'
+
+
+def test_registered_custom_execution_reaches_structured_work_window(context_store, monkeypatch):
+    monkeypatch.setattr(config, 'TOOL_PERMISSION_POLICY', 'full_access')
+    monkeypatch.setattr(config, 'MEMORY_AUTO_EXTRACT', False)
+    monkeypatch.setattr(config, 'RAG_ASSESS', False)
+
+    async def run():
+        histories = []
+        async def model(history, **kwargs):
+            histories.append(copy.deepcopy(history))
+            if len(histories) == 1:
+                return {'role': 'assistant', 'content': '', 'tool_calls': [{
+                    'id': 'custom-1', 'type': 'function', 'function': {
+                        'name': 'record_item', 'arguments': '{"item_id":"item-1"}'}}]}
+            return {'role': 'assistant', 'content': 'done'}
+        manager = SessionManager(context_store, model=model)
+        session = manager.create()
+        session.record['flow_id'] = 'a' * 32
+        spec = {'name': 'record_item', 'description': '记录项目',
+                'code': 'def main(arguments):\n    return {"stored": arguments["item_id"]}\n',
+                'parameters': {'type': 'object', 'properties': {'item_id': {'type': 'string'}},
+                               'required': ['item_id'], 'additionalProperties': False}}
+        try:
+            manager.set_custom_tools(session, [spec])
+            manager.submit(session, '记录项目')
+            await session.task
+            event = session.record['last_run']['tools'][0]
+            result = next(m for m in session.record['messages'] if m.get('tool_call_id') == 'custom-1')
+            assert event['source'] == 'executed' and event['outcome'] == 'completed'
+            assert result['_event_id'] == event['event_id']
+            window = json.dumps(histories[1], ensure_ascii=False)
+            assert '工程产物索引' in window and 'item-1' in window and 'record_item' in window
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(run())
 
 
 def test_work_progress_receipts_survive_compaction_and_do_not_claim_completion():

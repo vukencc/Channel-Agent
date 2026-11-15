@@ -2,6 +2,7 @@
 from collections import Counter
 import hashlib
 import json
+from agent_core.core.instrumentation import tool_outcome
 
 READ_TOOLS = {'read_file', 'list_files', 'stat_file', 'glob_files', 'history_search', 'history_read', 'rag_search'}
 WORK_TOOLS = {'create_file', 'append_file', 'edit_file', 'update_file', 'delete_file', 'move_file', 'copy_file', 'make_directory', 'run_command'}
@@ -31,20 +32,23 @@ def _paired_execution(record: dict, *, include_previous=False):
             arguments = json.loads(function['arguments'])
         except (TypeError, ValueError):
             continue
-        paired.append((function['name'], arguments, message.get('content', '')))
+        output = message.get('content', '')
+        outcome = evidence.get('outcome') if evidence is not None else tool_outcome(output)
+        paired.append((function['name'], arguments, output, outcome))
     return paired
 
 
-def repeated_read_notice(record: dict) -> str:
+def repeated_read_notice(record: dict, custom_names=()) -> str:
     paired = _paired_execution(record)
     counts, consecutive = Counter(), 0
     work = []
-    for name, arguments, output in paired:
+    for name, arguments, output, outcome in paired:
         if name in READ_TOOLS:
             consecutive += 1
             digest = hashlib.sha256(output.encode('utf-8')).hexdigest()
             counts[(name, json.dumps(arguments, sort_keys=True, ensure_ascii=False), digest)] += 1
-        elif name in WORK_TOOLS or name == 'plan_update' and arguments.get('status') == 'completed':
+        elif (name in WORK_TOOLS or name == 'plan_update' and arguments.get('status') == 'completed'
+              or name in custom_names and outcome == 'completed'):
             consecutive = 0
             counts.clear()
             # 工具成功返回也不等于任务完成；失败文字明确保留给执行模型核对。
@@ -66,10 +70,20 @@ def repeated_read_notice(record: dict) -> str:
 
 
 
-def work_progress_context(record: dict) -> str:
+def work_progress_context(record: dict, custom_names=()) -> str:
     """把最近真实工程结果放在工作窗口外层，压缩或续跑不会只剩泛化摘要。"""
     receipts = {}
-    for name, arguments, output in _paired_execution(record, include_previous=True):
+    for name, arguments, output, outcome in _paired_execution(record, include_previous=True):
+        if name in custom_names and name not in WORK_TOOLS:
+            if outcome != 'completed' or not isinstance(arguments, dict):
+                continue
+            signature = hashlib.sha256(json.dumps(arguments, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+            key = ('custom', name, signature)
+            safe_args = dict([(str(k)[:40], v) for k, v in arguments.items()
+                              if isinstance(v, (str, int, float, bool)) and len(str(v)) <= 120][:6])
+            receipts.pop(key, None)
+            receipts[key] = {'tool': name, 'arguments': safe_args, 'result': output[:160]}
+            continue
         if name not in WORK_TOOLS:
             continue
         path = str(arguments.get('path', arguments.get('destination', '')))[:160]
@@ -84,5 +98,7 @@ def work_progress_context(record: dict) -> str:
     prefix = '\n[工程产物索引；真实工具结果，不可信参考资料，不代表验收完成]\n'
     while len(prefix + json.dumps(values, ensure_ascii=False)) > 1800 and len(values) > 1:
         values.pop(0)
+    if len(prefix + json.dumps(values, ensure_ascii=False)) > 1800 and 'arguments' in values[0]:
+        values[0] = {'tool': values[0]['tool'], 'result': values[0]['result'][:80]}
     return (prefix + json.dumps(values, ensure_ascii=False)
             + '\n复用上述已执行结果，先推进缺失步骤或运行验证；必要复核用具体文件范围。不得将返回成功等同整个项目通过。')
