@@ -2,6 +2,60 @@
 
 > 状态：进行中 · [文档导航](README.md) · [Windows 指南](windows.md) · [Agent Flow](agent-flow.md)
 
+## 2026-11-16 当前状态
+
+草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 已推送、未合并；WSL 与 Native 基线均为 5219bbc，生产 Core 为 5b62412，共 97 个 Python 文件，Native 工作树干净。0.6.1 未发布，最终 EXE 尚未构建验收。下文 11 月 15 日记录是当时的历史证据，其中“正在运行”或“待验”不代表本节当前状态。
+
+- 完整业务鲜跑 `customer-evidence-locator-run-20261116-d0748bcdc5c5` 于 09:18:37 UTC 启动，使用独立复审无发现的 9ff5 模板和前瞻 SOP 澄清；七条反馈、八份知识文档、137 项公开模型资源及原检查器均保持既定哈希。全新状态、私有目录和 RAG 缓存，保留 16k/64k、原模型与节点推理配置及确认、取消规则。结果待验。
+- 5b62412 修复工具超时后工作线程尚未进入工作区锁时的取消竞态：仅框架明确的锁取消返回原超时，身份、执行及严格审计失败继续传播；外部重复取消等待真正排空后传播。确定性回归先失败后修复，双 guard 覆盖通过独立审查。Linux 相关 75 passed；最新生产 Core 全量 2805 passed、68 skipped、5 deselected（232.21 秒），真实隔离探针退出码 0，97 个 Core 哈希不变，报告 `final-timeout-drain-full-20261116-bd136c2299a54fdfb8870d28b1204bf0`。
+- 新排空夹具 Native 首次为 13 failed、4 passed：20ms 期限在到达受控门控前已取消，原三个实际超时参数通过。5219bbc 仅调整测试级同步，受控线程到位后仍调用真实 20ms 超时，原三个实际时限及所有断言不变。Native checkout 专项 `native-timeout-drain-checkout-20261116-d0d2b2426fbb48f7a69c79d281823cfd` 为 17 passed、0 skipped，前后 HEAD、97 Core 和测试哈希一致；独立审查无发现。这不是原五秒高频轮询性能问题的修复。
+
+- Native 报告 `native-startup-history-final-20261116-bcdddbecc869`：97 passed、0 skipped、0 failed（98.475 秒），源码哈希不变；cp936、UTF-8 mode 关闭，SDK MockTransport 两次调用，无真实网络。两项原 20 秒用例分别 5.465 / 3.096 秒，原 5 秒队列用例 2.651 秒通过。`flow-queue-lazy-sdk-20261116-782555e8c18047afb1b278631904277f/after` 三次原 5 秒队列测试为 1 failed（7.95 秒）、2 passed（4.61 / 4.82 秒）；进程墙钟 10.236 / 6.604 / 6.666 秒不是完成时延。此前 1261、967、e0 原期限超时；这些结果不证明无限稳定或单因素归因。
+- 真实模型 `customer-first-delivery-run-20261116-4863601ad200`（Native 5f22、Core 543）：1799.75 秒正常取消并排空，原检查 14/20，业务未通过。退款正确；技术 outbox 将无原文支持的“客户自述无替代方式”写成事实，NoKB 检索 5 次超过 3 次限制，服务未闭环便切项，人工未完成。52 批首次交付 prepared 一致；历史恢复从 offset 0 读取推理，未触及 RAG 原文，原始数据未损坏。
+- f28e4ec 的历史搜索可选 `tool_name` 匹配真实调用配对，`read_args` 按 JSON 字符 offset 分页；默认搜索兼容、原文不变，不因此启用 reader 权限，26 项回归。SDK 延迟加载保留真实模型入口，纯 Pydantic schema 与锁定 SDK 严格字典一致，时限、权限及原子性不变；旧诊断 0xC0000005 根因未知，不能称已修复。d342400 扩展 packaged_smoke：真实 SDK 离线构造、关闭和类型及动态 proxy 模块验证（handler 零次调用），自检由 15 项增至 16 项，源码专项 20 passed，尚未冻结 EXE。
+- 5f22 的 [CI 43821208737](https://github.com/vukencc/Channel-Agent/actions/runs/43821208737) 与 [CI 43821216760](https://github.com/vukencc/Channel-Agent/actions/runs/43821216760) 双绿：Linux 2754 passed、71 skipped、5 deselected（253.56 秒），Windows 1289 passed、68 skipped（184.15 秒）。后续源码的 CI 与新 EXE 仍待核验。下一 xhigh 模板限域追加三个 prompt 和 README 前瞻 SOP 正在准备，尚未验证。
+
+- 只读诊断 `queue-residual-light-20261116-eeaaf31a258440fd9e3ec95d3de55279` 单轮原 5 秒通过：133 次 get 累计 2.954 秒、Flow 写入 1.088 秒，9 次 drain 合计 0.437 毫秒、busy=false，loop lag 324 毫秒；并非旧失败的精确复现，不能单因素归因。
+- WSL d342 全量报告 `.cache/reports/final-lazy-sdk-full-20261116-ef1ae1acb853443792c53580fcd6f8d0`：2791 passed、68 skipped、5 deselected（232.40 秒），97 个 Core 源哈希不变，真实隔离探针退出码 0。f28 的 [PR CI 43832539572](https://github.com/vukencc/Channel-Agent/actions/runs/43832539572) 双绿：Linux 2785 passed、71 skipped、5 deselected（244.71 秒），Windows 1320 passed、68 skipped（148.16 秒）；其 push 运行 43832532272 的 Linux 为 1 failed、2784 passed，原 tool timeout serial guard 线程在超时取消后才启动并抛 SandboxError，新 42 项修复仍在安全审查，尚未提交。
+- d342 的 push 43834960767 和 PR 43834970796 双绿，数量待核。手动候选发布运行 [43835112398](https://github.com/vukencc/Channel-Agent/actions/runs/43835112398) 首次 Windows 原 background job 夹具 `entered.wait` 两秒超时，1 failed、1322 passed、68 skipped（313.39 秒）；Linux 成功，打包跳过。已按原代码和期限申请一次失败任务重跑，不能记为发布或最终 EXE。
+- 新 53c425 模板一次真实 xhigh 调用 87.418 秒、25 项通过，但独立审查发现服务节点两处指令歧义。82c 业务在 triage 三次调用后由父进程于 50.765 秒正常取消并排空，未到受影响的服务节点，不能记为业务通过。
+- 更正设计 `customer-evidence-locator-design-20261116-95d21368ae5b`：一次真实 xhigh 调用 101.495 秒，25/25 检查及两次真实往返通过，模板 SHA256 `9ff5cfd7d7e34688a92a2c12c60336bddf749f89fbd12f47093decec8b60b1a0`。相对 433f 仅追加三个 prompt，其余字段逐值不变；独立复审无发现。项目 README 前瞻澄清的新输入 SHA256 `5475e24bf375e57421fc1883353c96571361ecaa770b2dd2b764d68d7b3a59ea`，原七条反馈、八份知识库和 oracle 不变，不能追认旧案例通过。
+
+- b017cad 修复私有历史 junction 越界；f0c2a52 的 [CI 43791493510](https://github.com/vukencc/Channel-Agent/actions/runs/43791493510) Linux 2655 passed、70 skipped、5 deselected（257.69 秒），Windows 1188 passed、67 skipped（136.52 秒）。更新的 [CI 43795657856](https://github.com/vukencc/Channel-Agent/actions/runs/43795657856) 已成功，数量尚待核对。原用户 .env 的归档开关不存在，默认 false 且尚未更改；安全新 EXE 到位后按用户选择配置。受控案例单独启用结构化历史。
+- 首次新受控历史真实案例 customer-receipt-retry-structured-20261116-002053-a2d1f3c3 在 f0c2a52 上 0.516 秒即失败，request_attempts=0，ModelProxyError，没有 HTTP 请求。随后 f50c37c 尊重 Windows 手动代理关闭：当前注册表关闭且无 PAC/自动检测时直连，不继承失效环境代理；启用但无效的代理、不可用的 PAC 或自动检测仍失败。两平台各 30 项聚焦通过，原模型的显式代理选择不变。
+- 新 Native 真实模型案例 customer-system-route-20261116-95c91be128 使用 f50c37c，五节点、六连线、四工具，16,000 tokens / 64,000 字符、medium-auto、模型 90 秒及确认 30 秒、smart/sandbox。前三节点严格完成；服务节点 26 次模型调用、48 条工具回执、RAG 23 次、发送 0 次，人工节点 blocked。前两次 RAG 120 秒超时，后续检索可用但反复读取。父进程通过原停止文件触发 Flow.cancel，等待后依次关闭 Flow、Manager 和 store，609.562 秒成功结束，磁盘状态 cancelled，非强杀。11 项检查满足、9 项不满足或未到达，后者不是九个独立缺陷；原反馈未变，运维模拟操作各一次，无实际发送。没有证据证明归档遗漏的代码根因已修复。
+- 较早的 11 月 15 日 b017cad 真实案例强制停止于 902.429 秒，磁盘仍为 running，未确认排空；53 chunks、18 revision 的原始校验通过不等于业务通过。真实 xhigh 设计改进 customer-ordered-design-20261116-7b6f1a2d 随后以一次调用、71.080 秒完成，10 项校验通过：只向服务节点追加逐项工作顺序，原提示完整保留，其他字段不变，两轮 FlowService 导入导出等价。新模板 SHA256 为 117b2578ab1877b21d272e98fc5b48cc7514d6380e8ad3cdc9c4a9994520f039。
+- 该模板在 0234ee8 独立真实鲜跑 customer-ordered-run-20261116-3fa6c002d5：前三节点严格完成，服务节点发送两条技术模拟回复后继续读取；最终 24 次模型调用、37 条工具回执、RAG 4 次、history_search 2 次、发送 2 次。父进程正常取消并排空，用时 600.532 秒；磁盘 cancelled，人工阻断。原业务检查 12 项满足、8 项未满足或未到达，整体未通过，没有提高预算、降低推理或修改验收。
+- c82be1c 将 WSL 路径映射按一次命令分批并反向核验，原 20 秒 Flow / 8 秒标记期限及断言保留。Native 首轮 21 项为 17 passed、3 项 UTF-8 夹具失败、1 skipped；c3cf16c 仅修测试编码后，最终 11 文件 141 passed、1 skipped（154.56 秒），报告 native-guidance-path-final-20261116-18c2b6576eb444ee9deac962c42d83c2，临时目录在应用根的同级目录。WSL c82be1c 全量 2672 passed、67 skipped、5 deselected（241.27 秒），报告 system-route-path-batch-full-20261116-i0skUi；哈希未变，真实 Bubblewrap/prlimit 探针通过。批处理只读安全审查无发现，另有 10 项测试及 Linux 实际特殊字符 WSL 路径检查通过。
+- 3894dfc 修复一处已复现的上下文冗余：只暴露读取和业务动态工具时，仍注入完整 CRUD、命令和安装教程。实际旧请求固定预算利用率为 0.814875，归档工作引用缩至 0；这不证明其是重复读取的唯一原因。现在按有效 schema 使用精简读取协议，完整工具指导和默认提示逐字保留，权限和预算不变。受控 SessionManager 请求在结构化及旧式路径先 2 failed、4 passed，修复后扩展稳定前缀与恢复检查；最终聚焦 63 passed（22.20 秒）。新增恢复夹具最初四项把正常经典会话 idle 错当 completed，已按既有生命周期校正并加强最终正文与无错误断言，不修改产品状态规则。后续完整回归及真实业务复验见下。
+- 3894dfc 的 WSL 全量为 3 failed、2686 passed、67 skipped、5 deselected（236.19 秒）：记忆适配夹具的 no_reader 找不到满足条件的输入，原测试结果中并无夹具假设的 100 字虚构填充。bcd1586 只调整测试：输入字符预算设为 7000（不是生产 16,000 token 预算）、移除虚构填充，并断言含真实读取头的完整记忆超预算而保底内容可容纳；原状态、私有事实和工具配对断言保留，10 项通过。Native 3894dfc 全量 157 passed、1 failed、1 skipped（178.16 秒），原结构化历史三秒等待时状态为 cancelled；原失败保留。
+- 699e91b 仅在同步历史操作内复用已验证祖先，不跨异步作用域。Native 旧版三次读取打开祖先 7 次，修改后为 4 次；新增用例核验每次重开叶子、pin 内拒绝硬链接、阻止删除或重命名并在释放后恢复，以及下次作用域重新验证。安全审查无发现。原三秒用例单次前后均通过：pytest 4.19 / 3.69 秒，完整 profile 6.394 / 5.727604 秒；发布分别 1.655637 / 1.687710 秒，CreateFile 583 / 177、checked Open 566 / 160，fsync 均 16。打开次数减少 406，但单次测量且前测受并行 WSL 全量负载影响，不能声称发布耗时改善。后测原始计数 JSON 的基线 HEAD 字段硬编码，实际源码以报告的 actual-head.txt 中 bcd1586 为准。
+- bcd1586 Native 15 文件完整组合 176 passed、4 平台 skipped（177.49 秒），保留原 3、8、20 秒期限及新增安全断言，报告 native-final-bcd1586-20261116-2e614d52adc6442e8cd6f02690bbed75；其中 pin、原结构化用例和十项记忆用例另为 12 passed（17.33 秒）。WSL 全量 2689 passed、68 skipped、5 deselected（226.28 秒），报告 .cache/reports/final-context-history-full-20261116-4zsUrc；94 个 Core 源码 SHA 不变，真实 Bubblewrap/prlimit 探针通过。
+- 新的真实模型运行 customer-effective-guidance-20261116-8e34d5982f 使用 bcd1586，保留 117b 模板、SOP、七条反馈、八份知识库、原 20 项检查及 medium-auto、16,000 tokens / 64,000 字符、90 秒模型 / 30 秒确认、smart/sandbox；仅新增被动请求指纹与指导字符数记录。服务节点 59 次模型调用、100 条工具回执，14 次 RAG 全部成功、发送两次；停止文件触发取消后 shutdown 抛出 InterruptedError，磁盘 Flow 状态 cancelled，没有正常结果，不能称为正常排空。离线审计原 20 项中 12 项满足、8 项不满足或未到达，业务未通过。准备阶段在 Native 根发现生成的 pytest 缓存，已保存在该次报告内并再次核验源码干净，当时尚无实际 API 请求。运行前独立审计冻结原 20 项检查；CF001 critical 可作为暂定可接受判断，但不能断言用户明确排除了其他方案，CF004 与 NO-KB 的人工历史须分别核对。
+- b626ac6 将现有严格条件下的共享记忆精简投影用于结构化路径：只对本轮已成功交付的同版本记忆生效，保留私有及项目事实；首读、失败、新一轮、内容修改或读取权限撤销时不适用。新增七项用例。cb722e0 修复历史搜索计算 Future 被误加到待保存集合：继续等待 context_operations 排空，真正写入错误仍传播；四项受控线程屏障回归覆盖。
+- cb722e0 WSL 全量 2700 passed、68 skipped、5 deselected（229.67 秒），报告 .cache/reports/structured-projection-shutdown-full-20261116-xJMtvE；94 个 Core 源码哈希未变，实际隔离探针退出码 0。Native 17 文件组合 187 passed、4 平台 skipped（221.06 秒），报告 .cache/reports/native-projection-shutdown-final-20261116-8258a6dd8be54a5c80d46a62e7bbad5e，保留原 3、8、20 秒期限。
+- cb722e0 的 [CI 43811369880](https://github.com/vukencc/Channel-Agent/actions/runs/43811369880) 成功：Windows 1231 passed、67 skipped、3 warnings（212.44 秒），Linux 2697 passed、71 skipped、5 deselected（231.61 秒）；integration 任务跳过。与上面的本地平台和选择集不同，不能拼接统计。
+- 真实模型案例 customer-structured-projection-20261116-b9a522a199 使用 cb722e0 和相同 117b 模板、输入与预算，829.844 秒完成五节点严格交接，原 20 项检查 20/20；读取 1、模拟运维 2、模拟发送 4、转人工 2、RAG 6，71 条工具回执配对，shutdown_finished=true 且无 harness 错误。真实 model.completed 确认 fit=true、refs=0。独立语义审查仍发现四项缺陷，整体业务未通过：
+  - CF002 将仅用于开票资格的财务管理员误加入退款资格；第二次真实 RAG 已完整返回 REF02，退款条件仅为所有者。
+  - CF001 将单租户多项目扩大为多租户，又把待核实的无替代方案写成事实；critical 可暂定接受，不要求降级。
+  - NO-KB 对同一问题执行四次 RAG，超过首次加两次重试的上限；归档不重置累计次数。
+  - CF004 人工处理由本次无记录推断历史未处置或其他渠道，并将未限定的详情增造为订单详情页。
+  退款的七天、首次付款及首次购买、未开票、路径、材料和不保证结果均通过；NO-KB 如实表达资料缺口及 false，CF004 没有重复 AI 回复且 true，均通过。严格完成和原检查通过不能追认为语义验收通过。
+- 1261cbe 仅修改新设计助手生成节点的事实与政策指导，既有模板逻辑不变；受控回归先 1 failed，修复后 31 passed。真实 xhigh 设计 customer-evidence-design-20261116-5ffdc383abec 用时 70.221 秒，25/25 严格检查和两轮真实往返通过；仅索引 1、3、4 的提示词追加，旧前缀及其他字段完全一致，模板 SHA256 为 433f9aedf3cd0333e1a027cd3c797dcec384a9458a7b1869fc9583877f7b9239。设计及往返未运行节点或工具。
+- 真实案例 customer-evidence-run-20261116-a8ce26378fa8 在 Native 1261cbe 运行 1143.89 秒，服务节点 52 次模型调用、94 条回执后停滞，父进程通过原停止文件正常取消并排空。前三节点严格完成，服务 cancelled、人工 blocked；原 20 项检查 12 满足，读取 2、模拟运维 2、模拟发送 2、转人工 0、RAG 5，112 条工具回执配对。技术案例暂定 critical/unknown 与两条回复语义通过；退款检索四次超过首次加两次重试上限，尚未完成便切换 NO-KB（一次检索无命中），财务及人工无产物，不预判结果。
+- 只读诊断 diagnosis-readonly-20261116T062910Z-6790dda8 核对 43 个归档块及 journal 精确一致，并非数据丢失。实测有历史读取能力时，最新未读工具批次仍可被硬归档且引用为零：例如第 12 次模型调用取得两份历史结果后，第 13 次实际请求仅四条固定消息、无工具结果；另一次历史和 RAG 结果后下一请求也无工具结果，随后反复检索自己的检索结果。
+- 543fb0b 已提交并推送，Native 已同步：无论是否有历史读取工具，保护本轮所有未成功交付的完整批次（包括部分交付后），以实际成功窗口的精确位置、载荷及随机轮次 token 确认交付。审查以 AST 实证重复 ID 的 occurrence 误确认 P2，修复后复审无发现；31 项新交付用例及 17 项历史工具小页用例覆盖。历史工具完整 JSON 上限为 TOOL_MAX_OUTPUT 与 1500 中较小值，并提供真实分页、offset、遗漏或截断及读取提示。原文、工具配对、权限和 16,000 tokens / 64,000 字符预算不变。
+- 旧 9674157 在新交付用例中有四项因果失败；四处旧夹具明确补充受控的已交付前提，预算、负载和原断言均不改。相关六文件 111 passed（3.2 秒），不能作为两组各 111 项相加；新文件一处读取显式使用 UTF-8 以兼容 Native GBK。这些是受控测试，非实际模型执行。
+- 543fb0b 本机 Linux 首次全量 7 failed、2750 passed、68 skipped、5 deselected（233.36 秒），实际隔离探针退出码 0，94 个 Core 哈希未变；报告 .cache/reports/history-first-delivery-final-full-20261116-0d8c1c2a80024545b896ec17fc6e99fb。七项失败均来自两个旧夹具文件的旧交付语义：fresh_tool_context 四个参数只追加 assistant 消息就假设已读取，并期望 reader 归档未读批次；context_overhead 两个参数缺少多轮已读取前提。
+- 5f22bad 仅适配上述两个测试文件：先前已读场景使用实际完整重试窗口的受控 ACK，不改预算、正文或原断言；旧归档场景使用真实本地发布夹具，要求有无 reader 均恢复完整未读配对，journal、chunks、revision 与原文不变。相关六文件 87 passed（2.55 秒），不能与失败全量拼成整组通过；Native 已同步且干净，生产 Core 仍为 543fb0b。
+- Native 最终专项正在运行，报告 native-history-delivery-final-20261116-6eec9ceb3754：25 项选择、24 文件，默认 GBK，保留原五秒队列和两个原 20 秒退出用例，应用与测试目录并列且禁真实 provider。结果待验；为避免 CPU 干扰，Native 结束后再跑 Linux 完整回归。新真实客服案例仍在准备，尚无模型调用。
+- 9674157 同步工作区 pin 的 [CI 43816698959](https://github.com/vukencc/Channel-Agent/actions/runs/43816698959) 和 [43816706479](https://github.com/vukencc/Channel-Agent/actions/runs/43816706479) 均成功，但 Native 原五秒用例在 1261cbe 前测和 9674157 后测均 3/3 失败，整个调用分别为 14.202 / 14.758 / 14.231 秒和 16.252 / 14.147 / 14.231 秒。单次 profile 的 get 为 37 次、3.13 秒，含项目读取 1.558 秒及 Flow 校验 1.187 秒；片段重叠且 profile 包装器额外 1.659 秒，不能推算生产耗时比例。
+- 已推送并同步 Native 的 e0e5f8c 将同一作用域纯相对路径计算由 13 次降至不超过 2 次，安全检查不减少；WSL 22 passed、8 项 Native skipped，独立 14 passed 且审查无发现。Native 原五秒用例再次 3/3 失败，整个调用 16.360 / 16.225 / 15.972 秒，报告 flow-queue-path-calculation-20261116-a46a6b36eb4241af8b8b299374e8267a。本机问题仍未解决，CI 成功不能抵消，后续不盲目增加 pin 或削弱检查。
+- 同一 1261cbe 的 [push CI 43814272657](https://github.com/vukencc/Channel-Agent/actions/runs/43814272657) 成功；[PR CI 43814277753](https://github.com/vukencc/Channel-Agent/actions/runs/43814277753) Linux 成功，Windows 原五秒队列测试超时，1 failed、1231 passed、67 skipped（214.06 秒）。
+- 本机 WSL 首轮全量遗漏 nvm PATH，需 Linux Node 的断言失败，40 failed、2645 passed、84 skipped、5 deselected（306.89 秒），隔离探针退出码 0，报告 .cache/reports/evidence-designer-final-full-20261116-b2e8ea6d208c407da852dc3cc7d73a66。正确设置 PATH 后全量 2701 passed、68 skipped、5 deselected（231.66 秒），94 个 Core 源码哈希不变、隔离探针退出码 0，报告 .cache/reports/evidence-designer-node-full-20261116-3cdb0a8b5fed479eab6acfa7e02bcbae；首次失败保留。
+- 主题匹配的实际五节点模板已完成 1280×800、1024×800 静态离屏检查：聊天角色、输入、底部模型和关闭/清空均可见且不重叠；全图适配后的节点字较小，1024 下尤甚。初始未套主题空画布截图保留，但不作为产品外观证据。用户禁止操作桌面和浏览器；这不是可见 GUI 或完整窗口操作验收。
+- b8dc254 候选虽有 15 项自检，但缺少安全修复及后续改动，不是最终成品。[发布前构建 43803417504](https://github.com/vukencc/Channel-Agent/actions/runs/43803417504) 使用 1366b22，测试和 Windows、两个打包任务均成功，镜像及发布任务跳过；它早于 3894dfc 和历史目录 pin 改动，不能作为最终成品。
+
 ## 目标与范围
 
 复现 Windows EXE 已配置模型但设计助手首段响应前连接失败的问题，检查连接体验，再用该模型完成从设计、导入、项目运行到模板往返的客服反馈流程。真实模型、正式旧版 EXE、当前源码的受控回归和后续新构建须分别记录；模板生成或节点完成均不等于业务验收通过。
@@ -85,13 +139,27 @@ Native 与 WSL 源码 `0969106` 已推送至草稿 PR #54。该提交包含 `rea
 
 该轮一次旧正文周转节省 654 估计 tokens、1,661 字符，以 15,873 tokens 构建并实际成功发送；随后的失败构建从 20,204 降至 18,528，三处正文压缩未成功发送。最新新增 reasoning 约 2,772 tokens，而先前成功构建的 reasoning 为 264；不能断言仅压缩旧思考即可解决。工具 schema 约 5,849 tokens，system 与当前 user 合计约 6,574 tokens，均为较大固定开销。
 
-下一方向为设计助手提示词默认按节点职责显式生成 `tool_names`，仅选所需基础工具及业务动态工具；用户明确要求继承时仍用 null。既有模板、用户工具配置、运行时、预算、推理及五节点四动态工具业务范围不变。新辅助流程仅准备设计，尚未调用模型，不能称新模板通过；上述旧案例失败保留。
+产品源码 `b8dc254` 已提交并推送：设计助手提示词默认按节点职责显式生成 `tool_names`，仅选所需基础工具及业务动态工具；用户明确要求继承时仍用 null。既有模板、用户工具配置、运行时、预算、推理及五节点四动态工具业务范围不变。最终集成审查无发现，128 项聚焦通过。本机 WSL 全量 2637 passed、64 skipped、5 deselected（232.11 秒），报告 `.cache/reports/explicit-tools-full-20261115-3sUBKo/`；[CI 43724156054](https://github.com/vukencc/Channel-Agent/actions/runs/43724156054) Windows 1156 passed、59 skipped（166.16 秒），Linux 2632 passed、69 skipped、5 deselected（215.82 秒）。
+
+真实 xhigh 设计助手以 82.481 秒完成工具选择，只有五个节点的 `tool_names` 改变，其余字段逐值相等；实际导入导出两轮等价。各节点生效 schema 分别为 672、713、496、1490、732 估计 tokens，旧服务节点为 5849。所选模板 SHA256 `ef35dcefe814951aa669a6cc89219f4c6fdea4b2b24ed775bd9e81a68019cf3b`。报告为 Native `.cache/reports/customer-tool-selection-20261115-222721-bcad8678/`。
+
+随后在原七条反馈、八份知识库及 gold、medium-auto、16,000 tokens / 64,000 字符和 Smart/Sandbox 下进行一次独立真实非 GUI 鲜跑，608.061 秒，首次五节点全部完成且严格交接均通过。四动态工具实际调用分别为读取反馈 1、提交运维 2、发送模拟回复 3、转人工 2，RAG 3 次。并行 Native 冻结构建，耗时不能作性能比较。CF004 保留失败步骤且未重复 AI 答复；NO-KB 未编造政策并转人工，运维明确为模拟，没有真实修复。
+
+原业务检查 19 项满足、1 项不符：CF001 为 high 而 gold 为 critical，但原八份知识库及 README 没有分级 SOP。另经语义核对，退款回复遗漏所有者条件和完整申请路径，因此不能宣称业务全通过。此前各次失败保持独立证据，不能因本轮功能链完成而追认为通过。
+
+SOP 与完整性输入变体保持原反馈、知识库、gold、预算、推理及五节点四动态工具。真实设计首轮 50.87 秒仅改服务节点但删除原交接说明 134 字，已拒绝且未导入；反馈后二次设计 53.823 秒完整保留原 690 字并增加 96 字通用条件清单，其他字段不变，JSON 往返等价。真实运行 420.956 秒，前三节点严格通过，服务节点在 16,915/16,000 估计 tokens 进入检查点、人工节点 blocked；退款所有者及完整申请路径经原文对照通过，新增 SOP 下 critical / unknown 正确，原 gold 检查 14 满足、6 不符或未到达，整体未通过。证据为 Native `.cache/reports/customer-sop-completeness-attempt2-20261115-225114-10f6cb59/`。
+
+用户随后明确授权启用现有结构化历史，保留 16,000 tokens / 64,000 字符、原推理强度及会话私有原文按需读取，不提高预算。启用前安全审计发现 P2：Native 的 context junction 可越界读取，chunks junction 可使私有 RawHistory 先写入外部临时文件再最终拒绝；仅用临时合成数据真实复现。产品修复 `b017cad` 引入 history 目录 FD、Native 全链 pin、写前边界和块发布后核验，并适配 POSIX audit writer 的 directory_fd 及 DEBUG 适配器；owner、digest、audit、原子写和取消约束未降低。Native 已快进至该产品提交；WSL 后续 `4d01f9f` 只修 Windows audit 测试夹具与 CI，不改变产品源码。
+
+Native 新文件红转绿后 7 passed、3 平台 skipped；加强写前 canary 在旧 `b8dc254` 失败、修复后通过。Flow 49 项及 ACL 21 项通过，history 22 passed、1 项 Windows 1314 skipped。rotation 旧 POSIX 假设在 Native 保留 1 failed，后续 UNC 定点 4 passed、0 skipped，不能拼成完整集通过；Native 最终组合正在复跑。Linux `b017cad` 全量 2651 passed、65 skipped、5 deselected（233.60 秒），运行期间最后修改了仅 Windows 测试夹具，不能作为最终源码全量；`4d01f9f` 最终全量正在 `.cache/reports/history-final-full-20261115-yuUujt/` 运行。真实隔离探针多次通过；最初安全复审 47 项聚焦无发现，后续发布后核验与可选读取器回退仍待最终复审。
+
+结构化历史模板由真实 xhigh 设计助手用 52.839 秒生成，仅在五个节点原工具末尾加入 `history_search` / `history_read`，其他字段不变，两轮 JSON 往返等价；各节点 schema 分别为 1005、1046、829、1835、1065 估计 tokens。报告为 Native `.cache/reports/customer-structured-history-20261115-230946-9bea7ab1/`。使用原 SOP 输入、原模型 medium、Smart 与相同预算的独立鲜跑正在进行，没有人工 hard store 或重试；结果待定，不能提前记为通过。
+
+`b8dc254` Windows 候选已完成 15/15 自检及独立审计，但不含上述 P2 修复，不是最终成品。最终代码须由正式标签流水线重新打包；0.6.1 尚未发布。
 
 较早 `3ed5a28` 包的静态审计通过：ZIP 228 项 CRC、227 项清单大小/摘要与全部侧车一致，130 应用模块及 329 资源与对应提交一致；选定九个 PE 为 x64，运行库随包，无 CLR 或所查导入缺失。EXE SHA256 `110008f74056e1d62af9e8f020d815ae22bc2fa0b9e7649b7980e9febf84b340`；ZIP SHA256 `4589d0568a8c37a01efdce9fd0a4e27d4713fc88d698d030db8a9c02c1e580fe`。三项可编辑安装元数据含构建来源路径，未发现它们构成运行依赖；不等同于干净虚拟机兼容性或穷尽二进制敏感信息审计。该包仍非最终成品。
 
 ## 待完成
 
-- 完成隔离项目中的七条业务案例，分别核对节点状态、项目产物及业务预期。
-- 继续验证 Web 界面其余操作及新构建 Windows EXE；记录真实模型、受控回归和任何失败。
-- 较早 Windows 候选包基于源码 `3ed5a280`，已完成冻结、单 EXE 默认完整 15 项自检及上述静态审计；不包含后续交接格式修复，不能作为最终版本，最终源码须重新构建。
-- 验证新设计方向并运行新的业务案例；已提交源码的 Native 专项、WSL 全量及隔离探针结果见上文。原窗口仍无法由工具恢复，未强制关闭；原模型代理已按用户授权保存，旧进程须重启加载。
+- 完成当前设计修订及后续真实模型鲜跑，逐项核对业务、节点状态和项目产物；保留所有此前失败，不把回归通过等同业务通过。
+- 以最终源码构建并验证 Windows 成品，完成 PR 与发布前检查。用户禁止操作桌面及浏览器，可见界面操作验收仍未完成。

@@ -6,9 +6,7 @@
 
 ## 当前工作与 Git
 
-- 2026-11-15 设计助手 Windows 端到端工作进行中：原环境代理拒连，同模型在隔离进程显式使用 Windows 系统代理的短请求成功；用户随后授权将原「测试」连接仅改为系统代理，运行中的旧 EXE 须重启加载。正式 0.6.0 EXE 已真实生成并导入五节点模板，但独立项目首轮运行失败：确认超时竞态使动态工具被拦截，严格 JSON 交接失败，四个下游节点未运行。原案例复跑与新 EXE 验证尚未完成；0.6.1 未发布。失败及待验见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
-
-- 续验：Native 与 WSL 已同步并推送测试夹具修复 `3916987`，草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 仍未合并。该提交本机 WSL 全量 2636 passed、Native 安全专项 89 passed，远端双平台 CI 成功；此前原五秒 Native 队列仍三次超时。最新 `0969106` 非 GUI 真实原案例前三节点严格通过，服务节点在 18,528/16,000 估计 tokens 处进入检查点，人工节点阻断，业务验收未通过。设计助手按节点职责明确工具范围的新方向正在准备，尚未调用模型或验证新模板。旧 `3ed5a28` 候选 EXE 非最终成品，新 EXE 可见验收未完成，0.6.1 未发布。用户明确选择「仅继续不操作桌面的工作」；不得操作桌面或现有浏览器。失败及验证边界见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
+- 2026-11-16 设计助手 Windows 端到端仍未完成：WSL 与 Native 为 `5219bbc`，生产 Core `5b62412` 共 97 个文件，Native 干净；草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 未合并，0.6.1 未发布。Linux 最新生产 Core 全量 2805 passed、真实隔离探针通过；Native 启动与历史专项 97/97、checkout 超时排空专项 17/17 通过，五秒高频轮询队列三次仍一例超时。更正后的真实 xhigh 模板独立复审无发现，完整新业务 `customer-evidence-locator-run-20261116-d0748bcdc5c5` 于 09:18:37 UTC 启动，保留原反馈、知识库和验收器，前瞻 SOP 澄清作为新输入变体；结果待验，旧 14/20 失败保留。d342 SDK 候选冻结包审计中，尚非最终发布。用户禁止桌面和浏览器操作。用户选择 16k 与历史归档，原 `.env` 尚未改，待安全新 EXE 到位后配置。最新证据见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
 
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
 - 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。
@@ -99,7 +97,7 @@
 - 经典 Agent 工具由框架管理。Flow 节点可收窄有效工具并定义自定义工具，`read_file`/`list_files` 基础锁定，部署及祖先能力上限同时约束 schema 和执行。自定义工具经 `run_command` 执行；部署必须允许该工具。提示词不构成文件权限隔离。
 - 设计助手没有执行工具，可生成包含自定义工具定义的新的未绑定模板，不覆盖当前图或运行节点；设计和导入不执行代码。便携 JSON 不携带项目目录、运行身份、连接凭据或知识库；未知模型仅经显式继承选择清空引用。旧测试配方 `schema_version` 格式不能当作 `format=agent-flow/version=1` 的便携文件直接导入。
 - Flow 的 local 命令通过 Bubblewrap 限制持久写入到项目，保留网络与 localhost，隔离不可用时拒绝；经典会话 local 语义不同。所有模式继续遵守选定权限、确认、审计和工具结果配对。
-- `prepare_context` 是模型调用前准备输入窗口，不代表已 Compact。结构化归档须满足独立的软/硬预算条件；无 `history_read` 时最新未交付完整工具批次受保护，不能容纳时在付费摘要和归档发布前进入检查点，不扩大预算或拆分工具配对。详见 [上下文管理](context-management.md)。
+- prepare_context 是模型调用前准备输入窗口，不代表已 Compact。结构化归档须满足独立的软/硬预算条件；无论是否有 history_read，本轮所有未成功交付的完整工具批次均受保护，失败或部分交付不确认；不能容纳时在付费摘要和归档发布前进入检查点，不扩大预算或拆分工具配对。历史工具提供真实小页与 offset，完整 JSON 上限为 TOOL_MAX_OUTPUT 和 1500 字符中的较小值。详见 [上下文管理](context-management.md)。
 - Debug 保持原上下两行标签与短竖箭头；所有子 Agent 行完整显示，服务端按根会话树隔离。右侧局部详情独立滚动，不强制滚到页面底部；全部 Agent 停止后时间轴冻结。不要擅自重设计主图。
 
 ## 验证事实与复用
