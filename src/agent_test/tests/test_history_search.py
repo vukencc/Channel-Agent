@@ -118,9 +118,11 @@ def test_history_tools_pass_only_the_current_session_to_service(monkeypatch):
             assert (query, limit, method) == ('needle', 2, 'bm25')
             return [{'ID': 'a' * 32, 'Summary': 'found', 'RawHistory': 'secret'}]
 
-        async def read(self, session, chunk_id, before=0, after=0, offset=0, limit=6000):
+        async def read(self, session, chunk_id, before=0, after=0, offset=0, limit=6000,
+                       *, output_limit=None):
             assert session is owner
             assert chunk_id == 'a' * 32
+            assert output_limit == min(config.TOOL_MAX_OUTPUT, history_tool.HISTORY_TOOL_RESULT_CHARS)
             return {'chunks': [{'ID': chunk_id, 'RawHistory': '[{"role":"user"}]'}],
                     'next_offset': None, 'total_chars': 17}
 

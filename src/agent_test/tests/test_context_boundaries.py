@@ -627,6 +627,9 @@ def test_hard_budget_archives_completed_post_user_tool_group_without_orphaning_r
     async def run():
         manager, session = await _manager(env)
         try:
+            # 受控交付确认：本例验证已读批次的归档；未读批次由独立边界用例保护。
+            session.record['messages'] = copy.deepcopy(messages)
+            manager.history_context.mark_delivered(session, messages)
             history, metrics = await manager.history_context.prepare(session, messages,
                 schemas=[{'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}])
             assert metrics['utilization'] <= 1

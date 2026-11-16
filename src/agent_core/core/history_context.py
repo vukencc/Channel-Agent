@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, ExitStack
 from contextvars import copy_context
@@ -117,6 +118,7 @@ class HistoryContext:
         self.cache = {}
         self.locks = {}
         self.checks = {}
+        self.delivered_batches = {}
         self.search_executor = None
         if not hasattr(manager, 'context_operations'):
             manager.context_operations = set()
@@ -128,6 +130,51 @@ class HistoryContext:
             raise PermissionError('历史只能由有效的当前会话访问')
         if self.manager.closing or self.manager.maintenance or session.cancelled.is_set() or session.forking:
             raise PermissionError('会话已取消、关闭或处于维护状态')
+
+    def _delivery_state(self, session, messages, current):
+        turn = (current, _digest(_public(messages[current])),
+                session.record.get('last_run', {}).get('turn_id'))
+        state = self.delivered_batches.get(session.id)
+        if state is None or state[0] != turn:
+            state = (turn, set(), {})
+            self.delivered_batches[session.id] = state
+        return state[1]
+
+    def mark_delivered(self, session: Session, actual_history: list[dict]) -> None:
+        """仅确认成功模型请求中与本轮原文完全一致的完整工具批次。"""
+        self._gate(session)
+        messages = session.record['messages']
+        current = max((i for i, message in enumerate(messages) if is_user_request(message)), default=-1)
+        if current < 1:
+            return
+        delivered = self._delivery_state(session, messages, current)
+        try:
+            actual_groups = _groups(actual_history)
+        except (KeyError, TypeError, ValueError):
+            # 不能以不完整或无法验证的窗口确认交付。
+            return
+        raw = {(start, end): _digest([_public(message) for message in messages[start:end]])
+               for start, end in _groups(messages) if start > current and messages[start].get('tool_calls')}
+        counts = Counter(raw.values())
+        tokens = self.delivered_batches[session.id][2]
+        for start, end in actual_groups:
+            message = actual_history[start]
+            if message.get('role') != 'assistant' or not message.get('tool_calls'):
+                continue
+            digest = _digest([_public(item) for item in actual_history[start:end]])
+            marker = message.get('_history_delivery')
+            if '_history_delivery' in message:
+                if not isinstance(marker, dict) or set(marker) != {'start', 'end', 'token'}:
+                    continue
+                position = (marker['start'], marker['end'])
+                if (not all(type(value) is int for value in position) or raw.get(position) != digest
+                        or tokens.get((*position, digest)) != marker['token'] or marker['token'] is None):
+                    continue
+            else:
+                if counts[digest] != 1:
+                    continue
+                position = next(position for position, value in raw.items() if value == digest)
+            delivered.add((position[0], digest))
 
     @asynccontextmanager
     async def _operation(self, session):
@@ -321,7 +368,7 @@ class HistoryContext:
             if end > len(messages) or _digest(messages[start:end]) != chunk['digest']:
                 raise ValueError('已归档的历史前缀被改写，拒绝使用过期摘要')
 
-    def _compose(self, messages, manifest, previews, protected, current, runtime, memory, schemas=None):
+    def _compose(self, messages, manifest, previews, protected, current, runtime, memory, schemas=None, *, session=None):
         names = {schema.get('function', {}).get('name') for schema in (schemas or [])}
         guidance = []
         if 'history_search' in names:
@@ -367,7 +414,13 @@ class HistoryContext:
         history.append(user)
         for start, end in protected:
             if start > current:
-                history.extend(dict(message) for message in messages[start:end])
+                batch = [dict(message) for message in messages[start:end]]
+                if session is not None and batch[0].get('tool_calls'):
+                    digest = _digest([_public(message) for message in batch])
+                    tokens = self.delivered_batches[session.id][2]
+                    token = tokens.setdefault((start, end, digest), uuid.uuid4().hex)
+                    batch[0]['_history_delivery'] = {'start': start, 'end': end, 'token': token}
+                history.extend(batch)
         return history
 
     @staticmethod
@@ -604,17 +657,14 @@ class HistoryContext:
             self._gate(session)
             self._verify_prefix(manifest, messages)
             groups = _groups(messages)
-            names = {schema.get('function', {}).get('name') for schema in (schemas or [])}
-            fresh = []
-            if groups and 'history_read' not in names:
-                start, end = groups[-1]
-                if (end == len(messages) and messages[start].get('role') == 'assistant'
-                        and messages[start].get('tool_calls') and messages[-1].get('role') == 'tool'):
-                    # 从完整 journal 恢复，即使旧索引已经覆盖这个批次。
-                    fresh = [(start, end)]
             current = max((i for i, message in enumerate(messages) if is_user_request(message)), default=-1)
             if current < 1:
                 raise ValueError('结构化上下文缺少真实用户输入')
+            delivered = self._delivery_state(session, messages, current)
+            # 从原始 journal 恢复所有未成功交付的本轮工具批次，包括旧索引已覆盖者。
+            fresh = [(start, end) for start, end in groups if start > current
+                     and messages[start].get('tool_calls')
+                     and (start, _digest([_public(message) for message in messages[start:end]])) not in delivered]
             covered = [(item['Time']['start'], item['Time']['end']) for item in manifest['chunks']]
             uncovered = [group for group in groups if not any(start <= group[0] and group[1] <= end for start, end in covered)]
             available = [group for group in uncovered if group[0] != current and group not in fresh]
@@ -622,7 +672,7 @@ class HistoryContext:
             protected = available[-keep:] if keep else []
             eligible = [group for group in available if group not in protected]
             previews = self._chunks(session, messages, eligible)
-            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas)
+            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
             metrics = self._metrics(history, schemas, messages[current], messages)
             high_utilization = metrics['utilization'] >= config.CONTEXT_COMPACT_RATIO
             insufficient = metrics['utilization'] >= 1
@@ -638,7 +688,7 @@ class HistoryContext:
             # 先检查真正不可压缩的成本，不能付费归档后才发现 schema/当前输入本身超限。
             fixed_manifest = {**manifest, 'session_summary': '', 'working_summary_chars': 0,
                               'working_reference_chars': 0, 'working_reference_count': 0}
-            fixed_history = self._compose(messages, fixed_manifest, [], fresh, current, runtime, memory, schemas)
+            fixed_history = self._compose(messages, fixed_manifest, [], fresh, current, runtime, memory, schemas, session=session)
             # 多次规划只重算工作窗口，schema 与原始完整历史成本在本轮只序列化一次。
             schema_tokens = estimate_tokens(json.dumps(schemas, ensure_ascii=False)) if schemas else 0
             char_limit = session_limit('MODEL_INPUT_CHARS')
@@ -714,7 +764,7 @@ class HistoryContext:
                              'Summary': character * min(160, config.CONTEXT_SUMMARY_CHARS)} for item in possible_chunks]],
                             key=lambda item: item['Time']['start'])
                         estimate = self._compose(messages, estimate_manifest, [], sorted(protected_groups + fresh),
-                                                 current, runtime, memory, schemas)
+                                                 current, runtime, memory, schemas, session=session)
                         estimates.append(window_cost(estimate)['utilization'])
                     return max(estimates)
 
@@ -777,7 +827,7 @@ class HistoryContext:
             if insufficient and not chunks:
                 # 仅收窄摘要/引用工作视图已能解决压力时，无需重复付费或写入原文归档。
                 manifest = compact_manifest
-            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas)
+            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
             after = self._metrics(history, schemas, messages[current], messages)
             after.update(context_revision=manifest['revision'], archived_chunks=len(manifest['chunks']),
                          compact_reason=reason if chunks or insufficient else '', compacted=bool(chunks), supervisor=decision_status,
@@ -843,10 +893,13 @@ class HistoryContext:
         return records
 
     async def read(self, session: Session, chunk_id: str, before: int = 0, after: int = 0,
-                   offset: int = 0, limit: int = 6000) -> dict:
+                   offset: int = 0, limit: int = 6000, *, output_limit: int | None = None) -> dict:
         if (not re.fullmatch(r'[a-f0-9]{32}', chunk_id) or not 0 <= before <= 2 or not 0 <= after <= 2
                 or before + after > 2 or offset < 0 or not 1 <= limit <= 6000):
             raise ValueError('历史块标识、邻块范围或分页参数无效')
+        if output_limit is not None and (type(output_limit) is not int or output_limit < 1):
+            raise ValueError('历史读取输出上限无效')
+        maximum = min(config.TOOL_MAX_OUTPUT, output_limit) if output_limit is not None else config.TOOL_MAX_OUTPUT
         async with self._operation(session):
             manifest = await self._manifest(session)
             order = [item['ID'] for item in manifest['chunks']]
@@ -872,7 +925,7 @@ class HistoryContext:
                 remaining -= len(value)
             result = {'chunks': chunks, 'next_offset': offset + limit - remaining if offset + limit - remaining < total else None,
                       'total_chars': total}
-            while len(json.dumps(result, ensure_ascii=False)) > config.TOOL_MAX_OUTPUT:
+            while len(json.dumps(result, ensure_ascii=False)) > maximum:
                 if not chunks or not chunks[-1]['RawHistory']:
                     raise ValueError('TOOL_MAX_OUTPUT 太小，不能返回历史块元数据')
                 removed = max(1, len(chunks[-1]['RawHistory']) // 2)
@@ -890,6 +943,7 @@ class HistoryContext:
         self.cache.pop(identifier, None)
         self.locks.pop(identifier, None)
         self.checks.pop(identifier, None)
+        self.delivered_batches.pop(identifier, None)
 
     async def close(self) -> None:
         if self.search_executor is not None:

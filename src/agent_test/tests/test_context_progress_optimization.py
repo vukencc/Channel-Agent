@@ -257,6 +257,9 @@ def test_hard_budget_batches_protected_tool_groups_into_one_session_summary(cont
         supervisor = SupervisorStub()
         manager, session = await _manager(context_store, supervisor)
         try:
+            # 该压力夹具表示先前成功交付的完整批次；不代表真实模型调用或性能测量。
+            session.record['messages'] = copy.deepcopy(messages)
+            manager.history_context.mark_delivered(session, copy.deepcopy(messages))
             history, metrics = await manager.history_context.prepare(session, messages, schemas=[
                 {'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}])
             assert metrics['utilization'] <= 1

@@ -58,6 +58,12 @@ def _tool_group(index, length=520):
              'content': f'READ_FACT_{index:03d}; ' + '摘' * length}]
 
 
+def _ack_prior_controlled_delivery(service: HistoryContext, session, messages: list[dict]) -> None:
+    # 此负载验证先前已完整交付的历史归档；受控成功前提不是真实模型或性能证据。
+    session.record['messages'] = copy.deepcopy(messages)
+    service.mark_delivered(session, copy.deepcopy(messages))
+
+
 async def run_engineering_workload(store, service_class=HistoryContext, *, steps=48, supervisor=None):
     supervisor = supervisor or UnavailableSummary()
     manager = SessionManager(store, model=lambda *_args, **_kwargs: None)
@@ -78,6 +84,7 @@ async def run_engineering_workload(store, service_class=HistoryContext, *, steps
             if index:
                 messages.extend(_tool_group(index + 6))
             original = copy.deepcopy(messages)
+            _ack_prior_controlled_delivery(service, session, messages)
             try:
                 history, metrics = await service.prepare(session, messages, schemas=schemas, runtime=runtime)
                 assert metrics['utilization'] <= 1
@@ -166,6 +173,7 @@ def test_existing_archive_budget_can_shrink_view_without_new_summary_or_write(bu
                    {'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}]
         runtime = '态' * 1500
         try:
+            _ack_prior_controlled_delivery(service, session, messages)
             # Establish a full durable summary before later fixed overhead tightens the window.
             _, first = await service.prepare(session, messages, schemas=[schemas[1]], runtime='')
             assert first['compacted']
@@ -182,6 +190,8 @@ def test_existing_archive_budget_can_shrink_view_without_new_summary_or_write(bu
                 (fixed_metrics['sent_tokens'] + fixed_metrics['reserved_tokens']) / .99))
             # Reload proves the durable view caps do not depend on an in-memory cooldown.
             service = HistoryContext(manager, supervisor=supervisor)
+            # 重建服务会清除交付账本；单独恢复本例已读前提，不恢复摘要冷却或工作视图。
+            _ack_prior_controlled_delivery(service, session, messages)
             history, after = await service.prepare(session, messages, schemas=schemas, runtime=runtime)
             assert after['before_utilization'] > 1
             assert after['utilization'] <= 1

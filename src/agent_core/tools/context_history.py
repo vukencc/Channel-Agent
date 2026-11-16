@@ -1,4 +1,4 @@
-"""Current-session archive search and bounded raw-history reads."""
+"""当前会话摘要检索及原文小页读取；JSON 回执完整，归档原文不变。"""
 from __future__ import annotations
 
 import asyncio
@@ -14,8 +14,13 @@ from agent_core.tools.base import register_tool
 from agent_core.tools.sandbox import audit, cancellation_requested
 
 
+HISTORY_TOOL_RESULT_CHARS = 1500
+_SEARCH_SUMMARY_CHARS = 160
+_READ_HINT = '仅摘要，不证明执行成功；按ID history_read，缩小limit分页。'
+
+
 class HistorySearchArgs(BaseModel):
-    """Search this session's archived summaries, then read a selected ID for detail."""
+    """搜索当前会话归档摘要；摘要不证明工具成功，按命中 ID 用 history_read 核对原文。"""
 
     model_config = ConfigDict(extra='forbid')
     query: str = Field(min_length=1, max_length=1000)
@@ -24,7 +29,7 @@ class HistorySearchArgs(BaseModel):
 
 
 class HistoryReadArgs(BaseModel):
-    """Read one owned archive chunk and at most two adjacent chunks."""
+    """读取本会话归档原文的小页；按真实 next_offset 续读，最多附带两个邻块。"""
 
     model_config = ConfigDict(extra='forbid')
     chunk_id: str = Field(pattern=r'^[a-f0-9]{32}$')
@@ -72,27 +77,52 @@ def _run(operation):
 
 def _complete_json(value) -> str:
     payload = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
-    if len(payload) > config.TOOL_MAX_OUTPUT:
-        raise ValueError('历史结果超过 TOOL_MAX_OUTPUT；请缩小 limit 或调整分页')
+    if len(payload) > min(config.TOOL_MAX_OUTPUT, HISTORY_TOOL_RESULT_CHARS):
+        raise ValueError('历史结果超过小页输出上限；请缩小 limit 或调整分页')
     return payload
 
 
 def _search_json(rows: list[dict]) -> str:
-    """Keep search output parseable when the configured tool limit is small."""
+    """先缩短真实候选摘要，再省略末位候选；不改变排名、元数据或输入。"""
     fields = {'ID', 'Time', 'Summary', 'score', 'previous_id', 'next_id', 'retrieval'}
     selected = [{key: value for key, value in row.items() if key in fields} for row in rows]
-    while len(selected) > 1 and len(json.dumps(selected, ensure_ascii=False, separators=(',', ':'))) > config.TOOL_MAX_OUTPUT:
+    maximum = min(config.TOOL_MAX_OUTPUT, HISTORY_TOOL_RESULT_CHARS)
+    for row in selected:
+        summary = row.get('Summary')
+        if isinstance(summary, str) and len(summary) > _SEARCH_SUMMARY_CHARS:
+            row['Summary'] = summary[:_SEARCH_SUMMARY_CHARS]
+            row['summary_truncated'] = True
+
+    def payload_size() -> int:
+        return len(json.dumps(selected, ensure_ascii=False, separators=(',', ':')))
+
+    def annotate() -> None:
+        if selected:
+            omitted = len(rows) - len(selected)
+            if omitted:
+                # 仅统计本次已排序候选中省略的条目，不能声称是全库命中数。
+                selected[0]['omitted_count'] = omitted
+            if omitted or any(row.get('summary_truncated') for row in selected):
+                selected[0]['read_hint'] = _READ_HINT
+
+    annotate()
+    while len(selected) > 1 and payload_size() > maximum:
         selected.pop()
-    if selected and len(json.dumps(selected, ensure_ascii=False, separators=(',', ':'))) > config.TOOL_MAX_OUTPUT:
+        annotate()
+    if selected and payload_size() > maximum:
         row = selected[0]
-        summary = row.get('Summary', '')
+        summary = row.get('Summary')
         if isinstance(summary, str):
             row['summary_truncated'] = True
+            annotate()
+            row['Summary'] = ''
+            if payload_size() > maximum:
+                raise ValueError('历史候选元数据超过小页输出上限，无法返回完整 JSON')
             low, high = 0, len(summary)
             while low < high:
                 middle = (low + high + 1) // 2
                 row['Summary'] = summary[:middle]
-                if len(json.dumps(selected, ensure_ascii=False, separators=(',', ':'))) <= config.TOOL_MAX_OUTPUT:
+                if payload_size() <= maximum:
                     low = middle
                 else:
                     high = middle - 1
@@ -102,7 +132,7 @@ def _search_json(rows: list[dict]) -> str:
 
 @register_tool(HistorySearchArgs, name='history_search', concurrency='read')
 def history_search(query: str, limit: int = 5, method: str = 'bm25') -> str:
-    """Return current-session archive summaries and actual retrieval scores."""
+    """返回真实排序的归档摘要小页与分数；需要证据时按 ID 读取原文及配对回执。"""
     if not query.strip():
         raise ValueError('query 不能为空')
     result = _run(lambda history, session: history.search(session, query.strip(), limit=limit, method=method))
@@ -113,14 +143,15 @@ def history_search(query: str, limit: int = 5, method: str = 'bm25') -> str:
 @register_tool(HistoryReadArgs, name='history_read', concurrency='read')
 def history_read(chunk_id: str, before: int = 0, after: int = 0,
                  offset: int = 0, limit: int = 6000) -> str:
-    """Return a complete JSON page from an owned raw-history chunk."""
+    """返回本会话归档原文的完整 JSON 小页；按 next_offset 继续，不截断已生成回执。"""
     if before + after > 2:
         raise ValueError('最多读取两个相邻历史片段')
-    # Reserve space for JSON keys, metadata and quoting; the service applies
-    # the final exact output budget while selecting the raw-history page.
-    limit = min(limit, max(1, config.TOOL_MAX_OUTPUT - 512))
+    # 原文生产端按完整 JSON 上限选页；不在执行后裁剪字符串或伪报 next_offset。
+    maximum = min(config.TOOL_MAX_OUTPUT, HISTORY_TOOL_RESULT_CHARS)
+    limit = min(limit, max(1, maximum - 512))
     result = _run(lambda history, session: history.read(
-        session, chunk_id, before=before, after=after, offset=offset, limit=limit))
+        session, chunk_id, before=before, after=after, offset=offset, limit=limit,
+        output_limit=maximum))
     audit('read', action='history_read', chunk_id=chunk_id,
           before=before, after=after, offset=offset)
     return _complete_json(result)

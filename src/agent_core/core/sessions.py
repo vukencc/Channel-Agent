@@ -1416,6 +1416,8 @@ class SessionManager:
                 if (workspace_frame is not None and not fitted_workspace
                         and not session.cancelled.is_set()):
                     delivered_workspace_frames.add(workspace_frame.key)
+                if self.history_context is not None and not session.cancelled.is_set():
+                    self.history_context.mark_delivered(session, history)
                 from agent_core.core.tool_observations import validate_observation
                 for sent in history:
                     ident = sent.get('tool_call_id')
@@ -1504,6 +1506,8 @@ class SessionManager:
                                     turn_id=session.record['last_run']['turn_id'], metrics={'tokens_source': 'unknown'})
                             if session.cancelled.is_set():
                                 raise asyncio.CancelledError
+                            if self.history_context is not None:
+                                self.history_context.mark_delivered(session, repair_history)
                             session.record['messages'].append(reply)
                             reply_index = len(session.record['messages']) - 1
                             session.partial = session.partial_reasoning = ''
