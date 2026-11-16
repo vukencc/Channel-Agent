@@ -122,6 +122,7 @@ jobs:
             'src/agent_test/tests/test_dynamic_wsl_authority.py',
             'src/agent_test/tests/test_dynamic_tool_confirmation.py',
             'src/agent_test/tests/test_wsl_confirmation_deadline.py',
+            'src/agent_test/tests/test_wsl_path_translation.py',
             'src/agent_test/tests/test_custom_tool_entry_contract.py',
             'src/agent_test/tests/test_working_tool_display.py',
             'src/agent_test/tests/test_working_tooltip_pointer.py',
