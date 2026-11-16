@@ -4,11 +4,35 @@
 
 ## 2026-11-16 当前状态
 
-草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 已推送、未合并；WSL 与 Native 基线均为 5219bbc，生产 Core 为 5b62412，共 97 个 Python 文件，Native 工作树干净。0.6.1 未发布，最终 EXE 尚未构建验收。下文 11 月 15 日记录是当时的历史证据，其中“正在运行”或“待验”不代表本节当前状态。
+草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 未合并，0.6.1 未发布；WSL 与 Native 源码基线 9559867，Core 97 个 Python 文件，Native 工作树干净。最新真实案例已完成并正常排空。最终 EXE 尚未冻结验收；用户禁止桌面和浏览器操作，原用户 `.env` 历史归档尚未启用。
 
-- 完整业务鲜跑 `customer-evidence-locator-run-20261116-d0748bcdc5c5` 于 09:18:37 UTC 启动，使用独立复审无发现的 9ff5 模板和前瞻 SOP 澄清；七条反馈、八份知识文档、137 项公开模型资源及原检查器均保持既定哈希。全新状态、私有目录和 RAG 缓存，保留 16k/64k、原模型与节点推理配置及确认、取消规则。结果待验。
+- 真实案例 `customer-scope-fresh-run-20261116-3399876a9df2` completed、正常排空，758.594 秒，五节点均严格完成；各节点模型调用 3 / 6 / 4 / 17 / 15，共 45，回执 2 / 7 / 5 / 21 / 21，共 56。原 QA 仅运行一次，19 passed、1 failed：CF001 critical 实际为 high。原 false 保留；README 只定义候选优先级，未唯一规定替代方案未知时必须 critical。实际 reason 保留单租户自述、全项目 503、替代方案未知及高危至严重候选待复核，不能视为最终确认 high 或扩大范围。
+- 主业务闭环独立审查通过：退款政策与来源正确，退款两次、NO-KB 三次 RAG 均为 support，无超时、超限或顺序问题；NO-KB unresolved 转人工 false，CF004 为 true，无额外 CF002。两次运维、四次回复、两次人工共八次模拟写入的参数、回执、outbox 和哈希逐值一致，无外发或重复，spam / injection 无交付，反馈不变。原 QA 的 false 与主业务结论分别保留，不能称所有语义或原检查全绿。
+- 两项非阻断 P3 待办：NO-KB“已转人工/商务渠道跟进”未限定模拟，不代表真实外发；CF004 客户已报告开票状态而 summary 称未提供，应区分已报告和未核实。均未宣称修复。事后 manifest 显示 97 Core、HEAD、harness、模板及控制文件不变，Native 干净。
+- 8034 的 service 98 次调用、总 1481.828 秒，与本轮 service 17 次、总 758.594 秒仅为实测对照；模板、模型随机性和负载不同，不能归因于单一改动。连接、长循环及关键交接已发现的功能阻断已解决，合并与正式包发布待完成，可见 UI 尚未验。
+- 上一真实案例 `customer-ledger-fresh-run-20261116-8034af137568` 终态 flow_failed，1481.828 秒、正常排空，原 QA 18/20：human 未严格完成且人工队列多出 CF002。五次 RAG（退款 2、NO-KB 3）均为 support，无超时或超限；真实顺序为两条技术回复、退款两次检索和成功发送、NO-KB 三次检索和发送。oracle 已正式撤回此前跨快照顺序违规判断。
+- NO-KB 正确列入 unresolved 并转人工 false；CF004 原失败及精度 true 正确，技术和退款政策据实。九次本地模拟写入（2 运维、4 回复、3 人工）的参数、回执、outbox 与哈希一致。唯一业务 P2 为 CF002 仅询问政策且已充分回答，却因未询问金额、到账或独立订单核验被额外列入 unresolved 并转人工；human 三次工具调用合批及回执触发检查点。事后 manifest 核对 97 Core、HEAD、harness、模板及控制文件不变，Native 干净。
+- 离线测量 `handoff-window-measure-9896d62d960c4ade81332893c88a8677/priority-human-counterfactuals.json` 使用尺寸匹配载体重建，缺少历史 runtime 全文，不是完整 wire 精确回放。fixed 不含新批次为 8411 tokens，三次调用与结果 6417（含 reasoning 2108）；原 14828 加预留 2000 超过 16k 828。保留全部 reasoning，仅移额外 CF002 配对则余 701；仅省精确长输入回显余 648；两者同时余 1652。可重读 Handoff 引用方案估计节省 human 3068 / service 3127，但属中等范围、非本案必要，未实现；测量未改实际产物、预算或测试。
+- 9559867 仅增加设计助手通用 scope 指导，聚焦 53 passed。[PR CI 43851760114](https://github.com/vukencc/Channel-Agent/actions/runs/43851760114) 双绿：Linux 2815 passed、71 skipped、5 deselected（254.68 秒），Windows 1350 passed、68 skipped（241.35 秒）；push 43851746604 亦双绿（Linux 247.79 秒、Windows 203.12 秒）。
+- 新真实 xhigh 设计 32d257 一次调用 106.227 秒，仅追加两个 prompt，但 human 旧前缀 offset 20 多出两个换行，严格拒绝并保留原证据。cdb60d 本地仅删除两个换行，27/27 与两次真实往返通过，无新模型调用；派生模板 SHA256 `9b968d851b08323434c2cb413702f8c4d925a521156f17325916acc10431f1a5`，oracle 无发现，不能称模型原样通过。
+- 新账本增加最多 900 字符上下文，计入原 16k / 64k 预算，并非提高输入预算或硬执行限额。聚焦回归先红后 72 passed；O(N²) 裁剪与 surrogate 两项 P2 均已修复并回归，最终审查无发现。Native checkout 专项 `native-ledger-checkout-20261116-d51d1652b6b3` 13 passed，源码和测试哈希不变。
+- Linux 最终全量 2818 passed、68 skipped、5 deselected（223.68 秒），真实隔离探针退出码 0、Core 哈希不变；报告以 `ae31212` 标识。[PR CI 43845518827](https://github.com/vukencc/Channel-Agent/actions/runs/43845518827) Linux 2815 passed、71 skipped、5 deselected（251.39 秒），Windows 1350 passed、68 skipped（180.21 秒）；push 43845330735 亦双绿（Linux 244.10 秒、Windows 231.61 秒）。
+- xhigh 设计 `customer-evidence-ledger-design-20261116-a00a5ce83be8` 一次调用 102.1 秒，严格原样校验失败：human 旧前缀 offset 677 插入两个换行。拒绝证据保留；随后 df32 本地仅修复这两个字符，26/26 与两轮往返通过，没有新增模型调用，得到派生模板 11bb17，独立 oracle 审查无发现；不能称为模型原样通过。
+- d342 候选 only-exe 自检 16/16、exit 0，独立包审计通过，但不含当前源码，不能作为最终 EXE。既有原 5 秒队列三次中一次失败仍保留，不能由其他成功结果抵消。
+
+## 迭代记录（当时状态）
+
+以下保留各阶段证据；“运行中”“待验”和源码状态均指当时，不代表当前结论。
+
 - 5b62412 修复工具超时后工作线程尚未进入工作区锁时的取消竞态：仅框架明确的锁取消返回原超时，身份、执行及严格审计失败继续传播；外部重复取消等待真正排空后传播。确定性回归先失败后修复，双 guard 覆盖通过独立审查。Linux 相关 75 passed；最新生产 Core 全量 2805 passed、68 skipped、5 deselected（232.21 秒），真实隔离探针退出码 0，97 个 Core 哈希不变，报告 `final-timeout-drain-full-20261116-bd136c2299a54fdfb8870d28b1204bf0`。
 - 新排空夹具 Native 首次为 13 failed、4 passed：20ms 期限在到达受控门控前已取消，原三个实际超时参数通过。5219bbc 仅调整测试级同步，受控线程到位后仍调用真实 20ms 超时，原三个实际时限及所有断言不变。Native checkout 专项 `native-timeout-drain-checkout-20261116-d0d2b2426fbb48f7a69c79d281823cfd` 为 17 passed、0 skipped，前后 HEAD、97 Core 和测试哈希一致；独立审查无发现。这不是原五秒高频轮询性能问题的修复。
+
+- 最新真实案例 `customer-evidence-locator-run-20261116-d0748bcdc5c5` 终态 completed，1349.609 秒，五节点严格完成；triage / tech / ops / service / human 模型调用分别 4 / 9 / 4 / 57 / 11，回执 3 / 9 / 6 / 84 / 14。原 QA 16 passed、4 failed：人工 ID、NO-KB 先前失败事实、NO-KB 未解决状态及真实 support RAG 调用。NO-KB 的 false 标记表示缺少记录，不能称为捏造失败。
+- 七次实际写入（两次运维、四次回复、一次人工）参数、回执、outbox 和哈希逐字段一致，均为本地模拟，无外发或重复；缺少第八次 NO-KB 人工交接。独立审查发现退款 RAG 四次、NO-KB 六次均超过三次上限（空来源和超时也计），首次 source 为空导致查错库；退款未闭环先查 NO-KB。回复称待人工，但 service 的 unresolved 为空，human 因此只处理 CF004。CF002 退款政策实际 RAG 语义通过，CF001 critical 候选与 unknown 符合原事实，CF004 真实失败步骤及精度标记通过；证据状态措辞和“客户要求人工”与权限范围并非同一问题。
+- 第 140 条消息实际读取 outbox 回复文件 offset 0、limit 6000，第 141 条明确包含 NO-KB 待人工信息；最终遗漏属于模型检查问题，不能主要归因于正文未交付。工作索引未保存 RAG 累计次数，但原 querySummary 可恢复，事实未丢。最终 source-after manifest 对照 97 Core、HEAD、harness、模板及控制文件未变。当时 WSL 未提交的账本改动追加固定 900 字符并与既有 1800 字符并列，计入原 16k / 64k 预算；先红后 64 项聚焦通过，当时审查发现 O(N²) 裁剪问题。不保证模型服从，不增加业务硬编码、硬限制或新 schema。
+- 当时真实 xhigh 设计 `customer-evidence-ledger-design-20261116-a00a5ce83be8` 正在运行，基于 9ff5 仅追加三个 prompt，指导 support 来源、每事项累计三次检索、逐项闭环、资料缺口和最终 unresolved 与证据精度；尚不能记为通过。
+- [PR CI 43838251690](https://github.com/vukencc/Channel-Agent/actions/runs/43838251690) 在 5219 双绿：Linux 2802 passed、71 skipped、5 deselected（249.91 秒），Windows 1337 passed、68 skipped（251.54 秒）；push 43838243082 亦双绿（Linux 254.11 秒、Windows 199.16 秒）。此前 5b 的 CI 43837190130 Windows 2 failed、1335 passed，新 20ms 夹具未到 barrier；5219 仅同步修正夹具，保留失败证据。
+- d342 候选包独立审计 `sdk-candidate-audit-20261116-dce87df3f9e84302b3c15d06043dfe41` 的安全摘要记录 ZIP CRC、清单、134 应用模块、97 Core 和资源匹配，搬移后配置保留；首次实际 only-exe 离线自检报告 16/16，但退出码未采集。随后同候选重新运行记录 exit 0、16/16（167 秒并发，不作速度推断）。这不是包含 5b 的最终源码包，也不是正式发布；最终包仍待验。
 
 - Native 报告 `native-startup-history-final-20261116-bcdddbecc869`：97 passed、0 skipped、0 failed（98.475 秒），源码哈希不变；cp936、UTF-8 mode 关闭，SDK MockTransport 两次调用，无真实网络。两项原 20 秒用例分别 5.465 / 3.096 秒，原 5 秒队列用例 2.651 秒通过。`flow-queue-lazy-sdk-20261116-782555e8c18047afb1b278631904277f/after` 三次原 5 秒队列测试为 1 failed（7.95 秒）、2 passed（4.61 / 4.82 秒）；进程墙钟 10.236 / 6.604 / 6.666 秒不是完成时延。此前 1261、967、e0 原期限超时；这些结果不证明无限稳定或单因素归因。
 - 真实模型 `customer-first-delivery-run-20261116-4863601ad200`（Native 5f22、Core 543）：1799.75 秒正常取消并排空，原检查 14/20，业务未通过。退款正确；技术 outbox 将无原文支持的“客户自述无替代方式”写成事实，NoKB 检索 5 次超过 3 次限制，服务未闭环便切项，人工未完成。52 批首次交付 prepared 一致；历史恢复从 offset 0 读取推理，未触及 RAG 原文，原始数据未损坏。

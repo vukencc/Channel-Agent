@@ -10,7 +10,7 @@ Windows 和 Linux 桌面成品通过 [Releases](https://github.com/vukencc/Chann
 
 Windows 成品默认构建为免安装单 exe：放入本地可写 NTFS 目录后双击 `ChannelAgent.exe`，无需安装 Windows Python。首次使用在「模型管理」添加连接；配置和数据默认保存在 exe 所在目录。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
 
-开发中的 0.6.1 增加模型连接短请求测试和设计失败后的模型设置入口；测试可能产生费用，不代表完整流程通过。Windows 实测与尚待验证的项目见[验证记录](docs/designer-windows-e2e-validation-2026-11-15.md)；该版本尚未发布。
+0.6.1 增加模型连接短请求测试和设计失败后的模型设置入口，并改进 Windows 启动、结构化历史和长 Flow 的检索上下文。连接测试可能产生费用，仅验证短请求；完整实测、原检查 19/20 的规格差异及已知限制见[验证记录](docs/designer-windows-e2e-validation-2026-11-15.md)。
 
 ```bash
 uv sync --locked --extra desktop --extra web

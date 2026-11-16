@@ -6,7 +6,7 @@
 
 ## 当前工作与 Git
 
-- 2026-11-16 设计助手 Windows 端到端仍未完成：WSL 与 Native 为 `5219bbc`，生产 Core `5b62412` 共 97 个文件，Native 干净；草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 未合并，0.6.1 未发布。Linux 最新生产 Core 全量 2805 passed、真实隔离探针通过；Native 启动与历史专项 97/97、checkout 超时排空专项 17/17 通过，五秒高频轮询队列三次仍一例超时。更正后的真实 xhigh 模板独立复审无发现，完整新业务 `customer-evidence-locator-run-20261116-d0748bcdc5c5` 于 09:18:37 UTC 启动，保留原反馈、知识库和验收器，前瞻 SOP 澄清作为新输入变体；结果待验，旧 14/20 失败保留。d342 SDK 候选冻结包审计中，尚非最终发布。用户禁止桌面和浏览器操作。用户选择 16k 与历史归档，原 `.env` 尚未改，待安全新 EXE 到位后配置。最新证据见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
+- 2026-11-16 Windows 设计助手和客服 Flow：WSL 与 Native 基线 `9559867`，Core 97 文件，Native 干净；草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 未合并，0.6.1 未发布。真实案例 3399876 五节点严格完成并正常排空，主业务闭环经独立审查通过；原 QA 保留 19/20，CF001 critical 为 false，规格对替代方案未知时的优先级未唯一规定，不能追认为全绿。两项非阻断措辞问题与原 5 秒队列三次中一次超时保留待办。连接、长循环和关键交接的已发现阻断已解决，合并与正式包发布仍待完成；d342 候选 16/16、exit 0 不含最新源码。用户禁止桌面与浏览器，可见 UI 尚未验；原 `.env` 归档开关待安全新 EXE 到位后配置。详情及验证边界见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
 
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
 - 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。
