@@ -50,6 +50,24 @@ def test_timeout_drains_writes_and_preserves_unknown_evidence(tmp_path, sandbox_
         manager = SessionManager(store)
         session = manager.create()
         evidence = {}
+        original_wait_for = asyncio.wait_for
+        task = None
+
+        async def synchronized_wait_for(future, timeout):
+            # 仅本工具请求在受控线程到达门控后开始原 20ms 时限。
+            if asyncio.current_task() is task and timeout == .02:
+                ready = asyncio.create_task(asyncio.to_thread(started.wait, 3))
+                try:
+                    done, _ = await asyncio.wait({future, ready}, return_when=asyncio.FIRST_COMPLETED)
+                    if future in done:
+                        return await future
+                    assert ready.result(), '工具线程未到达受控门控'
+                finally:
+                    if not ready.done():
+                        ready.cancel()
+            return await original_wait_for(future, timeout)
+
+        monkeypatch.setattr(asyncio, 'wait_for', synchronized_wait_for)
         if mode in {'guard_cancelled', 'guard_identity'}:
             guard_owner = manager.command_jobs if manager.command_jobs is not None else manager.workspaces
             original = guard_owner.guard
@@ -65,7 +83,12 @@ def test_timeout_drains_writes_and_preserves_unknown_evidence(tmp_path, sandbox_
         try:
             task = asyncio.create_task(manager._tool(session, call(), evidence=evidence))
             session.task = task
-            assert await asyncio.to_thread(started.wait, 3)
+            ready = asyncio.create_task(asyncio.to_thread(started.wait, 3))
+            done, _ = await asyncio.wait({task, ready}, return_when=asyncio.FIRST_COMPLETED)
+            if task in done:
+                await task  # 提前结束时保留真实异常或结果，不将其误判为线程调度慢。
+                pytest.fail('工具在到达受控门控前已结束')
+            assert ready.result()
             if mode != 'read':
                 assert await asyncio.to_thread(session.cancelled.wait, 3)
                 assert not task.done() and session.tool_workers and session.busy
