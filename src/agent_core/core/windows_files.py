@@ -105,7 +105,7 @@ def pinned_scope(prefix: Path):
         except ValueError:
             pass
     handles = stack[-1][1] if shared else {}
-    stack.append((prefix, handles))
+    stack.append((prefix, handles, frozenset((prefix, *prefix.parents))))
     try:
         yield
     finally:
@@ -115,15 +115,11 @@ def pinned_scope(prefix: Path):
                 _close(handle)
 
 
-def _pinned_directory(path: Path, target: Path):
-    stack = getattr(_scopes, 'stack', ())
-    if not stack:
+def _pinned_directory(path: Path, scope):
+    if scope is None:
         return None
-    prefix, handles = stack[-1]
-    try:
-        target.relative_to(prefix)
-        prefix.relative_to(path)
-    except ValueError:
+    _, handles, ancestors = scope
+    if path not in ancestors:
         return None
     if path not in handles:
         handles[path] = _open(path, directory=True)
@@ -149,12 +145,19 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
         parts = target.relative_to(root).parts
     except ValueError:
         raise PermissionError('路径不属于当前工作区') from None
+    stack = getattr(_scopes, 'stack', ())
+    scope = stack[-1] if stack else None
+    if scope is not None:
+        try:
+            target.relative_to(scope[0])
+        except ValueError:
+            scope = None
     handles = []
     fd = None
     try:
         current = Path(root.anchor)
         def open_ancestor(path):
-            cached = _pinned_directory(path, target)
+            cached = _pinned_directory(path, scope)
             if cached is not None:
                 return cached
             result = _open(path, directory=True)

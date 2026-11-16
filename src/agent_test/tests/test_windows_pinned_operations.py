@@ -58,6 +58,25 @@ def test_reuses_only_ancestors_with_fresh_guards_and_closes(windows_files, monke
     assert set(closed) == {1, 2, 3}
 
 
+def test_scope_checks_target_once_per_open_not_per_ancestor(windows_files, monkeypatch):
+    module = windows_files
+    counter = iter(range(1, 100))
+    monkeypatch.setattr(module, '_open', lambda path, **kwargs: ((handle := next(counter)), (1, handle)))
+    monkeypatch.setattr(module, '_close', lambda handle: None)
+    original = PureWindowsPath.relative_to
+    calls = []
+    def relative_to(path, *args, **kwargs):
+        calls.append((path, args))
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(PureWindowsPath, 'relative_to', relative_to)
+    root = PureWindowsPath('C:/one/two/three/four/five')
+    with module.pinned_scope(root):
+        calls.clear()
+        with module.opened_path(root, root / 'result.json'):
+            pass
+        assert len(calls) <= 2  # 工作区授权与当前作用域匹配各一次。
+
+
 @pytest.mark.parametrize('changed', ['reparse', 'identity'])
 def test_cached_ancestor_change_fails_closed_and_releases(windows_files, monkeypatch, changed):
     module = windows_files
@@ -151,6 +170,43 @@ def test_same_drive_sibling_does_not_borrow_cached_ancestors(windows_files, monk
         assert len(opened) == 8
         assert set(closed) == {5, 6, 7}
     assert set(closed) == {1, 2, 3, 5, 6, 7}
+
+
+@pytest.mark.parametrize(('target', 'count'), [
+    ('c:/STATE/FLOWS/item.json', 5),
+    ('C:/state/flows-other/item.json', 8),
+])
+def test_scope_matches_windows_case_and_component_boundaries(windows_files, monkeypatch, target, count):
+    module = windows_files
+    opened = []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append(path)
+        return handle, (1, handle)
+    def info(handle, pointer):
+        pointer._obj.attributes = 0x10
+        return True
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', lambda handle: None)
+    monkeypatch.setattr(module, '_info', info)
+    monkeypatch.setattr(module, '_identity', lambda handle: (1, handle))
+    root = PureWindowsPath('C:/state')
+    with module.pinned_scope(root / 'flows'):
+        with module.opened_path(root, root / 'flows' / 'first.json'):
+            pass
+        with module.opened_path(root, PureWindowsPath(target)):
+            pass
+    assert len(opened) == count
+
+
+def test_scope_never_grants_root_access_to_sibling(windows_files, monkeypatch):
+    module = windows_files
+    monkeypatch.setattr(module, '_open', lambda *args, **kwargs: pytest.fail('越界路径不得打开'))
+    with module.pinned_scope(PureWindowsPath('C:/state')):
+        with pytest.raises(PermissionError):
+            with module.opened_path(PureWindowsPath('C:/state/flows'),
+                                    PureWindowsPath('C:/state/flows-other/file.json')):
+                pass
 
 
 def test_descendant_scope_shares_parent_handles_until_outer_exit(windows_files, monkeypatch):
