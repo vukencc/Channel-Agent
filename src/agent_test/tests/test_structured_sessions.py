@@ -175,7 +175,7 @@ def test_supervisor_failure_records_explicit_local_fallback_and_still_finishes(s
             assert session.record['status'] == 'idle'
             metrics = session.record['last_run']['context']
             assert metrics['summary_kind'] == 'extractive_fallback'
-            manifest = json.loads((store.directory(session.id) / 'context' / 'manifest.json').read_text())
+            manifest = json.loads((store.directory(session.id) / 'context' / 'manifest.json').read_text(encoding='utf-8'))
             assert manifest['summary_kind'] == 'extractive_fallback'
             assert '[本地摘录' in manifest['session_summary']
         finally:
@@ -389,7 +389,7 @@ def test_whole_compaction_uses_one_supervisor_deadline_and_local_fallback(store)
             await asyncio.wait_for(manager.history_context.prepare(session,
                 session.record['messages'] + [{'role': 'user', 'content': 'current request'}]), 3)
             assert len(supervisor.calls) <= 3, 'one timeout must bound the entire compact batch'
-            manifest = json.loads((store.directory(session.id) / 'context' / 'manifest.json').read_text())
+            manifest = json.loads((store.directory(session.id) / 'context' / 'manifest.json').read_text(encoding='utf-8'))
             assert manifest['chunks']
             assert any(item['summary_kind'] == 'extractive_fallback' for item in manifest['chunks'])
             assert all((store.directory(session.id) / 'context' / 'chunks' / (item['ID'] + '.json')).exists()
