@@ -120,9 +120,10 @@ def test_controlled_native_wsl_dispatch_uses_bound_context(tmp_path, monkeypatch
     monkeypatch.setattr(bridge, 'directory_identity', lambda root: (1, 2))
     monkeypatch.setattr(bridge, 'opened_path', lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(bridge, '_translate', lambda path, **kwargs: str(path))
+    monkeypatch.setattr(bridge, '_translate_many', lambda paths, **kwargs: list(map(str, paths)))
     monkeypatch.setattr(bridge, '_worker_script', lambda: tmp_path / 'worker')
     monkeypatch.setattr(bridge, '_launcher', lambda: ['fake-wsl'])
-    monkeypatch.setattr(bridge, '_settings', lambda: {})
+    monkeypatch.setattr(bridge, '_settings', lambda **kwargs: {})
     monkeypatch.setattr(bridge, 'audit', lambda *args, **kwargs: None)
     sent = []
     monkeypatch.setattr(bridge, '_exchange', lambda *args, **kwargs: sent.append((args, kwargs)) or 'done')

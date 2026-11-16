@@ -51,24 +51,35 @@ def _environment() -> dict[str, str]:
             if key in {'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA'}}
 
 
-def _translate(path: str | Path, *, reverse=False) -> str:
-    result = subprocess.run([*_launcher(), '/usr/bin/wslpath', '-a', '-w' if reverse else '-u', str(path)],
+def _translate_many(paths: list[str | Path], *, reverse=False) -> list[str]:
+    values = list(map(str, paths))
+    if not values or any(not value or any(ord(char) < 32 for char in value) for value in values):
+        raise SandboxError('无法映射 WSL 工作区，请检查发行版与磁盘挂载')
+    # 路径只作为独立 argv 传入固定脚本；一次调用内合批，不跨操作缓存映射。
+    script = 'direction="$1"; shift; for path do /usr/bin/wslpath -a "$direction" "$path" || exit; done'
+    result = subprocess.run([*_launcher(), '/bin/sh', '-c', script, '--', '-w' if reverse else '-u', *values],
                             stdin=subprocess.DEVNULL, capture_output=True, timeout=20,
                             encoding='utf-8', errors='replace', env=_environment(),
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    value = result.stdout.strip()
-    if result.returncode or not value or any(ord(char) < 32 for char in value):
+    lines = result.stdout.removesuffix('\n').split('\n')
+    if (result.returncode or len(lines) != len(values) or
+            any(not value or any(ord(char) < 32 for char in value) for value in lines)):
         raise SandboxError('无法映射 WSL 工作区，请检查发行版与磁盘挂载')
-    return value
+    return lines
 
 
-def _settings() -> dict:
+def _translate(path: str | Path, *, reverse=False) -> str:
+    return _translate_many([path], reverse=reverse)[0]
+
+
+def _settings(*, translate=None) -> dict:
+    translate = translate or _translate
     values = {key: getattr(config, key) for key in CONFIG_KEYS}
     # Linux 运行时绑定采用显式 Linux 路径，Windows 路径则先翻译。
     values['COMMAND_RUNTIME_PATHS'] = {
-        key: _translate(Path(value)) if Path(value).drive else value
+        key: translate(Path(value)) if Path(value).drive else value
         for key, value in values['COMMAND_RUNTIME_PATHS'].items()}
-    values['TOOL_ROOTS'] = {name: {**entry, 'path': _translate(Path(entry['path']))}
+    values['TOOL_ROOTS'] = {name: {**entry, 'path': translate(Path(entry['path']))}
                            for name, entry in values['TOOL_ROOTS'].items()}
     return values
 
@@ -81,15 +92,20 @@ def execute_wsl_tool(operation: str, arguments: dict) -> str:
     context = _context.get()
     identity = directory_identity(root)
     with opened_path(root, root, directory=True, expected_identity=identity):
-        linux_root = _translate(root)
+        worker = _worker_script()
+        protected_paths = {key: Path(getattr(config, key)) for key in ('PROJECT_ROOT', 'AGENT_STATE_DIR', 'AUDIT_LOG')}
+        paths = [root, worker, *protected_paths.values(),
+                 *(Path(value) for value in config.COMMAND_RUNTIME_PATHS.values() if Path(value).drive),
+                 *(Path(entry['path']) for entry in config.TOOL_ROOTS.values())]
+        translated = dict(zip(map(str, paths), _translate_many(paths), strict=True))
+        linux_root = translated[str(root)]
         if Path(_translate(linux_root, reverse=True)) != root or directory_identity(root) != identity:
             raise SandboxError('WSL 映射与已选择工作区不匹配')
-        script = _translate(_worker_script())
+        script = translated[str(worker)]
         identifier = uuid.uuid4().hex
         request = {'id': identifier, 'operation': operation, 'arguments': arguments,
-                   'root': linux_root, 'config': _settings(), 'policy': current_policy(),
-                   'paths': {key: _translate(Path(getattr(config, key)))
-                             for key in ('PROJECT_ROOT', 'AGENT_STATE_DIR', 'AUDIT_LOG')},
+                   'root': linux_root, 'config': _settings(translate=lambda path: translated[str(path)]), 'policy': current_policy(),
+                   'paths': {key: translated[str(path)] for key, path in protected_paths.items()},
                    'execution_environment': 'sandbox',
                    'flow_workspace_scope': bool(context and context.flow_workspace_scope)}
         argv = [*_launcher(), '/usr/bin/env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin',
