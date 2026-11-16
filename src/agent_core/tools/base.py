@@ -2,8 +2,8 @@
 from dataclasses import dataclass
 from typing import Callable
 
-from openai import pydantic_function_tool
 from pydantic import BaseModel
+from agent_core.core.tool_schema import function_schema
 from agent_core.core.tool_observations import ObservedText
 
 
@@ -21,7 +21,7 @@ class Tool:
     @property
     def schema(self) -> dict:
         # 参数模型 → 模型能看懂的工具说明书（pydantic 自动生成 JSON schema）
-        return pydantic_function_tool(self.args_model, name=self.name) # type: ignore
+        return function_schema(self.args_model, self.name)
 
     def run(self, arguments: str) -> str:
         # 用统一的参数模型校验模型传来的 JSON，再执行函数；类型错了会在这里暴露

@@ -2,9 +2,8 @@
 import asyncio
 import json
 
-import openai
-
 from agent_core import config
+from agent_core.core.openai_runtime import loaded_types
 from agent_core.core.budgets import BudgetExceeded, budget_scope
 from agent_core.core.flow_templates import REASONING_EFFORTS, PortableTemplate, flow_tool_catalog, validate_template
 from agent_core.core.llm import ModelResponseError, RuntimeModelRequestError
@@ -29,11 +28,11 @@ def _provider_error_message(exc: Exception, phase: str | None = None) -> str:
         exc = exc.__context__
     if isinstance(exc, ModelProxyError):
         return 'Windows 系统代理不可用或配置无效；请检查模型连接的代理来源与 Windows 固定代理设置。'
-    if isinstance(exc, openai.APITimeoutError):
+    if isinstance(exc, loaded_types('APITimeoutError')):
         return '设计模型连接或响应等待超时，请检查网络与模型服务后重试'
-    if isinstance(exc, openai.APIConnectionError):
+    if isinstance(exc, loaded_types('APIConnectionError')):
         return _connection_error_message(phase)
-    if isinstance(exc, openai.APIStatusError):
+    if isinstance(exc, loaded_types('APIStatusError')):
         status = exc.status_code
         if status in (400, 422):
             return '模型服务拒绝请求参数，请检查模型及所选推理强度是否受支持'

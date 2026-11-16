@@ -3,9 +3,8 @@ import asyncio
 import re
 import time
 
-import openai
-
 from agent_core import config
+from agent_core.core.openai_runtime import loaded_types
 from agent_core.core.budgets import BudgetExceeded, budget_scope
 from agent_core.core.llm import ModelResponseError, RuntimeModelRequestError, selected_model
 from agent_core.core.model_settings import model_fallbacks, model_profile as profile_scope
@@ -19,15 +18,15 @@ def _failure(exc: Exception, phase: str | None) -> tuple[str, str]:
         exc = exc.__context__
     if isinstance(exc, BudgetExceeded):
         return 'budget', '请求受费用预算或速率限制，请检查预算设置。'
-    if isinstance(exc, (TimeoutError, openai.APITimeoutError)):
+    if isinstance(exc, (TimeoutError, *loaded_types('APITimeoutError'))):
         return 'timeout', '模型连接或响应等待超时，请检查网络与模型服务。'
     if isinstance(exc, ModelProxyError):
         return 'proxy', '系统代理不可用或配置无效，请检查代理设置。'
-    if isinstance(exc, (ConnectionError, openai.APIConnectionError)):
+    if isinstance(exc, (ConnectionError, *loaded_types('APIConnectionError'))):
         if phase == 'stream':
             return 'stream', '模型响应过程中连接中断，请检查网络与代理。'
         return 'connect', '模型首段响应前连接失败，请检查网络与当前代理。'
-    if isinstance(exc, openai.APIStatusError):
+    if isinstance(exc, loaded_types('APIStatusError')):
         code = exc.status_code
         if code in (401, 403):
             return 'authentication', '模型服务拒绝授权，请检查密钥与访问权限。'

@@ -1,22 +1,27 @@
 """运行时模型的显式 Windows 手动代理；不修改进程环境。"""
+from __future__ import annotations
+
 import fnmatch
 from importlib import import_module
 import os
+import threading
 from urllib.request import getproxies_environment
 
-from openai import _base_client
-from openai._constants import DEFAULT_CONNECTION_LIMITS
+from agent_core.core.openai_runtime import sdk_httpx
 
-httpx = getattr(_base_client, 'httpx2', None) or _base_client.httpx
-_utils = import_module(f'{httpx.__name__}._utils')
-URLPattern = _utils.URLPattern
-is_ipv4_hostname = _utils.is_ipv4_hostname
-is_ipv6_hostname = _utils.is_ipv6_hostname
+
+def __getattr__(name):
+    if name in {'httpx', '_SystemTransport', 'URLPattern', 'is_ipv4_hostname', 'is_ipv6_hostname', 'DEFAULT_CONNECTION_LIMITS'}:
+        _ensure_transport()
+        return globals()[name]
+    raise AttributeError(name)
 
 
 class ModelProxyError(ValueError):
     """系统代理不可用或配置无效，不包含代理详情。"""
 
+
+_transport_lock = threading.Lock()
 
 _PROXY_ERROR = 'Windows 系统手动代理不可用或配置无效，请检查系统代理设置。'
 
@@ -68,6 +73,7 @@ def _no_proxy_matches(url: httpx.URL) -> bool:
 
 def select_system_proxy(base_url: str) -> str | None:
     """跟随系统手动代理开关；关闭或匹配排除规则时直连。"""
+    _ensure_transport()
     try:
         enabled, server, exclusions = _windows_settings()
         if not enabled:
@@ -120,41 +126,54 @@ def select_system_proxy(base_url: str) -> str | None:
         raise ModelProxyError(_PROXY_ERROR) from None
 
 
-class _SystemTransport(httpx.AsyncBaseTransport):
-    """每次请求按目标重新匹配，重定向也遵守协议和排除规则。"""
+def _ensure_transport():
+    with _transport_lock:
+        if '_SystemTransport' in globals():
+            return
+        backend = sdk_httpx()
+        utils = import_module(f'{backend.__name__}._utils')
+        constants = import_module('openai._constants')
+        globals().update(httpx=backend, URLPattern=utils.URLPattern,
+                         is_ipv4_hostname=utils.is_ipv4_hostname, is_ipv6_hostname=utils.is_ipv6_hostname,
+                         DEFAULT_CONNECTION_LIMITS=constants.DEFAULT_CONNECTION_LIMITS)
+        class _SystemTransport(httpx.AsyncBaseTransport):
+            """每次请求按目标重新匹配，重定向也遵守协议和排除规则。"""
 
-    def __init__(self, base_url: str):
-        self._transports: dict[str | None, httpx.AsyncHTTPTransport] = {}
-        self._transport_for(base_url)
+            def __init__(self, base_url: str):
+                self._transports: dict[str | None, httpx.AsyncHTTPTransport] = {}
+                self._transport_for(base_url)
 
-    def _transport_for(self, url: str) -> httpx.AsyncHTTPTransport:
-        try:
-            proxy = select_system_proxy(url)
-            if proxy not in self._transports:
-                self._transports[proxy] = httpx.AsyncHTTPTransport(
-                    proxy=proxy, trust_env=True, limits=DEFAULT_CONNECTION_LIMITS)
-            return self._transports[proxy]
-        except ModelProxyError:
-            raise
-        except Exception:
-            raise ModelProxyError(_PROXY_ERROR) from None
+            def _transport_for(self, url: str) -> httpx.AsyncHTTPTransport:
+                try:
+                    proxy = select_system_proxy(url)
+                    if proxy not in self._transports:
+                        self._transports[proxy] = httpx.AsyncHTTPTransport(
+                            proxy=proxy, trust_env=True, limits=DEFAULT_CONNECTION_LIMITS)
+                    return self._transports[proxy]
+                except ModelProxyError:
+                    raise
+                except Exception:
+                    raise ModelProxyError(_PROXY_ERROR) from None
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        return await self._transport_for(str(request.url)).handle_async_request(request)
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                return await self._transport_for(str(request.url)).handle_async_request(request)
 
-    async def aclose(self) -> None:
-        error = None
-        for transport in self._transports.values():
-            try:
-                await transport.aclose()
-            except Exception as exc:
-                if error is None:
-                    error = exc
-        if error is not None:
-            raise error
+            async def aclose(self) -> None:
+                error = None
+                for transport in self._transports.values():
+                    try:
+                        await transport.aclose()
+                    except Exception as exc:
+                        if error is None:
+                            error = exc
+                if error is not None:
+                    raise error
+
+        globals()['_SystemTransport'] = _SystemTransport
 
 
 def system_http_client(base_url: str) -> httpx.AsyncClient:
+    _ensure_transport()
     try:
         transport = _SystemTransport(base_url)
         from openai import DefaultAsyncHttpxClient

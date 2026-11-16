@@ -852,20 +852,36 @@ class HistoryContext:
             return history, after
 
     async def search(self, session: Session, query: str, limit: int = 5,
-                     method: str = 'bm25') -> list[dict]:
+                     method: str = 'bm25', tool_name: str | None = None) -> list[dict]:
         if not isinstance(query, str) or not query.strip() or len(query) > 2000 or not 1 <= limit <= 20:
             raise ValueError('历史查询或命中数无效')
         if method not in {'bm25', 'hybrid'}:
             raise ValueError('历史检索方法必须为 bm25/hybrid')
+        if tool_name is not None:
+            from agent_core.core.history_locations import TOOL_NAME_PATTERN
+            if type(tool_name) is not str or not re.fullmatch(TOOL_NAME_PATTERN, tool_name):
+                raise ValueError('历史过滤工具名无效')
         async with self._operation(session):
             manifest = await self._manifest(session)
             self._gate(session)
+            candidates = manifest['chunks']
+            locations = {}
+            if tool_name is not None:
+                # 先校验所有本会话候选再过滤，不能让摘要 top-N 把目标回执挤掉。
+                candidates = []
+                for metadata in manifest['chunks']:
+                    self._gate(session)
+                    found = await self._io(self._tool_result_locations, session, metadata, tool_name)
+                    self._gate(session)
+                    if found:
+                        candidates.append(metadata)
+                        locations[metadata['ID']] = found
             from agent_core.core.history_search import search_chunks
             # 工具线程正阻塞等待此协程，不能反向向同一个默认线程池排队。
             if self.search_executor is None:
                 self.search_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='history-search')
             future = asyncio.get_running_loop().run_in_executor(self.search_executor, copy_context().run,
-                search_chunks, manifest['chunks'], query, limit, method)
+                search_chunks, candidates, query, limit, method)
             # 只读检索由当前 _operation 跟踪排空，取消异常不属于保存失败。
             hits = await wait_for_io_completion(future)
             self._gate(session)
@@ -873,9 +889,20 @@ class HistoryContext:
             result = []
             for hit in hits:
                 position = order.index(hit['ID'])
-                result.append({**hit, 'previous_id': order[position - 1] if position else None,
-                               'next_id': order[position + 1] if position + 1 < len(order) else None})
+                item = {**hit, 'previous_id': order[position - 1] if position else None,
+                        'next_id': order[position + 1] if position + 1 < len(order) else None}
+                if tool_name is not None:
+                    item['tool_results'] = locations[hit['ID']]
+                result.append(item)
             return result
+
+    def _tool_result_locations(self, session, metadata: dict, tool_name: str) -> list[dict]:
+        """单块读取和解析留在现有 IO 专用路径，不反向排工具线程池。"""
+        from agent_core.core.history_locations import locate_tool_results
+        record, = self._read_records(session, [metadata])
+        if record.get('Time') != metadata.get('Time'):
+            raise PermissionError('历史回执位置与私有索引不匹配')
+        return locate_tool_results(record, tool_name)
 
     def _read_records(self, session, selected):
         records = []
