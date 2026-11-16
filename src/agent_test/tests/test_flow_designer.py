@@ -2,6 +2,31 @@ import asyncio
 import pytest
 
 
+def test_designer_instructs_nodes_to_preserve_evidence_scope(tmp_path):
+    from agent_core.core.flow_designer import design_flow
+    from agent_core.core.sessions import SessionManager
+    from agent_core.core.storage import SessionStore
+
+    seen = []
+
+    async def model(history, *, session_id, emit):
+        seen.append(history)
+        return {'role': 'assistant', 'content': '{"reply":"需要更多信息","template":null}'}
+
+    store = SessionStore(tmp_path / 'state', tmp_path / 'workspace')
+    try:
+        result = asyncio.run(design_flow(SessionManager(store, model=model),
+                                         [{'role': 'user', 'content': '设计一个处理事项的流程'}]))
+        prompt = seen[0][0]['content']
+        for instruction in ('按事项引用对应规则', '不跨文档迁移角色、期限或条件',
+                            '对外动作前逐项核验适用条件和证据', '区分已知事实、假设和待核实',
+                            '不得扩大影响范围', '证据不足时如实标记待核实，不得增造'):
+            assert instruction in prompt
+        assert result['template'] is None
+    finally:
+        store.close()
+
+
 def test_designer_guides_tool_selection_and_preserves_model_choices(tmp_path):
     import json
     from agent_core.core.flow_designer import design_flow
