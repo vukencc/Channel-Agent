@@ -2,11 +2,11 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
-截至 2026-11-13，[0.6.0 已正式发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.0)，[PR #52](https://github.com/vukencc/Channel-Agent/pull/52) 的合并提交及注解标签指向 `65d082eaf212107144466499f24be30ac5ae53c6`。[发布运行 43356195115](https://github.com/vukencc/Channel-Agent/actions/runs/43356195115) 六项任务均成功；Release 于 03:16:03 UTC 发布，非预发布。Windows 独立 exe、ZIP 和 Linux tar.gz 各有 SHA256 侧车，共六项资产；文件名、摘要及验证边界见[便携验收记录](windows-portable-validation-2026-11-13.md)。原生开发副本为 D:\AI\AgentSrcCode\ChannelAgent。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
+[0.6.1 已正式发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.1)，[PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 合并提交和注解标签指向 `55472e91ae19c5fbfd6421dca5c2bcfcf985dfeb`。[发布运行 43857331513](https://github.com/vukencc/Channel-Agent/actions/runs/43857331513) 六项任务成功；Release 于 2026-11-16 11:34:46 UTC 正式发布，共六项资产。Windows 正式资产独立审计和实际单 exe 离线自检 16/16、退出码 0；Linux 正式 tar 的摘要、清单和源码审计通过，实际离线自检 17/17、退出码 0。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
 
-- 2026-11-16 Windows 设计助手和客服 Flow：WSL 与 Native 基线 `9559867`，Core 97 文件，Native 干净；草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 未合并，0.6.1 未发布。真实案例 3399876 五节点严格完成并正常排空，主业务闭环经独立审查通过；原 QA 保留 19/20，CF001 critical 为 false，规格对替代方案未知时的优先级未唯一规定，不能追认为全绿。两项非阻断措辞问题与原 5 秒队列三次中一次超时保留待办。连接、长循环和关键交接的已发现阻断已解决，合并与正式包发布仍待完成；d342 候选 16/16、exit 0 不含最新源码。用户禁止桌面与浏览器，可见 UI 尚未验；原 `.env` 归档开关待安全新 EXE 到位后配置。详情及验证边界见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
+- 2026-11-16 设计助手与客服 Flow：正式 Windows exe 已复制至 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.1-windows-x64.exe`，哈希与发布资产一致，0.6.0 和用户数据保留。真实案例 3399876 五节点严格完成并正常排空，主业务闭环独立审查通过；原 QA 保留 19/20，CF001 critical 为 false，规格对替代方案未知时的优先级未唯一规定，不能追认为全绿。两项非阻断措辞问题与原 5 秒队列三次中一次超时保留待办。用户禁止桌面与浏览器，可见 UI 尚未验；用户便携根仅将 `ENABLE_STRUCTURED_CONTEXT` 安全设为 true，后续只读核验通过；旧应用未重启，新进程生效。正式包审计及验证边界见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
 
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
 - 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。
