@@ -816,8 +816,7 @@ class HistoryContext:
                 self.search_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='history-search')
             future = asyncio.get_running_loop().run_in_executor(self.search_executor, copy_context().run,
                 search_chunks, manifest['chunks'], query, limit, method)
-            self.manager.pending_saves.add(future)
-            future.add_done_callback(self.manager.pending_saves.discard)
+            # 只读检索由当前 _operation 跟踪排空，取消异常不属于保存失败。
             hits = await wait_for_io_completion(future)
             self._gate(session)
             order = [item['ID'] for item in manifest['chunks']]
