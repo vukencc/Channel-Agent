@@ -158,6 +158,10 @@ class HistoryContext:
         session_dir = self.manager.store.directory(session.id)
         folder = session_dir / 'context'
         with ExitStack() as stack:
+            if os.name == 'nt':
+                from agent_core.core.windows_files import pinned_scope
+                # 此作用域只跨同步文件操作；每次历史操作重新取得身份，叶文件不缓存。
+                stack.enter_context(pinned_scope(session_dir))
             root_fd = stack.enter_context(opened_path(root, root, directory=True))
             try:
                 if os.name == 'nt':
