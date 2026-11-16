@@ -7,6 +7,33 @@ import pytest
 from agent_test.scripts import packaged_smoke as smoke
 
 
+def test_sdk_offline_capability_is_registered_and_reported(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(smoke, '_check_sdk_offline', lambda root: calls.append(root), raising=False)
+    check = smoke._capabilities()['sdk_offline']
+    monkeypatch.setattr(smoke, '_capabilities', lambda: {'sdk_offline': check})
+    report = tmp_path / 'report.json'
+    assert smoke.run(report) == 0
+    assert json.loads(report.read_text(encoding='utf-8'))['capabilities'] == {'sdk_offline': True}
+    assert len(calls) == 1
+
+
+def test_real_sdk_offline_constructor(tmp_path):
+    smoke._check_sdk_offline(tmp_path)
+
+
+def test_frozen_windows_capabilities_retain_original_checks(monkeypatch):
+    monkeypatch.setattr(smoke.sys, 'platform', 'win32')
+    monkeypatch.setattr(smoke.sys, 'frozen', True, raising=False)
+    monkeypatch.delenv('CHANNEL_AGENT_SELF_CHECK_WSL', raising=False)
+    assert set(smoke._capabilities()) == {
+        'config_root', 'web_debug_resources', 'qt_runtime', 'flow_template', 'dynamic_tools',
+        'native_file_tools', 'sdk_offline', 'numpy', 'torch_cpu', 'onnxruntime_cpu',
+        'fastembed', 'transformers', 'sentence_transformers', 'jieba_dictionary',
+        'documents_vision', 'installation_boundary',
+    }
+
+
 def test_success_reports_only_capabilities(tmp_path, monkeypatch):
     seen = []
     def check(root):

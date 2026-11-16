@@ -311,6 +311,40 @@ def _check_numpy(root: Path) -> None:
     _require(int(numpy.array([2, 3]).sum()) == 5)
 
 
+def _check_sdk_offline(root: Path) -> None:
+    """加载实际 SDK 与代理后端，仅构造和关闭客户端，不发送请求。"""
+    from agent_core.core.openai_runtime import sdk, sdk_httpx
+    from agent_core.core import model_transport
+    provider = sdk()
+    backend = sdk_httpx()
+    model_transport._ensure_transport()
+    _require(model_transport.httpx is backend)
+    _require(issubclass(model_transport._SystemTransport, backend.AsyncBaseTransport))
+    constants = importlib.import_module('openai._constants')
+    _require(model_transport.DEFAULT_CONNECTION_LIMITS is constants.DEFAULT_CONNECTION_LIMITS)
+    calls: list[bool] = []
+    def forbidden_request(request: Any) -> Any:
+        calls.append(True)
+        raise RuntimeError('离线验收不得发送请求')
+
+    async def construct_and_close() -> None:
+        client = provider.DefaultAsyncHttpxClient(transport=backend.MockTransport(forbidden_request),
+                                                   trust_env=False)
+        try:
+            model = provider.AsyncOpenAI(api_key='packaged-offline-placeholder',
+                                         base_url='https://example.invalid/v1', http_client=client)
+            try:
+                _require(model.chat.completions is not None)
+            finally:
+                await model.close()
+        finally:
+            if not client.is_closed:
+                await client.aclose()
+        _require(not calls and client.is_closed)
+
+    asyncio.run(construct_and_close())
+
+
 def _check_torch(root: Path) -> None:
     import torch
     tensor = torch.tensor([2, 3], device='cpu')
@@ -363,7 +397,7 @@ def _capabilities() -> dict[str, Check]:
     checks = {'config_root': _check_config_root, 'web_debug_resources': _check_web_debug,
               'qt_runtime': _check_qt, 'flow_template': _check_flow_template,
               'dynamic_tools': _check_dynamic_tools,
-              'native_file_tools': _check_file_tools, 'numpy': _check_numpy,
+              'native_file_tools': _check_file_tools, 'sdk_offline': _check_sdk_offline, 'numpy': _check_numpy,
               'torch_cpu': _check_torch, 'onnxruntime_cpu': _check_onnxruntime,
               'fastembed': _import_check('fastembed'), 'transformers': _import_check('transformers'),
               'sentence_transformers': _import_check('sentence_transformers'),
