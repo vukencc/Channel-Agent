@@ -15,7 +15,7 @@ from typing import Callable
 
 from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, limits_scope, effective_limits, validate_limits, preset
-from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, permission_mode_guide, rag_protocol
+from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, permission_mode_guide, rag_runtime_protocol
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
 from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
 from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
@@ -1306,10 +1306,10 @@ class SessionManager:
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
                 schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
-                protocol = rag_protocol()
-                if (any(schema['function']['name'] == 'rag_search' for schema in schemas)
-                        and protocol not in history[0].get('content', '')):
-                    budget_text += '\n' + protocol
+                if any(schema['function']['name'] == 'rag_search' for schema in schemas):
+                    protocol = rag_runtime_protocol(history[0].get('content', ''))
+                    if protocol:
+                        budget_text += '\n' + protocol
                 budget_text += '\n' + delegation_guide([schema['function']['name'] for schema in schemas],
                                                        session.record.get('delegated_from'), concise=round_index > 0)
                 extra_chars = len(memory_text) - len(memory) + len(FILE_WORKFLOW_GUIDE) + 1 + len(budget_text)

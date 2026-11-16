@@ -420,6 +420,8 @@ def test_plan_summary_keeps_work_evidence_and_explicit_resume_action(tmp_path, m
         manager = SessionManager(store, model=model, permission_override='full_access')
         session = manager.create()
         try:
+            # 新会话保存异步入队；先排空保存，再直接操作私有计划文件。
+            await manager.flush()
             plan = await manager.task_plans.create(session, 'Build artifact', [{'key':'write', 'title':'write',
                 'acceptance':'artifact exists and tests pass'}])
             await manager.task_plans.update(session, plan['plan_id'], 'write', 'in_progress', expected_revision=plan['revision'])
@@ -494,7 +496,7 @@ def test_compaction_budget_estimate_includes_new_refs_and_long_summary(context_s
             assert metrics['utilization'] <= 1
             if summary_character == '\x00':
                 assert metrics['summary_kind'] == 'extractive_fallback'
-                assert '\x00' not in json.loads((context_store.directory(session.id) / 'context' / 'manifest.json').read_text())['session_summary']
+                assert '\x00' not in json.loads((context_store.directory(session.id) / 'context' / 'manifest.json').read_text(encoding='utf-8'))['session_summary']
             assert messages == original
             assert 'current request' in json.dumps(history)
             assert len([entry for entry in supervisor.summaries if entry[0] == 'session']) == 1

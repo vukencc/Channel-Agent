@@ -82,6 +82,17 @@ def test_classic_prompt_does_not_duplicate_rag_protocol(tmp_path, monkeypatch, s
     asyncio.run(run())
 
 
+def test_runtime_rag_protocol_adds_only_missing_parts():
+    from agent_core.core.prompts import rag_runtime_protocol
+
+    base = default_prompt()
+    missing = rag_runtime_protocol(base)
+    assert rag_protocol() not in missing
+    assert '明显无关' in missing and '参考数据' in missing
+    assert rag_runtime_protocol(base + '\n' + missing) == ''
+    assert rag_runtime_protocol(missing) == rag_protocol()
+
+
 @pytest.mark.parametrize("structured", [False, True])
 def test_each_node_receives_its_scope_after_handoff(tmp_path, monkeypatch, structured):
     monkeypatch.setattr(config, "RAG_ASSESS", False)

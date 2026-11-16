@@ -192,7 +192,10 @@ def test_registered_cancellation_accepts_legacy_tool_context_and_preserves_owner
 
 
 def test_root_creation_audit_uses_selected_workspace_identity_and_environment(tmp_path, monkeypatch):
+    from agent_core.core import sessions
     from agent_core.tools import sandbox
+    # 本用例只验证创建审计，不执行命令；局部平台替身保留宿主文件系统语义。
+    monkeypatch.setattr(sessions, 'sys', SimpleNamespace(**{**vars(sessions.sys), 'platform': 'linux'}))
     monkeypatch.setattr(config, 'ENABLE_AGENT_TASKS', False)
     project = tmp_path / 'selected-project'
     project.mkdir()
