@@ -1316,12 +1316,24 @@ class SessionManager:
                                                        session.record.get('delegated_from'), concise=round_index > 0)
                 extra_chars = len(memory_text) - len(memory) + len(file_guide) + 1 + len(budget_text)
                 schedule_summary = partial(self._schedule_summary, session) if config.CONTEXT_SUMMARY_BACKGROUND else None
+                def can_fit_workspace() -> bool:
+                    return (workspace_frame is not None and len(workspace_frame.floor) < len(workspace_frame.full)
+                            and workspace_frame.key in delivered_workspace_frames
+                            and self.workspace_memory.can_reread(session, workspace_frame, schemas))
+
+                fitted_workspace = False
                 if self.history_context is not None:
+                    previous_context = session.record['last_run'].get('context', {})
+                    if (previous_context.get('compacted') or previous_context.get('archived_chunks', 0) > 0) and can_fit_workspace():
+                        memory = private_memory + workspace_frame.floor
+                        fitted_workspace = True
                     session.phase = '准备模型上下文'
                     self._observe_phase(session, 'context_prepare')
                     self.notify()
                     history, context_metrics = await self.history_context.prepare(session, history,
                         schemas=schemas, runtime='\n' + file_guide + budget_text, memory=memory)
+                    if fitted_workspace:
+                        context_metrics['workspace_memory_fitted'] = True
                 else:
                     async def prepare_legacy(reference):
                         combined = private_memory + reference
@@ -1337,13 +1349,10 @@ class SessionManager:
                             schedule_summary=schedule_summary,
                             memory_chars=len(combined), extra_chars=len(text) - len(combined) + len(file_guide) + 1 + len(budget_text),
                             eligible_observations=delivered_observations)
-                    fitted_workspace = False
                     try:
                         history, context_metrics = await prepare_legacy(workspace_reference)
                     except ContextBudgetError:
-                        if (workspace_frame is None or len(workspace_frame.floor) >= len(workspace_frame.full)
-                                or workspace_frame.key not in delivered_workspace_frames
-                                or not self.workspace_memory.can_reread(session, workspace_frame, schemas)):
+                        if not can_fit_workspace():
                             raise
                         memory = private_memory + workspace_frame.floor
                         history, context_metrics = await prepare_legacy(workspace_frame.floor)
@@ -1391,6 +1400,8 @@ class SessionManager:
                             history, recovery_context = await self.history_context.prepare(session,
                                 [dict(message) for message in session.record['messages']], schemas=schemas,
                                 runtime='\n' + file_guide + budget_text + recovery_notice, memory=memory)
+                            if fitted_workspace:
+                                recovery_context['workspace_memory_fitted'] = True
                         else:
                             if config.MODEL_STABLE_PREFIX:
                                 history.append({'role': 'system', 'content': recovery_notice})
@@ -1402,7 +1413,7 @@ class SessionManager:
                                 memory_chars=len(memory), extra_chars=extra_chars + len(recovery_notice),
                                 eligible_observations=delivered_observations)
                         session.record['last_run']['recovery_context'] = recovery_context
-                if (self.history_context is None and workspace_frame is not None and not fitted_workspace
+                if (workspace_frame is not None and not fitted_workspace
                         and not session.cancelled.is_set()):
                     delivered_workspace_frames.add(workspace_frame.key)
                 from agent_core.core.tool_observations import validate_observation
