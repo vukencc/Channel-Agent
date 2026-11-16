@@ -4,12 +4,17 @@
 
 ## 2026-11-16 当前状态
 
-草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 未合并，0.6.1 未发布；WSL 与 Native 源码基线 9559867，Core 97 个 Python 文件，Native 工作树干净。最新真实案例已完成并正常排空。最终 EXE 尚未冻结验收；用户禁止桌面和浏览器操作，原用户 `.env` 历史归档尚未启用。
+[PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 已合并，[0.6.1 正式发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.1)；合并提交及注解标签指向 `55472e91ae19c5fbfd6421dca5c2bcfcf985dfeb`。[正式运行 43857331513](https://github.com/vukencc/Channel-Agent/actions/runs/43857331513) 六项任务成功，Release 于 2026-11-16 11:34:46 UTC 发布，共六项资产。用户禁止桌面和浏览器操作，可见 GUI 未验；用户便携根已仅将 `ENABLE_STRUCTURED_CONTEXT` 设为 true，旧应用未重启，新进程生效。
+
+- Windows 正式资产独立审计无发现：实际单 exe 离线自检 16/16、退出码 0；134 应用模块、97 Core、227 清单文件、12 静态和 224 便携资源匹配，289 PE 无 CLR，选定 Python / Qt / VC 导入缺失为零。四项 Windows Release 资产实际下载、SHA 侧车和正式 artifact 逐字节一致。正式 exe 331251961 字节，SHA256 `668e978ee01333bb3584229504cf1ce1ee3a2fff90b03519fc157af1e42d1266`；ZIP `ChannelAgent-0.6.1-windows-x64-20261116-113223.zip` 329506614 字节，SHA256 `3071b8484f59f88a2b0781f767afb908c5500f3f656217cfc0fb63e7551e5188`。审计报告 `sdk-formal-061-audit-7d1b14cbe2514121909b94a04dbf7040`；首次 artifact 下载 EOF 及续传保留。正式包未重复候选的搬移保配置测试，相关源码一致。
+- 正式 exe 和侧车已复制至 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.1-windows-x64.exe`，目标哈希一致，旧 0.6.0 与用户数据未动。Linux 正式 tar 502820250 字节，SHA256 `ab296470f3352344c81cd99c6f6489f458537cf10e5536a5e4bc00d41c05e18b` 与实际侧车及 API 匹配；8530 个 tar 成员安全检查、6759 文件清单大小和哈希通过，134 应用模块及 14 静态辅助资源与 554 源码匹配，三模块均 0.6.1，构建 glibc 2.35。实际冻结程序离线自检 17/17、退出码 0（9.051 秒），含真实 SDK 离线构造、Linux 沙箱和安装边界；无模型调用。4970 文本的常见凭据前缀和私钥标记扫描无候选，不代表覆盖所有编码；Torch 2840 字节无参数示例和 certifi 公共 CA 单独分类。artifact 首次 EOF、第二次取消，未完成 artifact 字节比较；正式 Release tar 已完整下载、核哈希并运行。报告 `linux-formal-061-audit-e803251ac7d64f6da752f3e3b2848b01`。
+
+- 用户便携根的配置更新仅设置 `ENABLE_STRUCTURED_CONTEXT=true`：实际应用退出码 0、published=true、uncertain=false，随后 dry 核验 ok=true、changed=false；原配置内容未输出。脚本先设置私有 ACL，写入并 flush/fsync，重核原文件身份和字节后原子替换并安全回读；非协作并发写者仍有 CAS 残余风险。旧应用未操作或重启，其他用户项目、会话、知识库和旧 exe 未动，新进程启动后生效。安全记录 `portable-archive-prepare-8608aca8e7fa4ad9bc66d9d7fea02cad/actual-update-verification.json`。
 
 - 真实案例 `customer-scope-fresh-run-20261116-3399876a9df2` completed、正常排空，758.594 秒，五节点均严格完成；各节点模型调用 3 / 6 / 4 / 17 / 15，共 45，回执 2 / 7 / 5 / 21 / 21，共 56。原 QA 仅运行一次，19 passed、1 failed：CF001 critical 实际为 high。原 false 保留；README 只定义候选优先级，未唯一规定替代方案未知时必须 critical。实际 reason 保留单租户自述、全项目 503、替代方案未知及高危至严重候选待复核，不能视为最终确认 high 或扩大范围。
 - 主业务闭环独立审查通过：退款政策与来源正确，退款两次、NO-KB 三次 RAG 均为 support，无超时、超限或顺序问题；NO-KB unresolved 转人工 false，CF004 为 true，无额外 CF002。两次运维、四次回复、两次人工共八次模拟写入的参数、回执、outbox 和哈希逐值一致，无外发或重复，spam / injection 无交付，反馈不变。原 QA 的 false 与主业务结论分别保留，不能称所有语义或原检查全绿。
 - 两项非阻断 P3 待办：NO-KB“已转人工/商务渠道跟进”未限定模拟，不代表真实外发；CF004 客户已报告开票状态而 summary 称未提供，应区分已报告和未核实。均未宣称修复。事后 manifest 显示 97 Core、HEAD、harness、模板及控制文件不变，Native 干净。
-- 8034 的 service 98 次调用、总 1481.828 秒，与本轮 service 17 次、总 758.594 秒仅为实测对照；模板、模型随机性和负载不同，不能归因于单一改动。连接、长循环及关键交接已发现的功能阻断已解决，合并与正式包发布待完成，可见 UI 尚未验。
+- 8034 的 service 98 次调用、总 1481.828 秒，与本轮 service 17 次、总 758.594 秒仅为实测对照；模板、模型随机性和负载不同，不能归因于单一改动。连接、长循环及关键交接已发现的功能阻断已解决，正式发布及 Windows 包验收见上，可见 UI 尚未验。
 - 上一真实案例 `customer-ledger-fresh-run-20261116-8034af137568` 终态 flow_failed，1481.828 秒、正常排空，原 QA 18/20：human 未严格完成且人工队列多出 CF002。五次 RAG（退款 2、NO-KB 3）均为 support，无超时或超限；真实顺序为两条技术回复、退款两次检索和成功发送、NO-KB 三次检索和发送。oracle 已正式撤回此前跨快照顺序违规判断。
 - NO-KB 正确列入 unresolved 并转人工 false；CF004 原失败及精度 true 正确，技术和退款政策据实。九次本地模拟写入（2 运维、4 回复、3 人工）的参数、回执、outbox 与哈希一致。唯一业务 P2 为 CF002 仅询问政策且已充分回答，却因未询问金额、到账或独立订单核验被额外列入 unresolved 并转人工；human 三次工具调用合批及回执触发检查点。事后 manifest 核对 97 Core、HEAD、harness、模板及控制文件不变，Native 干净。
 - 离线测量 `handoff-window-measure-9896d62d960c4ade81332893c88a8677/priority-human-counterfactuals.json` 使用尺寸匹配载体重建，缺少历史 runtime 全文，不是完整 wire 精确回放。fixed 不含新批次为 8411 tokens，三次调用与结果 6417（含 reasoning 2108）；原 14828 加预留 2000 超过 16k 828。保留全部 reasoning，仅移额外 CF002 配对则余 701；仅省精确长输入回显余 648；两者同时余 1652。可重读 Handoff 引用方案估计节省 human 3068 / service 3127，但属中等范围、非本案必要，未实现；测量未改实际产物、预算或测试。
