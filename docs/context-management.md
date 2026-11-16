@@ -26,7 +26,7 @@
 
 `history_search(query, limit, method, tool_name=None)` 在当前会话历史摘要中检索，`limit` 为 1–20，`method` 为 `bm25` 或 `hybrid`，结果不含原始历史正文。可选 `tool_name` 按真实顶层配对工具回执筛选，再进行摘要排序；例如恢复知识库检索结果时可指定 `rag_search`，不会把历史搜索返回中引用的工具名算作一次原始调用。默认不指定时保持原有摘要搜索。
 
-过滤命中可附带 `tool_results` 定位信息：工具名、调用 ID、消息位置、`read_args` 和独占上界 `end_offset`。原文读取可用时，直接将 `read_args` 传给 `history_read`，避免从长推理前缀开始扫描。定位使用实际保存的 `RawHistory` Python 字符索引，指向 `content` 的 JSON 值 token，包含字符串引号；它不是 UTF-8 字节位置，也不是解码后正文的位置。按实际 `next_offset` 续读，下一次 `limit` 不超过剩余范围，到达 `end_offset` 即停止，不必读完整块或加入邻块。位置只证明这里有一份配对回执，不证明执行或业务成功；未启用 `history_read` 时不会提供可调用的 `read_args`。
+过滤命中可附带 `tool_results` 数组，每个定位对象包含工具名、调用 ID、消息位置、`read_args` 和独占上界 `end_offset`。原文读取可用时，从数组中选择所需定位对象，将该对象的 `read_args` 传给 `history_read`，避免从长推理前缀开始扫描。定位使用实际保存的 `RawHistory` Python 字符索引，指向 `content` 的 JSON 值 token，包含字符串引号；它不是 UTF-8 字节位置，也不是解码后正文的位置。按实际 `next_offset` 续读，下一次 `limit` 不超过该定位对象的剩余范围，到达 `end_offset` 即停止，不必读完整块或加入邻块。位置只证明这里有一份配对回执，不证明执行或业务成功；未启用 `history_read` 时不会提供可调用的 `read_args`。
 
 `history_read(chunk_id, before, after, offset, limit)` 也保留原有按分块读取原文的用法；前后邻块合计最多 2 个，请求的原文长度为 1–6000 字符。两个工具生产的完整 JSON 回执最多为 `min(TOOL_MAX_OUTPUT, 1500)` 字符；搜索可能返回更少候选、更短摘要或更少定位描述，并如实标注省略数。每个保留的定位对象完整。原文页按完整 JSON 的实际大小选择，以真实 `next_offset` 续读，不截坏 JSON，也不改写归档原文。元数据本身无法容纳或不能前进时明确报错；小页不保证任意并行批次均能装入模型窗口。
 

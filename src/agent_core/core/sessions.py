@@ -577,6 +577,7 @@ class SessionManager:
         loop = asyncio.get_running_loop()
         directory = self.store.directory(session.id)
         tool_cancelled = CancellationFlag(session.cancelled)
+        guard_cancelled = threading.Event()
         tracking_id = uuid.uuid4().hex
         with self._concurrency_lock:
             self._active_tools[tracking_id] = {'session_id': session.id, 'name': name,
@@ -629,9 +630,19 @@ class SessionManager:
                 if tool.concurrency == 'serial' or tool.workspace_access:
                     state('waiting_workspace')
                     guard = self.command_jobs.guard if self.command_jobs is not None else self.workspaces.guard
-                    with guard(context.root, tool_cancelled):
-                        state('running')
-                        return run_tool()
+                    entered = False
+                    try:
+                        with guard(context.root, tool_cancelled):
+                            entered = True
+                            state('running')
+                            return run_tool()
+                    except SandboxError as exc:
+                        # 仅识别框架工作区锁的明确取消分支，工具或安全校验异常仍传播。
+                        if (not entered and tool_cancelled.is_set() and str(exc) in {
+                                '等待工作区操作期间已取消', '工作区操作已取消',
+                                '等待后台命令期间已取消', '任务已取消'}):
+                            guard_cancelled.set()
+                        raise
                 state('running')
                 return run_tool()
         isolated_rag = name == 'rag_search' and self.rag_executor is not None
@@ -680,7 +691,27 @@ class SessionManager:
                 # 写操作不能遗留后台线程；等待确认/原子写结束后再开放下一轮。
                 session.cancelled.set()
                 self.decide(session, False)
-                await worker
+                cancelled_during_drain = False
+                while True:
+                    try:
+                        await asyncio.shield(worker)
+                        break
+                    except asyncio.CancelledError:
+                        if worker.cancelled():
+                            raise
+                        cancelled_during_drain = True
+                    except SandboxError as exc:
+                        if not guard_cancelled.is_set():
+                            if cancelled_during_drain:
+                                raise asyncio.CancelledError from exc
+                            raise
+                        break
+                    except Exception as exc:
+                        if cancelled_during_drain:
+                            raise asyncio.CancelledError from exc
+                        raise
+                if cancelled_during_drain:
+                    raise asyncio.CancelledError
             return '[超时] 工具超过时限；只读后台计算可能仍在退出，未重放操作。'
         except asyncio.CancelledError:
             if evidence is not None:
