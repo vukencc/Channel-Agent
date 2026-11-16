@@ -55,6 +55,51 @@ def test_actual_wsl_confirmation_denial_does_not_write(bridge):
     assert not (root / 'denied.txt').exists()
 
 
+def test_actual_wsl_delayed_denial_preserves_audit_and_next_authorization(bridge, monkeypatch, caplog):
+    """真实桥接等待迟到拒绝完成审计，下一次授权仍先落盘再执行。"""
+    from agent_core.tools import sandbox
+
+    root, context = bridge
+    monkeypatch.setattr(config, 'CONFIRM_TIMEOUT', .05)
+    context.permission_policy = 'standard'
+    waits = []
+
+    def delayed_rejection(prompt, timeout):
+        waits.append(timeout)
+        time.sleep(.2)
+        return False
+
+    context.confirm = delayed_rejection
+    with tool_context(context):
+        denied = run_command('touch delayed-denied.txt')
+    assert waits == [.05]
+    assert '取消' in denied or '未确认' in denied, denied
+    assert 'closed' not in (denied + caplog.text).lower()
+    assert not (root / 'delayed-denied.txt').exists()
+    entries = [json.loads(line) for line in context.audit_path.read_text(encoding='utf-8').splitlines()]
+    worker_events = [entry.get('worker_event', {}) for entry in entries]
+    assert any(entry.get('event') == 'confirm' and entry.get('allowed') is False for entry in worker_events)
+    assert not any(entry.get('event') == 'command_started' for entry in worker_events)
+    assert not any(entry.get('event') == 'wsl_tool_failed' for entry in entries)
+
+    append = sandbox.append_audit
+    audited_before_write = []
+
+    def observe_audit(path, line, sync=False):
+        entry = json.loads(line)
+        if entry.get('worker_event', {}).get('event') == 'command_started':
+            audited_before_write.append(not (root / 'allowed-after-denial.txt').exists())
+        return append(path, line, sync=sync)
+
+    monkeypatch.setattr(sandbox, 'append_audit', observe_audit)
+    context.confirm = lambda *_: True
+    with tool_context(context):
+        allowed = run_command('touch allowed-after-denial.txt')
+    assert '[退出码] 0' in allowed, allowed
+    assert audited_before_write == [True]
+    assert (root / 'allowed-after-denial.txt').is_file()
+
+
 def test_actual_wsl_custom_tool_preserves_unicode_and_confirmation(bridge):
     from agent_core.core.custom_tools import custom_registry
 

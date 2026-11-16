@@ -1,6 +1,7 @@
 """Flow 设计对话，只发送用户输入的纯文本。"""
 import html
 import json
+import time
 import uuid
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -39,6 +40,7 @@ class DesignerInput(QTextEdit):
 class FlowDesigner(QWidget):
     command = Signal(str, dict)
     close_requested = Signal()
+    model_settings_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,7 +50,7 @@ class FlowDesigner(QWidget):
         self.default_model_available = True
         self.retry_available = False
         self.retry_import_request_id = None
-        self._pulse = 0
+        self._started_at = 0.0
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         title = QLabel('Flow 设计助手')
@@ -75,7 +77,12 @@ class FlowDesigner(QWidget):
         layout.addWidget(self.transcript, 1)
         self.status = QLabel('正在设计流程…')
         self.status.setStyleSheet('color: #a8c9ee;')
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.model_settings = QPushButton('检查模型和代理')
+        self.model_settings.clicked.connect(self.model_settings_requested.emit)
+        self.model_settings.hide()
+        layout.addWidget(self.model_settings)
         self.input = DesignerInput()
         self.input.setObjectName('designerInput')
         self.input.setPlaceholderText('描述想要设计的流程')
@@ -185,8 +192,8 @@ class FlowDesigner(QWidget):
 
     def _animate_status(self):
         if self.busy:
-            self._pulse = (self._pulse + 1) % 4
-            self.status.setText('正在设计流程' + '·' * (self._pulse + 1))
+            elapsed = max(0, int(time.monotonic() - self._started_at))
+            self.status.setText(f'正在设计流程 · 已等待 {elapsed} 秒。复杂任务可能需要较长时间。')
 
     def _remember(self, role: str, content: str) -> None:
         self.history = (self.history + [{'role': role, 'content': content}])[-20:]
@@ -208,8 +215,11 @@ class FlowDesigner(QWidget):
             self._start_request()
 
     def _start_request(self):
+        self.model_settings.hide()
         self.retry_available = False
         self.busy = True
+        self._started_at = time.monotonic()
+        self._animate_status()
         self.request_id = uuid.uuid4().hex
         self._refresh()
         payload = {'request_id': self.request_id, 'messages': list(self.history), 'model_profile': self.model.currentData(), 'reasoning_effort': self.effort.currentData()}
@@ -228,6 +238,7 @@ class FlowDesigner(QWidget):
 
     def reset_history(self):
         self.cancel()
+        self.model_settings.hide()
         self.history.clear()
         self.retry_available = False
         self.retry_import_request_id = None
@@ -248,6 +259,7 @@ class FlowDesigner(QWidget):
             self.retry_import_request_id = token if result.get('error_stage') == 'import' and isinstance(token, str) and token else None
             self._append_message('错误', '设计未完成：' + error if error else '设计未完成。')
             self.retry_available = bool(error)
+            self.model_settings.setVisible(bool(error) and not self.retry_import_request_id)
             self._refresh()
             return
         self.retry_import_request_id = None

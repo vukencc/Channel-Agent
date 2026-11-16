@@ -2,9 +2,8 @@
 import asyncio
 import json
 
-import openai
-
 from agent_core import config
+from agent_core.core.openai_runtime import loaded_types
 from agent_core.core.budgets import BudgetExceeded, budget_scope
 from agent_core.core.flow_templates import REASONING_EFFORTS, PortableTemplate, flow_tool_catalog, validate_template
 from agent_core.core.llm import ModelResponseError, RuntimeModelRequestError
@@ -29,11 +28,11 @@ def _provider_error_message(exc: Exception, phase: str | None = None) -> str:
         exc = exc.__context__
     if isinstance(exc, ModelProxyError):
         return 'Windows 系统代理不可用或配置无效；请检查模型连接的代理来源与 Windows 固定代理设置。'
-    if isinstance(exc, openai.APITimeoutError):
+    if isinstance(exc, loaded_types('APITimeoutError')):
         return '设计模型连接或响应等待超时，请检查网络与模型服务后重试'
-    if isinstance(exc, openai.APIConnectionError):
+    if isinstance(exc, loaded_types('APIConnectionError')):
         return _connection_error_message(phase)
-    if isinstance(exc, openai.APIStatusError):
+    if isinstance(exc, loaded_types('APIStatusError')):
         status = exc.status_code
         if status in (400, 422):
             return '模型服务拒绝请求参数，请检查模型及所选推理强度是否受支持'
@@ -91,7 +90,7 @@ async def design_flow(manager, messages: list[dict], *, model_profile=None, reas
             if isinstance(phase, str) and phase in ('connect', 'stream'):
                 connection_phase = phase
 
-    history = [{'role': 'system', 'content': '你是 Flow 设计助手。仅返回 JSON 对象 {"reply":字符串,"template":便携模板或null}。信息不足时询问并返回 null。模板 format 为 agent-flow，version 为 1；节点禁止 workspace_path。不要包含工作区或凭据。节点可定义 custom_tools，Python 代码提供 main(arguments)，使用标准库或项目依赖完成真实 I/O；不得嵌入凭据。没有外部 API 时不要声称已发送回复，可写项目 outbox 并说明。设计与导入不会执行代码。模板 schema：' + json.dumps(PortableTemplate.model_json_schema(), ensure_ascii=False) + '\n可用工具：' + json.dumps(flow_tool_catalog(), ensure_ascii=False)}] + messages
+    history = [{'role': 'system', 'content': '你是 Flow 设计助手。仅返回 JSON 对象 {"reply":字符串,"template":便携模板或null}。信息不足时询问并返回 null。模板 format 为 agent-flow，version 为 1；节点禁止 workspace_path。不要包含工作区或凭据。节点可定义 custom_tools，Python 代码提供 main(arguments)，使用标准库或项目依赖完成真实 I/O；不得嵌入凭据。没有外部 API 时不要声称已发送回复，可写项目 outbox 并说明。设计与导入不会执行代码。默认每个节点显式填写 tool_names，按职责从可用工具目录选择完成任务所需工具；read_file 和 list_files 是始终保留的基础工具。需要知识检索时选择 rag_search；需要委派时选择相应的 session、delegate 和 wait 工具。不要默认继承不需要的开发、命令或长任务工具。需要使用的动态工具名称也须显式加入 tool_names，定义 custom_tools 不等于选用。动态工具内部通过受控 run_command 执行，部署须允许 run_command，节点无需因此向模型暴露通用 run_command。用户明确要求继承全部工具时可用 null，并尊重用户明确选择的工具。设计节点提示时要求：按事项引用对应规则，不跨文档迁移角色、期限或条件；对外动作前逐项核验适用条件和证据。区分已知事实、假设和待核实，不得扩大影响范围；证据不足时如实标记待核实，不得增造。交接与人工升级只覆盖原需求中确实未解决的部分。已有证据充分回答的咨询，不应仅因普通审核限定语、尚未代办或用户未要求的额外核验就变成待办；下游须复核交接项仍属于原需求范围。模板 schema：' + json.dumps(PortableTemplate.model_json_schema(), ensure_ascii=False) + '\n可用工具：' + json.dumps(flow_tool_catalog(), ensure_ascii=False)}] + messages
     try:
         with profile_scope(model_profile, endpoint), model_tools([]), model_thinking(reasoning_effort), model_deadline(None), model_total_output_chars(config.FLOW_DESIGNER_TOTAL_OUTPUT_CHARS), budget_scope(manager.budget_ledger, 'flow-designer'), limits_scope({'model_profile': model_profile}, endpoint=endpoint):
             async with manager.slots:

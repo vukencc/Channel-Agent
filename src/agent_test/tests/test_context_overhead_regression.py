@@ -79,6 +79,9 @@ def test_hard_budget_large_batch_uses_local_summary_and_preserves_archive(
                    {'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}]
         runtime = '\nEngineering state: ' + '态' * 1500
         try:
+            # 归档压力夹具中的多轮结果此前已完整成功交付；仅设置受控前提，不冒充真实模型。
+            session.record['messages'] = copy.deepcopy(messages)
+            service.mark_delivered(session, copy.deepcopy(messages))
             manifest = await service._manifest(session)
             if previous_kind == 'extractive_fallback':
                 manifest['summary_kind'] = previous_kind
@@ -95,12 +98,12 @@ def test_hard_budget_large_batch_uses_local_summary_and_preserves_archive(
             assert messages == original
 
             folder = overhead_store.directory(session.id) / 'context'
-            durable = json.loads((folder / 'manifest.json').read_text())
+            durable = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             assert durable['summary_kind'] == 'extractive_budget'
             assert durable['revision'] == 1
             assert durable['chunks']
             for metadata in durable['chunks']:
-                chunk = json.loads((folder / 'chunks' / (metadata['ID'] + '.json')).read_text())
+                chunk = json.loads((folder / 'chunks' / (metadata['ID'] + '.json')).read_text(encoding='utf-8'))
                 raw = json.loads(chunk['RawHistory'])
                 assert raw == original[metadata['Time']['start']:metadata['Time']['end']]
                 assert chunk['digest'] == hashlib.sha256(chunk['RawHistory'].encode()).hexdigest()

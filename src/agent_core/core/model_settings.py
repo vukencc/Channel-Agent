@@ -32,8 +32,19 @@ class ModelProfile(BaseModel):
 
 active_profile = ContextVar('active_model_profile', default=None)
 active_endpoint = ContextVar('active_model_endpoint', default=None)
+active_model_fallbacks = ContextVar('active_model_fallbacks', default=True)
 active_reasoning_effort = ContextVar('active_reasoning_effort', default=None)
 active_thinking_mode = ContextVar('active_thinking_mode', default=None)
+
+
+@contextmanager
+def model_fallbacks(enabled: bool):
+    """仅控制当前请求是否允许切换备用模型。"""
+    token = active_model_fallbacks.set(enabled)
+    try:
+        yield
+    finally:
+        active_model_fallbacks.reset(token)
 
 # 默认继承配置；None 表示当前请求不设置整体时限。
 DEFAULT_MODEL_DEADLINE = object()

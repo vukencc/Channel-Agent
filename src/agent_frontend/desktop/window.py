@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import json
 import sys
+import uuid
 from pathlib import PurePath
 from typing import Any
 
@@ -158,15 +159,15 @@ class ModelDialog(QDialog):
         self.parameters.setMinimumHeight(110)
         self.parameters.setMaximumHeight(160)
         self.proxy_mode = ChoiceBox()
-        self.proxy_mode.addItem('继承环境（默认）', 'environment')
+        self.proxy_mode.addItem('环境代理（默认）', 'environment')
         self.proxy_mode.addItem('Windows 系统代理', 'windows_system')
         self.proxy_mode.setCurrentIndex(max(0, self.proxy_mode.findData(row.get('proxy_mode', 'environment'))))
         self.proxy_mode.setAccessibleName('模型连接代理来源')
         self.proxy_mode.setToolTip('显式选择系统代理时覆盖环境代理，保留排除规则及证书校验；仅适用于运行在 Windows 的应用。')
-        for label, field in [('连接名称', self.name), ('模型 ID', self.model), ('服务地址', self.base_url), ('API 密钥', self.api_key)]:
+        for label, field in [('连接名称', self.name), ('模型 ID', self.model), ('服务地址', self.base_url), ('API 密钥', self.api_key), ('代理来源', self.proxy_mode)]:
             form.addRow(_label(label), field)
         fields.addLayout(form)
-        fields.addWidget(_label('密钥仅保存在本机私有状态目录，界面不会读回。', 'muted', wrap=True))
+        fields.addWidget(_label('环境代理可能与 Windows 系统代理不同。系统代理仅适用于 Windows。密钥仅保存在本机私有状态目录，界面不会读回。', 'muted', wrap=True))
         advanced_button = QPushButton('高级参数')
         advanced_button.setObjectName('quiet')
         advanced_button.setCheckable(True)
@@ -175,10 +176,10 @@ class ModelDialog(QDialog):
         advanced_form = _form()
         advanced.setLayout(advanced_form)
         advanced_form.setContentsMargins(0, 0, 0, 0)
-        for label, field in [('代理来源', self.proxy_mode), ('上下文 token', self.capacity), ('回复预留 token', self.reserve), ('采样参数 JSON', self.parameters)]:
+        for label, field in [('上下文 token', self.capacity), ('回复预留 token', self.reserve), ('采样参数 JSON', self.parameters)]:
             advanced_form.addRow(_label(label), field)
         advanced_button.toggled.connect(advanced.setVisible)
-        advanced_button.setChecked(bool(row.get('context_tokens') or row.get('response_reserve_tokens') or row.get('parameters') or row.get('proxy_mode', 'environment') != 'environment'))
+        advanced_button.setChecked(bool(row.get('context_tokens') or row.get('response_reserve_tokens') or row.get('parameters')))
         advanced.setVisible(advanced_button.isChecked())
         fields.addWidget(advanced_button)
         fields.addWidget(advanced)
@@ -450,6 +451,7 @@ class MainWindow(QMainWindow):
         self.flow_panel.command.connect(lambda action, args: self.bridge.request(action, **args))
         self.flow_panel.sidebar_toggle_requested.connect(self._toggle_sidebar)
         self.flow_panel.designer_button.toggled.connect(self._designer_toggled)
+        self.flow_panel.designer.model_settings_requested.connect(self._models)
         flow_layout.addWidget(self.flow_panel, 1)
         self.workspace_stack.addWidget(self.flow_page)
         self.working_panel = WorkingPanel()
@@ -1160,11 +1162,12 @@ class MainWindow(QMainWindow):
             current = listing.currentItem().data(Qt.ItemDataRole.UserRole) if listing.currentItem() else None
             listing.clear()
             for row in self.state.get('models', []):
-                item = QListWidgetItem(f"{row['name']}\n{row['model']}" + ('  ·  环境配置，只读' if row['read_only'] else ''))
+                route = 'Windows 系统代理' if row.get('proxy_mode') == 'windows_system' else '环境代理'
+                item = QListWidgetItem(f"{row['name']}\n{row['model']}  ·  {route}" + ('  ·  环境配置，只读' if row['read_only'] else ''))
                 item.setIcon(icon('model', '#8badde', 24))
                 item.setSizeHint(QSize(0, 68))
                 item.setData(Qt.ItemDataRole.UserRole, row['id'])
-                item.setToolTip(html.escape(f"{row['name']}\n{row['model']}\n{row.get('base_url', '')}"))
+                item.setToolTip(html.escape(f"{row['name']}\n{row['model']}\n{route}"))
                 listing.addItem(item)
                 if row['id'] == current:
                     listing.setCurrentItem(item)
@@ -1193,11 +1196,41 @@ class MainWindow(QMainWindow):
             if row and not row['read_only'] and self._confirm_dialog(dialog, '删除模型', f"删除连接“{row['name']}”？"):
                 self.bridge.request('model_delete', model_id=row['id'])
 
+        pending_test: dict[str, str] = {}
+        test_status = _label('测试已保存的模型连接：会发送短请求，可能产生费用。', 'muted', wrap=True)
+        test_status.setObjectName('modelTestStatus')
+        layout.addWidget(test_status)
+
+        def test_connection() -> None:
+            row = selected()
+            if not row or pending_test:
+                return
+            pending_test.update(request_id=uuid.uuid4().hex, model_id=row['id'])
+            test_status.setProperty('modelName', row['name'])
+            test_status.setProperty('proxyMode', row.get('proxy_mode', 'environment'))
+            test_status.setText('正在测试连接…')
+            update_actions()
+            self.bridge.request('model_test_connection', **pending_test)
+
+        def test_finished(action: str, payload: str) -> None:
+            if action != 'model_test_connection' or not pending_test:
+                return
+            result = json.loads(payload)
+            if result.get('request_id') != pending_test['request_id'] or result.get('model_id') != pending_test['model_id']:
+                return
+            pending_test.clear()
+            route = 'Windows 系统代理' if (result.get('proxy_mode') or test_status.property('proxyMode')) == 'windows_system' else '环境代理'
+            elapsed = result.get('elapsed_s')
+            duration = f'{elapsed:.1f} 秒' if isinstance(elapsed, (int, float)) else '耗时未知'
+            test_status.setText(f"{test_status.property('modelName')}：{'连接成功' if result.get('ok') else '连接失败'} · {route} · {duration}\n{result.get('message', '')}")
+            update_actions()
+
         def update_actions() -> None:
             row = selected()
             editable = bool(row and not row['read_only'])
             edit_button.setEnabled(editable)
             delete_button.setEnabled(editable)
+            test_button.setEnabled(bool(row) and not pending_test)
 
         buttons = QHBoxLayout()
         add_button = QPushButton('添加连接')
@@ -1211,6 +1244,9 @@ class MainWindow(QMainWindow):
         delete_button = QPushButton('删除')
         delete_button.clicked.connect(remove)
         buttons.addWidget(delete_button)
+        test_button = QPushButton('测试连接')
+        test_button.clicked.connect(test_connection)
+        layout.addWidget(test_button, 0, Qt.AlignmentFlag.AlignLeft)
         buttons.addStretch()
         close = QPushButton('关闭')
         close.clicked.connect(dialog.accept)
@@ -1219,9 +1255,14 @@ class MainWindow(QMainWindow):
         listing.itemSelectionChanged.connect(update_actions)
         refresh()
         self.bridge.state_changed.connect(refresh)
+        self.bridge.finished.connect(test_finished)
         try:
             dialog.exec()
         finally:
+            if pending_test:
+                self.bridge.request('model_test_cancel', request_id=pending_test['request_id'])
+                pending_test.clear()
+            self.bridge.finished.disconnect(test_finished)
             self.bridge.state_changed.disconnect(refresh)
 
     def _delete(self) -> None:
@@ -1252,6 +1293,8 @@ class MainWindow(QMainWindow):
         return box.exec() == QMessageBox.StandardButton.Yes
 
     def _show_confirmation(self) -> None:
+        if self._closing:
+            return
         value = self.current_session
         flow = self.state.get('selected_flow') if self.state else None
         if flow:
@@ -1262,10 +1305,11 @@ class MainWindow(QMainWindow):
         key = (value['id'], pending['id']) if pending else None
         if self._confirmation_key == key:
             return
-        if self.confirmation_dialog is not None:
-            self.confirmation_dialog.reject()
+        previous = self.confirmation_dialog
         self._confirmation_key = key
         self.confirmation_dialog = None
+        if previous is not None:
+            previous.reject()
         if not pending:
             return
         dialog = QDialog(self)
@@ -1292,10 +1336,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
 
         def decided(result: int) -> None:
-            # 捕获会话和请求 ID；切换或新一轮确认不能继承旧批准。
+            # 仅当前对话的用户决定有效；状态刷新主动关闭旧框不发送决定。
+            if self.confirmation_dialog is not dialog or self._confirmation_key != key or self._closing:
+                return
+            self.confirmation_dialog = None
             self.bridge.request('decide', session_id=key[0], confirmation_id=key[1], allowed=result == QDialog.DialogCode.Accepted)
-            if self.confirmation_dialog is dialog:
-                self.confirmation_dialog = None
 
         dialog.finished.connect(decided)
         self.confirmation_dialog = dialog
@@ -1364,8 +1409,11 @@ class MainWindow(QMainWindow):
 
     def _begin_shutdown(self) -> None:
         self._closing = True
-        if self.confirmation_dialog:
-            self.confirmation_dialog.reject()
+        previous = self.confirmation_dialog
+        self.confirmation_dialog = None
+        self._confirmation_key = None
+        if previous:
+            previous.reject()
         self.phase_label.setText('正在停止任务并保存会话，请稍候…')
         self.composer.setEnabled(False)
         self._update_buttons()

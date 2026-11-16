@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +62,10 @@ def test_fresh_batch_survives_hard_compaction_and_retry(tmp_path, sandbox_env, n
             assert any(len(m.get('tool_calls', [])) == 2 for m in history)
             retry, _ = await manager.history_context.prepare(session, journal, schemas=supplied)
             assert [m.get('tool_call_id') for m in retry if m['role'] == 'tool'] == ['0', '1']
+            # 仅模拟此前 retry 窗口已得到成功响应；准备和 partial 本身均不构成交付。
+            # 此前提为受控离线 fixture，不是真实模型执行或性能证据。
+            session.record['messages'] = journal
+            manager.history_context.mark_delivered(session, retry)
             journal.append({'role': 'assistant', 'content': 'seen'})
             later, _ = await manager.history_context.prepare(session, journal, schemas=supplied)
             assert not any(m.get('tool_call_id') == '0' for m in later)
@@ -89,21 +94,42 @@ def test_oversized_fresh_batch_fails_before_summary_or_publish(tmp_path, sandbox
     asyncio.run(run())
 
 
-def test_archived_batch_restored_without_duplicate_and_history_read_keeps_old_behavior(tmp_path, sandbox_env):
+def test_legacy_archived_unread_batch_restored_with_or_without_reader_without_duplicate(tmp_path, sandbox_env):
     async def run():
         store = SessionStore(tmp_path / 'state', sandbox_env)
         manager = SessionManager(store)
         manager.history_context.supervisor = Supervisor()
         session = manager.create()
         journal = messages()
+        original = copy.deepcopy(journal)
         try:
-            old, _ = await manager.history_context.prepare(session, journal, schemas=schemas('history_read'))
-            assert not any(m.get('tool_call_id') == '0' for m in old)
-            before = copy.deepcopy(await manager.history_context._manifest(session))
-            restored, _ = await manager.history_context.prepare(session, journal, schemas=[])
-            assert [m.get('tool_call_id') for m in restored if m['role'] == 'tool'] == ['0', '1']
-            after = await manager.history_context._manifest(session)
-            assert after['chunks'] == before['chunks'] and after['revision'] == before['revision']
+            service = manager.history_context
+            session.record['messages'] = copy.deepcopy(journal)
+            # 真实发布旧版本可能产生的归档，不用新 prepare 重演静默丢失未读批次的旧 bug。
+            manifest = await service._manifest(session)
+            chunks = service._chunks(session, journal, [(1, 2), (2, 3), (4, 7)])
+            await service._compact(session, manifest, chunks, local=True)
+            await manager.save(session)
+            before = copy.deepcopy(await service._manifest(session))
+            directory = store.directory(session.id) / 'context'
+            durable_before = {p.relative_to(directory): p.read_bytes()
+                              for p in directory.rglob('*') if p.is_file()}
+            raw_before = (store.directory(session.id) / 'messages.jsonl').read_bytes()
+            archived = [json.loads(json.loads((directory / 'chunks' / (item['ID'] + '.json')).read_text(
+                encoding='utf-8'))['RawHistory']) for item in before['chunks']]
+            assert [m['tool_call_id'] for chunk in archived for m in chunk if m['role'] == 'tool'] == ['0', '1']
+            for supplied in (schemas('history_read'), []):
+                restored, metrics = await service.prepare(session, journal, schemas=supplied)
+                assert metrics['utilization'] <= 1
+                assert [m.get('tool_call_id') for m in restored if m['role'] == 'tool'] == ['0', '1']
+                assert [m for m in restored if m['role'] == 'tool'] == journal[5:7]
+                assert sum(len(m.get('tool_calls', [])) == 2 for m in restored) == 1
+                after = await service._manifest(session)
+                assert after['chunks'] == before['chunks'] and after['revision'] == before['revision']
+                assert journal == original and session.record['messages'] == original
+                assert durable_before == {p.relative_to(directory): p.read_bytes()
+                                          for p in directory.rglob('*') if p.is_file()}
+                assert (store.directory(session.id) / 'messages.jsonl').read_bytes() == raw_before
         finally:
             await manager.shutdown()
             store.close()

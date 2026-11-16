@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager, ExitStack
 from contextvars import copy_context
 import hashlib
 import json
@@ -23,6 +24,7 @@ from agent_core.core.messages import is_user_request
 from agent_core.core.session_limits import limit as session_limit
 from agent_core.core.storage import now, wait_for_io_completion
 from agent_core.core.instrumentation import operation_span, traced
+from agent_core.core.files import opened_path
 
 if TYPE_CHECKING:
     from agent_core.core.sessions import Session, SessionManager
@@ -116,6 +118,7 @@ class HistoryContext:
         self.cache = {}
         self.locks = {}
         self.checks = {}
+        self.delivered_batches = {}
         self.search_executor = None
         if not hasattr(manager, 'context_operations'):
             manager.context_operations = set()
@@ -127,6 +130,51 @@ class HistoryContext:
             raise PermissionError('历史只能由有效的当前会话访问')
         if self.manager.closing or self.manager.maintenance or session.cancelled.is_set() or session.forking:
             raise PermissionError('会话已取消、关闭或处于维护状态')
+
+    def _delivery_state(self, session, messages, current):
+        turn = (current, _digest(_public(messages[current])),
+                session.record.get('last_run', {}).get('turn_id'))
+        state = self.delivered_batches.get(session.id)
+        if state is None or state[0] != turn:
+            state = (turn, set(), {})
+            self.delivered_batches[session.id] = state
+        return state[1]
+
+    def mark_delivered(self, session: Session, actual_history: list[dict]) -> None:
+        """仅确认成功模型请求中与本轮原文完全一致的完整工具批次。"""
+        self._gate(session)
+        messages = session.record['messages']
+        current = max((i for i, message in enumerate(messages) if is_user_request(message)), default=-1)
+        if current < 1:
+            return
+        delivered = self._delivery_state(session, messages, current)
+        try:
+            actual_groups = _groups(actual_history)
+        except (KeyError, TypeError, ValueError):
+            # 不能以不完整或无法验证的窗口确认交付。
+            return
+        raw = {(start, end): _digest([_public(message) for message in messages[start:end]])
+               for start, end in _groups(messages) if start > current and messages[start].get('tool_calls')}
+        counts = Counter(raw.values())
+        tokens = self.delivered_batches[session.id][2]
+        for start, end in actual_groups:
+            message = actual_history[start]
+            if message.get('role') != 'assistant' or not message.get('tool_calls'):
+                continue
+            digest = _digest([_public(item) for item in actual_history[start:end]])
+            marker = message.get('_history_delivery')
+            if '_history_delivery' in message:
+                if not isinstance(marker, dict) or set(marker) != {'start', 'end', 'token'}:
+                    continue
+                position = (marker['start'], marker['end'])
+                if (not all(type(value) is int for value in position) or raw.get(position) != digest
+                        or tokens.get((*position, digest)) != marker['token'] or marker['token'] is None):
+                    continue
+            else:
+                if counts[digest] != 1:
+                    continue
+                position = next(position for position, value in raw.items() if value == digest)
+            delivered.add((position[0], digest))
 
     @asynccontextmanager
     async def _operation(self, session):
@@ -148,20 +196,92 @@ class HistoryContext:
         return await wait_for_io_completion(future)
 
     def _folder(self, session):
-        directory = self.manager.store.directory(session.id) / 'context'
-        for path in (directory, directory / 'chunks'):
-            if path.is_symlink() or path.exists() and not path.is_dir():
-                raise PermissionError('私有上下文目录不能是链接或其他文件')
-        return directory
+        return self.manager.store.directory(session.id) / 'context'
+
+    @contextmanager
+    def _directories(self, session, *, create=False):
+        """固定本次操作的会话与历史目录。"""
+        root = self.manager.store.root
+        session_dir = self.manager.store.directory(session.id)
+        folder = session_dir / 'context'
+        with ExitStack() as stack:
+            if os.name == 'nt':
+                from agent_core.core.windows_files import pinned_scope
+                # 此作用域只跨同步文件操作；每次历史操作重新取得身份，叶文件不缓存。
+                stack.enter_context(pinned_scope(session_dir))
+            root_fd = stack.enter_context(opened_path(root, root, directory=True))
+            try:
+                if os.name == 'nt':
+                    if create:
+                        try:
+                            session_dir.mkdir(mode=0o700)
+                        except FileExistsError:
+                            pass
+                    parent = stack.enter_context(opened_path(root, session_dir, directory=True))
+                else:
+                    if create:
+                        try:
+                            os.mkdir(session.id, 0o700, dir_fd=root_fd)
+                        except FileExistsError:
+                            pass
+                    parent = os.open(session.id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=root_fd)
+                    stack.callback(os.close, parent)
+            except FileNotFoundError:
+                if create:
+                    raise
+                yield folder, None, None, None
+                return
+            except OSError as exc:
+                raise PermissionError('会话目录无效') from exc
+            descriptors = [parent]
+            current = session_dir
+            for name in ('context', 'chunks'):
+                current = current / name
+                try:
+                    if os.name == 'nt':
+                        if create:
+                            try:
+                                current.mkdir(mode=0o700)
+                            except FileExistsError:
+                                pass
+                        descriptor = stack.enter_context(opened_path(root, current, directory=True))
+                    else:
+                        if create:
+                            try:
+                                os.mkdir(name, 0o700, dir_fd=parent)
+                            except FileExistsError:
+                                pass
+                        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                             dir_fd=parent)
+                        stack.callback(os.close, descriptor)
+                except FileNotFoundError:
+                    if create:
+                        raise
+                    descriptors.extend([None] * (3 - len(descriptors)))
+                    break
+                except OSError as exc:
+                    raise PermissionError('私有上下文目录无效') from exc
+                descriptors.append(descriptor)
+                parent = descriptor
+            yield folder, *descriptors
 
     @staticmethod
-    def _read_json(path):
-        if path.is_symlink():
-            raise PermissionError('历史文件不能是符号链接')
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
-                             | getattr(os, 'O_NONBLOCK', 0))
-        with os.fdopen(descriptor, 'rb') as stream:
-            info = os.fstat(stream.fileno())
+    def _read_json(path, directory_fd=None):
+        if os.name == 'nt' or directory_fd is None:
+            with opened_path(path.parent, path) as descriptor:
+                return HistoryContext._read_descriptor(descriptor)
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory_fd)
+        try:
+            return HistoryContext._read_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _read_descriptor(descriptor):
+        with os.fdopen(os.dup(descriptor), 'rb') as stream:
+            info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 64 * 1024 * 1024:
                 raise ValueError('历史文件必须是有界普通文件')
             payload = stream.read(64 * 1024 * 1024 + 1)
@@ -170,14 +290,14 @@ class HistoryContext:
             return json.loads(payload)
 
     def _load(self, session):
-        folder = self._folder(session)
-        path = folder / 'manifest.json'
-        if path.is_symlink():
-            raise PermissionError('上下文索引不能是符号链接')
-        if not path.exists():
+        with self._directories(session) as (folder, _, context_fd, _):
+            try:
+                manifest = self._read_json(folder / 'manifest.json', context_fd) if context_fd is not None else None
+            except FileNotFoundError:
+                manifest = None
+        if manifest is None:
             return {'version': 1, 'owner_id': session.id, 'revision': 0, 'session_summary': '',
                     'chunks': [], 'summary_kind': 'none', 'updated_at': ''}
-        manifest = self._read_json(path)
         if manifest.get('version') != 1 or manifest.get('owner_id') != session.id:
             raise PermissionError('上下文索引归属无效')
         if (type(manifest.get('revision')) is not int or manifest['revision'] < 0
@@ -216,7 +336,6 @@ class HistoryContext:
         return manifest
 
     async def _manifest(self, session):
-        self._folder(session)
         if session.id not in self.cache:
             self.cache[session.id] = await self._io(self._load, session)
         return self.cache[session.id]
@@ -249,7 +368,7 @@ class HistoryContext:
             if end > len(messages) or _digest(messages[start:end]) != chunk['digest']:
                 raise ValueError('已归档的历史前缀被改写，拒绝使用过期摘要')
 
-    def _compose(self, messages, manifest, previews, protected, current, runtime, memory, schemas=None):
+    def _compose(self, messages, manifest, previews, protected, current, runtime, memory, schemas=None, *, session=None):
         names = {schema.get('function', {}).get('name') for schema in (schemas or [])}
         guidance = []
         if 'history_search' in names:
@@ -295,7 +414,13 @@ class HistoryContext:
         history.append(user)
         for start, end in protected:
             if start > current:
-                history.extend(dict(message) for message in messages[start:end])
+                batch = [dict(message) for message in messages[start:end]]
+                if session is not None and batch[0].get('tool_calls'):
+                    digest = _digest([_public(message) for message in batch])
+                    tokens = self.delivered_batches[session.id][2]
+                    token = tokens.setdefault((start, end, digest), uuid.uuid4().hex)
+                    batch[0]['_history_delivery'] = {'start': start, 'end': end, 'token': token}
+                history.extend(batch)
         return history
 
     @staticmethod
@@ -390,26 +515,66 @@ class HistoryContext:
         return summary[:maximum], summary_kind
 
     def _existing_chunk(self, session, chunk):
-        path = self._folder(session) / 'chunks' / (chunk['ID'] + '.json')
-        if path.is_symlink():
-            raise PermissionError('历史块不能是符号链接')
-        if not path.exists():
-            return None
-        record = self._read_json(path)
+        with self._directories(session) as (folder, _, _, chunks_fd):
+            if chunks_fd is None:
+                return None
+            try:
+                record = self._read_json(folder / 'chunks' / (chunk['ID'] + '.json'), chunks_fd)
+            except FileNotFoundError:
+                return None
         if (record.get('session_id') != session.id or record.get('ID') != chunk['ID']
                 or record.get('digest') != chunk['digest']
                 or record.get('RawHistory') != _json(chunk['messages'])):
             raise ValueError('历史块标识冲突或原文不匹配')
         return record
 
+    def _write_history(self, path, directory_fd, text, *, immutable=False):
+        """同步临时文件，再原子提交目录项。"""
+        if os.name == 'nt':
+            if immutable:
+                temporary = path.parent / ('.staging-' + uuid.uuid4().hex)
+                try:
+                    self.manager.store.atomic_write(temporary, text)
+                    os.link(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            else:
+                try:
+                    self._read_json(path, directory_fd)
+                except FileNotFoundError:
+                    pass
+                self.manager.store.atomic_write(path, text)
+            return
+        temporary = '.writing-' + uuid.uuid4().hex
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory_fd)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if immutable:
+                os.link(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+                        follow_symlinks=False)
+            else:
+                try:
+                    self._read_json(path, directory_fd)
+                except FileNotFoundError:
+                    pass
+                os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
     def _publish(self, session, records, manifest):
-        directory = self._folder(session)
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (directory / 'chunks').mkdir(mode=0o700, exist_ok=True)
+        with self._directories(session, create=True) as directories:
+            self._publish_locked(session, records, manifest, *directories)
+
+    def _publish_locked(self, session, records, manifest, directory, session_fd, context_fd, chunks_fd):
         audit = self.manager.store.directory(session.id) / 'audit.jsonl'
-        if (audit.is_symlink() or audit.exists()
-                and (not stat.S_ISREG(audit.stat().st_mode) or audit.stat().st_nlink != 1)):
-            raise PermissionError('上下文审计文件无效')
         metadata = {'event': 'context_compact_requested', 'revision': manifest['revision'],
                     'chunk_ids': [item['ID'] for item in records], 'created_at': now()}
         for source, key in (('last_compact_utilization', 'before_utilization'),
@@ -417,26 +582,25 @@ class HistoryContext:
                             ('last_compact_reason', 'reason')):
             if source in manifest:
                 metadata[key] = manifest[source]
-        append_audit(audit, _json(metadata), sync=config.AUDIT_SYNC)
+        options = {'directory_fd': session_fd} if os.name != 'nt' else {}
+        append_audit(audit, _json(metadata), sync=config.AUDIT_SYNC, **options)
         for record in records:
             path = directory / 'chunks' / (record['ID'] + '.json')
-            if path.exists() or path.is_symlink():
-                existing = self._read_json(path)
+            try:
+                existing = self._read_json(path, chunks_fd)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
                 if existing != record:
                     raise ValueError('拒绝覆盖不可变历史块')
                 continue
-            temporary = directory / 'chunks' / ('.staging-' + uuid.uuid4().hex)
-            try:
-                self.manager.store.atomic_write(temporary, _json(record))
-                os.link(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self._write_history(path, chunks_fd, _json(record), immutable=True)
+            if self._read_json(path, chunks_fd) != record:
+                raise ValueError('历史块发布后内容不匹配')
         path = directory / 'manifest.json'
-        if path.is_symlink():
-            raise PermissionError('上下文索引不能是符号链接')
-        self.manager.store.atomic_write(path, _json(manifest))
+        self._write_history(path, context_fd, _json(manifest))
         try:
-            append_audit(audit, _json({**metadata, 'event': 'context_compact_committed'}), sync=config.AUDIT_SYNC)
+            append_audit(audit, _json({**metadata, 'event': 'context_compact_committed'}), sync=config.AUDIT_SYNC, **options)
         except OSError:
             # requested 已持久保存，文件已提交不能对外伪报未提交。
             pass
@@ -493,17 +657,14 @@ class HistoryContext:
             self._gate(session)
             self._verify_prefix(manifest, messages)
             groups = _groups(messages)
-            names = {schema.get('function', {}).get('name') for schema in (schemas or [])}
-            fresh = []
-            if groups and 'history_read' not in names:
-                start, end = groups[-1]
-                if (end == len(messages) and messages[start].get('role') == 'assistant'
-                        and messages[start].get('tool_calls') and messages[-1].get('role') == 'tool'):
-                    # 从完整 journal 恢复，即使旧索引已经覆盖这个批次。
-                    fresh = [(start, end)]
             current = max((i for i, message in enumerate(messages) if is_user_request(message)), default=-1)
             if current < 1:
                 raise ValueError('结构化上下文缺少真实用户输入')
+            delivered = self._delivery_state(session, messages, current)
+            # 从原始 journal 恢复所有未成功交付的本轮工具批次，包括旧索引已覆盖者。
+            fresh = [(start, end) for start, end in groups if start > current
+                     and messages[start].get('tool_calls')
+                     and (start, _digest([_public(message) for message in messages[start:end]])) not in delivered]
             covered = [(item['Time']['start'], item['Time']['end']) for item in manifest['chunks']]
             uncovered = [group for group in groups if not any(start <= group[0] and group[1] <= end for start, end in covered)]
             available = [group for group in uncovered if group[0] != current and group not in fresh]
@@ -511,7 +672,7 @@ class HistoryContext:
             protected = available[-keep:] if keep else []
             eligible = [group for group in available if group not in protected]
             previews = self._chunks(session, messages, eligible)
-            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas)
+            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
             metrics = self._metrics(history, schemas, messages[current], messages)
             high_utilization = metrics['utilization'] >= config.CONTEXT_COMPACT_RATIO
             insufficient = metrics['utilization'] >= 1
@@ -527,7 +688,7 @@ class HistoryContext:
             # 先检查真正不可压缩的成本，不能付费归档后才发现 schema/当前输入本身超限。
             fixed_manifest = {**manifest, 'session_summary': '', 'working_summary_chars': 0,
                               'working_reference_chars': 0, 'working_reference_count': 0}
-            fixed_history = self._compose(messages, fixed_manifest, [], fresh, current, runtime, memory, schemas)
+            fixed_history = self._compose(messages, fixed_manifest, [], fresh, current, runtime, memory, schemas, session=session)
             # 多次规划只重算工作窗口，schema 与原始完整历史成本在本轮只序列化一次。
             schema_tokens = estimate_tokens(json.dumps(schemas, ensure_ascii=False)) if schemas else 0
             char_limit = session_limit('MODEL_INPUT_CHARS')
@@ -603,7 +764,7 @@ class HistoryContext:
                              'Summary': character * min(160, config.CONTEXT_SUMMARY_CHARS)} for item in possible_chunks]],
                             key=lambda item: item['Time']['start'])
                         estimate = self._compose(messages, estimate_manifest, [], sorted(protected_groups + fresh),
-                                                 current, runtime, memory, schemas)
+                                                 current, runtime, memory, schemas, session=session)
                         estimates.append(window_cost(estimate)['utilization'])
                     return max(estimates)
 
@@ -666,7 +827,7 @@ class HistoryContext:
             if insufficient and not chunks:
                 # 仅收窄摘要/引用工作视图已能解决压力时，无需重复付费或写入原文归档。
                 manifest = compact_manifest
-            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas)
+            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
             after = self._metrics(history, schemas, messages[current], messages)
             after.update(context_revision=manifest['revision'], archived_chunks=len(manifest['chunks']),
                          compact_reason=reason if chunks or insufficient else '', compacted=bool(chunks), supervisor=decision_status,
@@ -691,49 +852,81 @@ class HistoryContext:
             return history, after
 
     async def search(self, session: Session, query: str, limit: int = 5,
-                     method: str = 'bm25') -> list[dict]:
+                     method: str = 'bm25', tool_name: str | None = None) -> list[dict]:
         if not isinstance(query, str) or not query.strip() or len(query) > 2000 or not 1 <= limit <= 20:
             raise ValueError('历史查询或命中数无效')
         if method not in {'bm25', 'hybrid'}:
             raise ValueError('历史检索方法必须为 bm25/hybrid')
+        if tool_name is not None:
+            from agent_core.core.history_locations import TOOL_NAME_PATTERN
+            if type(tool_name) is not str or not re.fullmatch(TOOL_NAME_PATTERN, tool_name):
+                raise ValueError('历史过滤工具名无效')
         async with self._operation(session):
             manifest = await self._manifest(session)
             self._gate(session)
+            candidates = manifest['chunks']
+            locations = {}
+            if tool_name is not None:
+                # 先校验所有本会话候选再过滤，不能让摘要 top-N 把目标回执挤掉。
+                candidates = []
+                for metadata in manifest['chunks']:
+                    self._gate(session)
+                    found = await self._io(self._tool_result_locations, session, metadata, tool_name)
+                    self._gate(session)
+                    if found:
+                        candidates.append(metadata)
+                        locations[metadata['ID']] = found
             from agent_core.core.history_search import search_chunks
             # 工具线程正阻塞等待此协程，不能反向向同一个默认线程池排队。
             if self.search_executor is None:
                 self.search_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='history-search')
             future = asyncio.get_running_loop().run_in_executor(self.search_executor, copy_context().run,
-                search_chunks, manifest['chunks'], query, limit, method)
-            self.manager.pending_saves.add(future)
-            future.add_done_callback(self.manager.pending_saves.discard)
+                search_chunks, candidates, query, limit, method)
+            # 只读检索由当前 _operation 跟踪排空，取消异常不属于保存失败。
             hits = await wait_for_io_completion(future)
             self._gate(session)
             order = [item['ID'] for item in manifest['chunks']]
             result = []
             for hit in hits:
                 position = order.index(hit['ID'])
-                result.append({**hit, 'previous_id': order[position - 1] if position else None,
-                               'next_id': order[position + 1] if position + 1 < len(order) else None})
+                item = {**hit, 'previous_id': order[position - 1] if position else None,
+                        'next_id': order[position + 1] if position + 1 < len(order) else None}
+                if tool_name is not None:
+                    item['tool_results'] = locations[hit['ID']]
+                result.append(item)
             return result
+
+    def _tool_result_locations(self, session, metadata: dict, tool_name: str) -> list[dict]:
+        """单块读取和解析留在现有 IO 专用路径，不反向排工具线程池。"""
+        from agent_core.core.history_locations import locate_tool_results
+        record, = self._read_records(session, [metadata])
+        if record.get('Time') != metadata.get('Time'):
+            raise PermissionError('历史回执位置与私有索引不匹配')
+        return locate_tool_results(record, tool_name)
 
     def _read_records(self, session, selected):
         records = []
-        for metadata in selected:
-            path = self._folder(session) / 'chunks' / (metadata['ID'] + '.json')
-            record = self._read_json(path)
-            if (record.get('session_id') != session.id or record.get('ID') != metadata['ID']
-                    or record.get('digest') != metadata['digest']
-                    or _digest(json.loads(record['RawHistory'])) != record['digest']):
-                raise PermissionError('历史原文与私有索引不匹配')
-            records.append(record)
+        with self._directories(session) as (folder, _, _, chunks_fd):
+            if chunks_fd is None:
+                raise FileNotFoundError('历史块目录不存在')
+            for metadata in selected:
+                path = folder / 'chunks' / (metadata['ID'] + '.json')
+                record = self._read_json(path, chunks_fd)
+                if (record.get('session_id') != session.id or record.get('ID') != metadata['ID']
+                        or record.get('digest') != metadata['digest']
+                        or _digest(json.loads(record['RawHistory'])) != record['digest']):
+                    raise PermissionError('历史原文与私有索引不匹配')
+                records.append(record)
         return records
 
     async def read(self, session: Session, chunk_id: str, before: int = 0, after: int = 0,
-                   offset: int = 0, limit: int = 6000) -> dict:
+                   offset: int = 0, limit: int = 6000, *, output_limit: int | None = None) -> dict:
         if (not re.fullmatch(r'[a-f0-9]{32}', chunk_id) or not 0 <= before <= 2 or not 0 <= after <= 2
                 or before + after > 2 or offset < 0 or not 1 <= limit <= 6000):
             raise ValueError('历史块标识、邻块范围或分页参数无效')
+        if output_limit is not None and (type(output_limit) is not int or output_limit < 1):
+            raise ValueError('历史读取输出上限无效')
+        maximum = min(config.TOOL_MAX_OUTPUT, output_limit) if output_limit is not None else config.TOOL_MAX_OUTPUT
         async with self._operation(session):
             manifest = await self._manifest(session)
             order = [item['ID'] for item in manifest['chunks']]
@@ -759,7 +952,7 @@ class HistoryContext:
                 remaining -= len(value)
             result = {'chunks': chunks, 'next_offset': offset + limit - remaining if offset + limit - remaining < total else None,
                       'total_chars': total}
-            while len(json.dumps(result, ensure_ascii=False)) > config.TOOL_MAX_OUTPUT:
+            while len(json.dumps(result, ensure_ascii=False)) > maximum:
                 if not chunks or not chunks[-1]['RawHistory']:
                     raise ValueError('TOOL_MAX_OUTPUT 太小，不能返回历史块元数据')
                 removed = max(1, len(chunks[-1]['RawHistory']) // 2)
@@ -777,6 +970,7 @@ class HistoryContext:
         self.cache.pop(identifier, None)
         self.locks.pop(identifier, None)
         self.checks.pop(identifier, None)
+        self.delivered_batches.pop(identifier, None)
 
     async def close(self) -> None:
         if self.search_executor is not None:

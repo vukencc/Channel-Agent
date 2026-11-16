@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -49,6 +50,8 @@ def execution_case(tmp_path, monkeypatch, sandbox_env):
 
 
 async def _active_plan(manager, session, *, status='in_progress'):
+    # 先完成初建会话持久化，避免直接计划 I/O 抢在目录创建之前。
+    await manager.flush()
     plan = await manager.task_plans.create(session, 'Inspect input', [_step()], expected_revision=0)
     if status != 'pending':
         plan = await manager.task_plans.update(session, plan['plan_id'], 'inspect', 'in_progress',
@@ -321,7 +324,24 @@ def test_bound_child_waits_only_until_execution_is_drained(execution_case, monke
 
 def test_bound_native_command_job_is_actionable_while_queued_and_after_completion(
         execution_case, monkeypatch):
+    """真实命令队列；Linux 真实隔离执行，Windows 使用离线执行替身。"""
+    from agent_core.core import command_jobs
+    from agent_core.tools import command
+
     monkeypatch.setattr(config, 'ENABLE_COMMAND_JOBS', True)
+    release = threading.Event()
+
+    def controlled_execute(_command, _reason, _argv, _isolated, *, timeout, on_output, **kwargs):
+        if not release.wait(timeout):
+            raise TimeoutError('测试未在原命令时限内释放执行替身')
+        on_output(b'42\n')
+        return '[退出码] 0\n42\n'
+
+    if command_jobs.os.name == 'nt':
+        # Windows 后台隔离尚不支持；仅此队列测例使用受控执行，不改宿主路径语义。
+        monkeypatch.setattr(command_jobs, 'os', SimpleNamespace(**{**vars(command_jobs.os), 'name': 'posix'}))
+        monkeypatch.setattr(command_jobs, 'isolated_command', lambda argv, **kwargs: argv)
+        monkeypatch.setattr(command, '_execute', controlled_execute)
     registered = dict(TOOL_REGISTRY)
     register_command_jobs()
 
@@ -358,6 +378,7 @@ def test_bound_native_command_job_is_actionable_while_queued_and_after_completio
                 await asyncio.sleep(.005)
             assert running['status'] == 'running', running
             assert execution_state(manager, session) == (True, False)
+            release.set()
             await asyncio.wait_for(asyncio.wrap_future(future), 5)
             status = manager.command_jobs.status(session.id, job_id)
             assert status['status'] == 'completed', status['result']
@@ -370,6 +391,7 @@ def test_bound_native_command_job_is_actionable_while_queued_and_after_completio
             assert reference['ready_for_review'] is True
             assert execution_state(manager, session) == (True, False)
         finally:
+            release.set()
             await manager.shutdown()
 
     try:
@@ -395,6 +417,11 @@ def _call_command_job():
 def test_native_failure_or_blocked_result_does_not_earn_stage(execution_case, monkeypatch, tool_name, arguments):
     monkeypatch.setattr(config, 'AUTO_CONTINUE_TASKS', True)
     monkeypatch.setattr(config, 'COMMAND_NETWORK', 'off')
+    if tool_name == 'run_command':
+        from agent_core.tools import command
+        # 本例验证 Linux 的断网策略拒绝；该分支在任何命令/隔离进程启动前返回。
+        # Windows 的真实 WSL 启动耗时由真实执行端到端用例覆盖，不占本例 10 秒轮次期限。
+        monkeypatch.setattr(command, 'os', SimpleNamespace(**{**vars(command.os), 'name': 'posix'}))
 
     async def run():
         calls = 0

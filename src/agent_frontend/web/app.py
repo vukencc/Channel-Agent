@@ -37,6 +37,10 @@ class Arguments(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
+class ModelTestArguments(Arguments):
+    request_id: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9_-]+$')
+
+
 class NewSession(Arguments):
     title: str = Field(default='新会话', min_length=1, max_length=120)
     workspace_path: str | None = Field(default=None, max_length=4096)
@@ -212,11 +216,17 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         app.state.locks = {}
         app.state.mutations = asyncio.Lock()
         app.state.designer_task = None
+        app.state.model_test_task = None
+        app.state.model_test_identity = None
+        app.state.model_test_cancelled = OrderedDict()
         app.state.designer_id = None
         app.state.designer_cancelled = OrderedDict()
         try:
             yield
         finally:
+            if app.state.model_test_task and not app.state.model_test_task.done():
+                app.state.model_test_task.cancel()
+                await asyncio.gather(app.state.model_test_task, return_exceptions=True)
             if app.state.designer_task and not app.state.designer_task.done():
                 app.state.designer_task.cancel()
                 await asyncio.gather(app.state.designer_task, return_exceptions=True)
@@ -252,7 +262,10 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                     return JSONResponse({'detail': '请求需要 Content-Length 且不能超过 1 MiB'}, status_code=413)
             if app.state.manager.maintenance and request.url.path not in {'/api/maintenance', '/api/events'}:
                 return JSONResponse({'detail': '正在清理数据，请稍后重试'}, status_code=409)
-        if request.url.path not in {'/api/flow-designer/chat', '/api/flow-designer/cancel'} and request.url.path.startswith('/api/') and (request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}
+        model_test_path = (request.method == 'POST' and request.url.path.startswith('/api/models/')
+                           and ((request.url.path.endswith('/test-connection') and request.url.path.count('/') == 4)
+                                or (request.url.path.endswith('/test-connection/cancel') and request.url.path.count('/') == 5)))
+        if not model_test_path and request.url.path not in {'/api/flow-designer/chat', '/api/flow-designer/cancel'} and request.url.path.startswith('/api/') and (request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}
                                                      or request.url.path not in snapshot_paths):
             # 文件读取、导出和修改共用屏障；清理须等已有读写及审计完成。
             async with app.state.mutations:
@@ -375,6 +388,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
     def flow_active():
         return (any(not task.done() for task in app.state.flows.tasks.values())
                 or bool(app.state.manager.project_reservations)
+                or bool(app.state.model_test_task and not app.state.model_test_task.done())
                 or bool(app.state.designer_task and not app.state.designer_task.done()))
 
     def snapshot():
@@ -457,13 +471,13 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
             if value.record.get('model_profile') == identifier and (value.busy or value.tool_workers):
                 raise ValueError('请等待使用该模型的会话及工具空闲后修改')
 
-    async def model_audit(event, identifier):
+    async def model_audit(event, identifier, category=None):
         manager = app.state.manager
         audit_context = ToolContext(manager.store.workspace_root, manager.store.root / 'audit.jsonl',
                                     lambda *_: False, asyncio.Event())
         def write():
             with tool_context(audit_context):
-                audit(event, source='web_user', model_profile=identifier)
+                audit(event, source='web_user', model_profile=identifier, **({'category': category} if category else {}))
         await model_io(write)
 
     async def flow_audit(event, identifier):
@@ -488,6 +502,77 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         await model_audit('runtime_model_added', public['id'])
         app.state.updates.notify()
         return public
+
+    @app.post('/api/models/{identifier}/test-connection')
+    async def test_model_connection(identifier: str, request: Request, arguments: ModelTestArguments):
+        from agent_core.core.model_diagnostics import check_model_connection
+        async with app.state.mutations:
+            if app.state.manager.maintenance:
+                raise HTTPException(409, '正在清理数据，请稍后重试')
+            if not app.state.manager.model_registry.contains(identifier):
+                raise HTTPException(404, '模型不存在')
+            if (identifier, arguments.request_id) in app.state.model_test_cancelled:
+                raise HTTPException(409, '模型连接检查已取消')
+            if app.state.model_test_task and not app.state.model_test_task.done():
+                raise HTTPException(409, '已有模型连接检查正在进行')
+            await model_audit('model_connection_test', identifier)
+            task = asyncio.create_task(check_model_connection(app.state.manager, identifier))
+            app.state.model_test_task = task
+            app.state.model_test_identity = (identifier, arguments.request_id)
+        async def wait_disconnect():
+            while (await request.receive())['type'] != 'http.disconnect':
+                pass
+        watcher = asyncio.create_task(wait_disconnect())
+        try:
+            done, _ = await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+            if watcher in done:
+                watcher.result()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise HTTPException(499, '模型连接检查已取消')
+            result = await task
+            async with app.state.mutations:
+                await model_audit('model_connection_test_finished', identifier, result['error_category'] or 'ok')
+            return result
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if asyncio.current_task().cancelling():
+                raise
+            raise HTTPException(499, '模型连接检查已取消') from None
+        finally:
+            if not watcher.done():
+                watcher.cancel()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, watcher, return_exceptions=True)
+            if app.state.model_test_task is task:
+                app.state.model_test_task = None
+                app.state.model_test_identity = None
+
+    @app.post('/api/models/{identifier}/test-connection/cancel')
+    async def cancel_model_connection(identifier: str, arguments: ModelTestArguments):
+        async with app.state.mutations:
+            if app.state.manager.maintenance:
+                raise HTTPException(409, '正在清理数据，请稍后重试')
+            identity = (identifier, arguments.request_id)
+            task = app.state.model_test_task if app.state.model_test_identity == identity else None
+            if task is None and not app.state.manager.model_registry.contains(identifier):
+                raise HTTPException(404, '模型不存在')
+            cancelled = app.state.model_test_cancelled
+            now = time.monotonic()
+            while cancelled and next(iter(cancelled.values())) < now - 300:
+                cancelled.popitem(last=False)
+            cancelled.pop(identity, None)
+            cancelled[identity] = now
+            while len(cancelled) > 1024:
+                cancelled.popitem(last=False)
+            if task and not task.done():
+                task.cancel()
+            await model_audit('model_connection_test_cancel', identifier, 'cancelled')
+        if task:
+            await asyncio.gather(task, return_exceptions=True)
+        return {'cancelled': True}
 
     @app.put('/api/models/{identifier}')
     async def edit_model(identifier: str, arguments: ModelSettings):

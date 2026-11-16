@@ -3,6 +3,7 @@
 只负责「和模型说一次话」：发消息、收流、把 content 和 tool_calls 拼好返回。
 不认识任何具体工具，也不管工具循环。
 """
+from __future__ import annotations
 from contextvars import ContextVar
 import os
 import asyncio
@@ -13,9 +14,7 @@ import threading
 
 import httpx
 
-import openai
-from openai import AsyncOpenAI
-from openai import _base_client
+from agent_core.core.openai_runtime import loaded_types, sdk, sdk_httpx
 
 from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, context_budget_metadata
@@ -35,6 +34,11 @@ logger = get_logger(__name__)
 # 客户端延迟创建：导入本模块不应要求 API key，也不产生副作用。
 _client: AsyncOpenAI | None = None
 _client_lock = threading.Lock()
+
+
+def AsyncOpenAI(*args, **kwargs):
+    """保留可替换构造入口，首次实际请求才加载 SDK。"""
+    return sdk().AsyncOpenAI(*args, **kwargs)
 
 
 def get_client() -> AsyncOpenAI:
@@ -129,8 +133,6 @@ class RuntimeModelRequestError(RuntimeError):
 
 
 _TRANSPORT_ERRORS = (httpx.NetworkError, httpx.RemoteProtocolError, httpx.ProxyError)
-_SDK_HTTPX = getattr(_base_client, 'httpx2', httpx)
-_TRANSPORT_BASES = (httpx.TransportError, _SDK_HTTPX.TransportError, OSError)
 
 
 def _transport_error_type(exc: BaseException) -> str:
@@ -140,7 +142,8 @@ def _transport_error_type(exc: BaseException) -> str:
         if exc is None or id(exc) in visited:
             break
         visited.add(id(exc))
-        if isinstance(exc, _TRANSPORT_BASES):
+        sdk_transport = (sdk_httpx().TransportError,) if loaded_types('APIError') else ()
+        if isinstance(exc, (httpx.TransportError, OSError, *sdk_transport)):
             return type(exc).__name__
         exc = exc.__cause__ or exc.__context__
     return 'unknown'
@@ -270,25 +273,16 @@ def reserved_cost(history, schemas, endpoint, options):
 
 
 # 连接类/限流/服务端错误，属于瞬时故障，可以重试
-_RETRYABLE = (
-    openai.APIConnectionError,
-    openai.APITimeoutError,
-    openai.RateLimitError,
-    openai.InternalServerError,
-    *_TRANSPORT_ERRORS,
-    httpx.TimeoutException,
-)
-
-
 def _is_transient(exc: Exception) -> bool:
     """判断异常是否值得重试。
 
     这个网关偶发返回「空 body 的 422」，属于瞬时故障，值得重试；
     但带了 body 的 422 是真正的请求参数错误，重试没用，直接抛出。
     """
-    if isinstance(exc, _RETRYABLE):
+    if isinstance(exc, (*loaded_types('APIConnectionError', 'APITimeoutError', 'RateLimitError',
+                                      'InternalServerError'), *_TRANSPORT_ERRORS, httpx.TimeoutException)):
         return True
-    if isinstance(exc, openai.APIStatusError):
+    if isinstance(exc, loaded_types('APIStatusError')):
         body = exc.response.text.strip() if exc.response is not None else ""
         return exc.status_code >= 500 or (exc.status_code == 422 and not body)
     return False
@@ -333,7 +327,8 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
     """发起一次流式请求；遇到瞬时错误按指数退避重试。"""
     runtime = active_endpoint.get()
     # Global fallbacks belong to the environment provider; custom endpoints are isolated.
-    endpoints = [runtime.endpoint()] if runtime is not None else [{'model': selected_model()}, *config.MODEL_FALLBACKS]
+    from agent_core.core.model_settings import active_model_fallbacks
+    endpoints = [runtime.endpoint()] if runtime is not None else [{'model': selected_model()}, *(config.MODEL_FALLBACKS if active_model_fallbacks.get() else [])]
     route = _route.get()
     if route is None:
         route = {'model': selected_model(), 'fallbacks': []}
@@ -514,7 +509,7 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
                 raise ModelResponseError('模型没有返回回答或工具调用，请重试。')
             metrics['outcome'] = 'ok'
             return message
-    except (TimeoutError, httpx.TimeoutException, openai.APITimeoutError) as exc:
+    except (TimeoutError, httpx.TimeoutException, *loaded_types('APITimeoutError')) as exc:
         metrics['outcome'] = 'timeout'
         metrics['error_type'] = type(exc).__name__
         deadline = _model_timeout()
@@ -523,7 +518,7 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
             f'模型请求在 {time.monotonic() - started:.1f}s 后超时（{deadline_text}网络空闲时限 {config.SESSION_TIMEOUT:g}s）。'
             '已停止本次请求，未执行未完成的工具调用；可重试或缩小任务。'
         ) from exc
-    except (openai.APIConnectionError, *_TRANSPORT_ERRORS) as exc:
+    except (*loaded_types('APIConnectionError'), *_TRANSPORT_ERRORS) as exc:
         metrics.update(outcome='connection_error', error_type=type(exc).__name__,
                        transport_error_type=_transport_error_type(exc),
                        failure_phase='connect' if stream is None else 'stream')

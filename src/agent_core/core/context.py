@@ -16,8 +16,14 @@ def estimate_tokens(text: str) -> int:
     return len(text) - ascii_chars + (ascii_chars + 3) // 4
 
 
+def _budget_messages(messages: list[dict]) -> list[dict]:
+    """与请求构建器保持一致；图片引用另保留用于图像预算估算。"""
+    return [{key: value for key, value in message.items()
+             if not key.startswith('_') or key == '_attachments'} for message in messages]
+
+
 def request_tokens(messages, schemas=None):
-    return sum(attachment_tokens(message) for message in messages) + estimate_tokens(json.dumps(messages, ensure_ascii=False)) + (
+    return sum(attachment_tokens(message) for message in messages) + estimate_tokens(json.dumps(_budget_messages(messages), ensure_ascii=False)) + (
         estimate_tokens(json.dumps(schemas, ensure_ascii=False)) if schemas else 0)
 
 
@@ -37,7 +43,7 @@ def annotate_context_metrics(metrics, schemas=None):
 
 
 def history_size(messages: list[dict]) -> int:
-    return len(json.dumps(messages, ensure_ascii=False))
+    return len(json.dumps(_budget_messages(messages), ensure_ascii=False))
 
 
 def append_context_notice(history: list[dict], notice: str) -> tuple[int, int]:
@@ -61,7 +67,8 @@ class ContextBudgetError(ValueError):
         super().__init__(f'上下文预算不足：{metrics}。完整记录未删除；请缩小请求、减少记忆或新建会话。')
 
 
-def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, extra_chars=0) -> tuple[list[dict], dict]:
+def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, extra_chars=0,
+                        eligible_observations=None) -> tuple[list[dict], dict]:
     """Compact bulky historical file payloads; evict whole old turns only if necessary."""
     # 仅复制顶层消息；嵌套工具参数修改时单独复制，原始记录保持不可变。
     history = [dict(message) for message in messages]
@@ -90,11 +97,13 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 'schema': schema_chars, 'memory': memory_chars, 'extra': extra_chars,
                 'messages': current_chars - memory_chars - extra_chars,
                 'total_chars': current_chars + schema_chars,
-                'compacted_file_parts': compacted, 'omitted_turns': omitted}, schemas)
+                'compacted_file_parts': compacted, 'compacted_tool_observations': compacted_observations,
+                'omitted_turns': omitted}, schemas)
     current = max((i for i, m in enumerate(history) if is_user_request(m)), default=1)
     recent = max(current, len(history) - 4)
     names = {}
     compacted = 0
+    compacted_observations = 0
     completed_results = {message.get('tool_call_id'): i for i, message in enumerate(history)
                          if message['role'] == 'tool'}
 
@@ -136,6 +145,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
                 compact_call(i, call_index)
         if (i < current and message['role'] == 'tool'
                 and names.get(message.get('tool_call_id')) == 'read_file'
+                and '_context_observation' not in message
                 and len(message.get('content', '')) > config.FILE_READ_CHARS):
             message['content'] = '[历史文件读取内容已省略；当前文件可能已修改，请按需重新 read_file。]'
             compacted += 1
@@ -160,6 +170,7 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
             break
         if (i < recent and message['role'] == 'tool'
                 and names.get(message.get('tool_call_id')) == 'read_file'
+                and '_context_observation' not in message
                 and len(message.get('content', '')) > 2000):
             message['content'] = '[较早的文件页已移出工作上下文；需要该片段时用 read_file 的 offset/search 重新读取。完整原文仍保存在会话记录。]'
             compacted += 1
@@ -176,6 +187,68 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
     # complete call/result batch and every pending call in full.
     latest_completed = max((i for i, message in enumerate(history)
                             if any(completed_call(i, call) for call in message.get('tool_calls', []))), default=-1)
+    # 只处理本次运行中已完整交付的可信结果，且不改变调用或配对。
+    if eligible_observations and over_budget():
+        from agent_core.core.tool_observations import validate_observation
+        offered = {schema.get('function', {}).get('name') for schema in (schemas or [])
+                   if isinstance(schema, dict)}
+        call_entries = {}
+        result_entries = {}
+        for index, message in enumerate(history):
+            if message.get('role') == 'assistant':
+                for call in message.get('tool_calls', []):
+                    call_entries.setdefault(call.get('id'), []).append((index, call))
+            if message.get('role') == 'tool':
+                result_entries.setdefault(message.get('tool_call_id'), []).append(index)
+        complete_batches = []
+        for index, message in enumerate(history):
+            calls = message.get('tool_calls', []) if message.get('role') == 'assistant' else []
+            if calls and all(len(call_entries.get(c.get('id'), [])) == 1
+                             and len(result_entries.get(c.get('id'), [])) == 1
+                             and result_entries[c.get('id')][0] > index for c in calls):
+                complete_batches.append(index)
+        last_batch = max(complete_batches, default=-1)
+        for i, message in enumerate(history):
+            if not over_budget():
+                break
+            if message.get('role') != 'tool' or message.get('_provenance') != 'executed':
+                continue
+            ident = message.get('tool_call_id')
+            entries = call_entries.get(ident, [])
+            if len(entries) != 1 or len(result_entries.get(ident, [])) != 1:
+                continue
+            call_index, call = entries[0]
+            if call_index not in complete_batches or not call_index < i < last_batch:
+                continue
+            if any(result_entries[c.get('id')][0] >= last_batch
+                   for c in history[call_index]['tool_calls']):
+                continue
+            observation = validate_observation(message.get('content'), message.get('_context_observation'))
+            if (observation is None or observation.reader_tool not in offered
+                    or call.get('function', {}).get('name') != observation.reader_tool
+                    or (ident, observation.sha256) not in eligible_observations):
+                continue
+            content = message['content']
+            for start, end in reversed(observation.body_spans):
+                content = content[:start] + '[正文已省略]' + content[end:]
+            content += '\n' + observation.recovery_notice
+            value = model_json({**message, 'content': content})
+            size = len(value) + 2
+            ascii_count = len(value.encode('ascii', errors='ignore')) + 2
+            token_count = estimate_tokens(value) + 1 + image_tokens[i]
+            # 不能为某个超限维度增加负担，也不能采用没有实际收益的替换。
+            chars_binding = current_chars > budget
+            tokens_binding = current_tokens > session_limit('MODEL_INPUT_TOKENS') - 100
+            if ((chars_binding and size > sizes[i]) or (tokens_binding and token_count > tokens[i])
+                    or not ((chars_binding and size < sizes[i]) or (tokens_binding and token_count < tokens[i]))):
+                continue
+            message['content'] = content
+            compacted_observations += 1
+            budget = limit - 300
+            current_chars += size - sizes[i]
+            current_ascii += ascii_count - ascii_sizes[i]
+            current_tokens += token_count - tokens[i]
+            sizes[i], ascii_sizes[i], tokens[i] = size, ascii_count, token_count
     for i in range(recent, latest_completed):
         if not over_budget():
             break
@@ -207,9 +280,9 @@ def build_model_history(messages: list[dict], *, schemas=None, memory_chars=0, e
         history = history[:turns[0]] + history[keep_from:]
     if over_budget():
         raise ContextBudgetError(metrics())
-    if compacted or omitted:
+    if compacted or compacted_observations or omitted:
         notice = (
-            f'\n[上下文窗口说明] 历史文件片段省略 {compacted} 处，旧轮次省略 {omitted} 轮；'
+            f'\n[上下文窗口说明] 历史文件片段省略 {compacted} 处，工具观察正文省略 {compacted_observations} 条，旧轮次省略 {omitted} 轮；'
             '完整原始对话仍保存在会话文件。省略内容不是空文件或已删除的事实，不得按占位符覆盖文件。'
         )
         chars, ascii_chars = append_context_notice(history, notice)
@@ -228,7 +301,9 @@ async def prepare_model_history(messages, *, judge, cache=None, builder=build_mo
         return history, metrics
     turns = [i for i, message in enumerate(messages) if is_user_request(message)]
     removed = messages[turns[0]:turns[metrics['omitted_turns']]]
-    payload = await asyncio.to_thread(bounded_json, removed, config.SUMMARY_INPUT_CHARS)
+    public_removed = [{key: value for key, value in message.items()
+                       if not key.startswith('_') or key == '_attachments'} for message in removed]
+    payload = await asyncio.to_thread(bounded_json, public_removed, config.SUMMARY_INPUT_CHARS)
     key = hashlib.sha256(payload.encode()).hexdigest()
     try:
         summary = (cache or {}).get(key)

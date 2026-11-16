@@ -206,7 +206,7 @@ def test_high_variance_promotes_only_older_protected_group_and_keeps_recent_cont
                        for item in history)
 
             folder = env.directory(session.id) / 'context'
-            manifest = json.loads((folder / 'manifest.json').read_text())
+            manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             older = [item for item in manifest['chunks']
                      if item['Time']['start'] <= 1 < item['Time']['end']]
             assert len(older) == 1
@@ -305,13 +305,13 @@ def test_tool_call_and_paired_result_are_archived_together_but_latest_user_is_no
         manager, session = await _manager(env, InspectStub(high_variance=True))
         try:
             history, _ = await manager.history_context.prepare(session, messages)
-            manifest = json.loads((env.directory(session.id) / 'context' / 'manifest.json').read_text())
+            manifest = json.loads((env.directory(session.id) / 'context' / 'manifest.json').read_text(encoding='utf-8'))
             tool_chunk = [item for item in manifest['chunks']
                           if item['Time']['start'] <= 2 < item['Time']['end']]
             assert len(tool_chunk) == 1
             chunk = tool_chunk[0]
             raw = json.loads((env.directory(session.id) / 'context' / 'chunks' /
-                              (chunk['ID'] + '.json')).read_text())['RawHistory']
+                              (chunk['ID'] + '.json')).read_text(encoding='utf-8'))['RawHistory']
             parsed = json.loads(raw)
             assert any(item.get('tool_calls') for item in parsed)
             assert any(item.get('tool_call_id') == 'old-tool' for item in parsed)
@@ -372,7 +372,7 @@ def test_hard_budget_with_only_protected_groups_and_large_schema_checkpoints_cle
             assert messages == original
             path = env.directory(session.id) / 'context' / 'manifest.json'
             if path.exists():
-                manifest = json.loads(path.read_text())
+                manifest = json.loads(path.read_text(encoding='utf-8'))
                 assert all(item['Time']['end'] <= len(messages) - 1 for item in manifest['chunks'])
         finally:
             await manager.shutdown()
@@ -588,7 +588,7 @@ def test_extractive_fallback_preserves_tool_name_target_and_result_fact(env, mon
         try:
             await manager.history_context.prepare(session, messages)
             folder = env.directory(session.id) / 'context'
-            manifest = json.loads((folder / 'manifest.json').read_text())
+            manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             tool_chunks = [item for item in manifest['chunks']
                            if item['Time']['start'] <= 2 < item['Time']['end']]
             assert len(tool_chunks) == 1
@@ -627,6 +627,9 @@ def test_hard_budget_archives_completed_post_user_tool_group_without_orphaning_r
     async def run():
         manager, session = await _manager(env)
         try:
+            # 受控交付确认：本例验证已读批次的归档；未读批次由独立边界用例保护。
+            session.record['messages'] = copy.deepcopy(messages)
+            manager.history_context.mark_delivered(session, messages)
             history, metrics = await manager.history_context.prepare(session, messages,
                 schemas=[{'type': 'function', 'function': {'name': 'history_read', 'parameters': {'type': 'object'}}}])
             assert metrics['utilization'] <= 1
@@ -634,11 +637,11 @@ def test_hard_budget_archives_completed_post_user_tool_group_without_orphaning_r
             assert not any(item.get('role') == 'tool' for item in history)
             assert messages == original
             folder = env.directory(session.id) / 'context'
-            manifest = json.loads((folder / 'manifest.json').read_text())
+            manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             assert len(manifest['chunks']) == 1
             meta = manifest['chunks'][0]
             assert (meta['Time']['start'], meta['Time']['end']) == (2, 5)
-            chunk = json.loads((folder / 'chunks' / (meta['ID'] + '.json')).read_text())
+            chunk = json.loads((folder / 'chunks' / (meta['ID'] + '.json')).read_text(encoding='utf-8'))
             archived = json.loads(chunk['RawHistory'])
             assert archived == original[2:5]
             assert {item['tool_call_id'] for item in archived if item['role'] == 'tool'} == {'read-a', 'read-b'}

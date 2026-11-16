@@ -224,6 +224,11 @@ class FlowCanvas(QGraphicsView):
         self._source = None
         self._preview = None
         self._pan = None
+        self.horizontalScrollBar().sliderPressed.connect(self._cancel_initial_fit)
+        self.verticalScrollBar().sliderPressed.connect(self._cancel_initial_fit)
+
+    def _cancel_initial_fit(self) -> None:
+        self.panel._initial_fit_id = None
 
     def dragEnterEvent(self, event) -> None:
         if not self.panel.running and event.mimeData().hasFormat('application/x-agent-flow-node'):
@@ -261,6 +266,7 @@ class FlowCanvas(QGraphicsView):
         return None
 
     def mousePressEvent(self, event) -> None:
+        self._cancel_initial_fit()
         if event.button() == Qt.MouseButton.RightButton:
             item = self.itemAt(event.position().toPoint())
             if isinstance(item, NodeItem):
@@ -329,6 +335,7 @@ class FlowCanvas(QGraphicsView):
         super().keyPressEvent(event)
 
     def wheelEvent(self, event) -> None:
+        self._cancel_initial_fit()
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
             self.scale(factor, factor)
@@ -352,6 +359,8 @@ class FlowPanel(QWidget):
         self._project_dirty_cache = {}
         self._pending_project_action = None
         self._directory_update_id = None
+        self._initial_fit_id = None
+        self._initial_fit_transform = None
         self._project_rows = {}
         self.nodes, self.edges = {}, []
         root = QVBoxLayout(self)
@@ -979,6 +988,10 @@ class FlowPanel(QWidget):
             else:
                 self._flow, self._dirty = incoming, False
             self._rebuild()
+            self._initial_fit_id = new_id
+            self._initial_fit_transform = self.canvas.transform()
+            if new_id:
+                QTimer.singleShot(0, lambda identifier=new_id: self._fit_initial(identifier))
         elif (not self._dirty and incoming.get('revision') is not None
               and (self._flow.get('revision') is None or incoming['revision'] > self._flow['revision'])):
             self._flow = incoming
@@ -1339,6 +1352,23 @@ class FlowPanel(QWidget):
             if scale > 1.0:
                 self.canvas.scale(1.0 / scale, 1.0 / scale)
                 self.canvas.centerOn(rect.center())
+
+    def _fit_initial(self, identifier: str) -> None:
+        if self._initial_fit_id != identifier or self._flow.get('id') != identifier:
+            return
+        if self.canvas.transform() != self._initial_fit_transform:
+            self._initial_fit_id = None
+            return
+        if not self.isVisible() or not self.canvas.isVisible() or self.canvas.viewport().width() <= 1:
+            return
+        self._initial_fit_id = None
+        self._fit()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._initial_fit_id:
+            identifier = self._initial_fit_id
+            QTimer.singleShot(0, lambda: self._fit_initial(identifier))
 
     def _toggle_inspector(self) -> None:
         if self.inspector_panel.isHidden():

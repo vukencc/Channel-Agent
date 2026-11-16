@@ -11,7 +11,7 @@ import uuid
 
 from agent_core import config
 from agent_core.core.files import directory_identity, opened_path
-from agent_core.tools.sandbox import SandboxError, _context, audit, confirm, current_policy, sandbox_root, execution_authority
+from agent_core.tools.sandbox import SandboxError, _context, audit, confirm, current_policy, sandbox_root, execution_authority, format_confirmation_prompt
 
 
 CONFIG_KEYS = '''COMMAND_CPU_SECONDS COMMAND_FILE_MB COMMAND_NETWORK
@@ -51,24 +51,35 @@ def _environment() -> dict[str, str]:
             if key in {'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA'}}
 
 
-def _translate(path: str | Path, *, reverse=False) -> str:
-    result = subprocess.run([*_launcher(), '/usr/bin/wslpath', '-a', '-w' if reverse else '-u', str(path)],
+def _translate_many(paths: list[str | Path], *, reverse=False) -> list[str]:
+    values = list(map(str, paths))
+    if not values or any(not value or any(ord(char) < 32 for char in value) for value in values):
+        raise SandboxError('无法映射 WSL 工作区，请检查发行版与磁盘挂载')
+    # 路径只作为独立 argv 传入固定脚本；一次调用内合批，不跨操作缓存映射。
+    script = 'direction="$1"; shift; for path do /usr/bin/wslpath -a "$direction" "$path" || exit; done'
+    result = subprocess.run([*_launcher(), '/bin/sh', '-c', script, '--', '-w' if reverse else '-u', *values],
                             stdin=subprocess.DEVNULL, capture_output=True, timeout=20,
                             encoding='utf-8', errors='replace', env=_environment(),
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    value = result.stdout.strip()
-    if result.returncode or not value or any(ord(char) < 32 for char in value):
+    lines = result.stdout.removesuffix('\n').split('\n')
+    if (result.returncode or len(lines) != len(values) or
+            any(not value or any(ord(char) < 32 for char in value) for value in lines)):
         raise SandboxError('无法映射 WSL 工作区，请检查发行版与磁盘挂载')
-    return value
+    return lines
 
 
-def _settings() -> dict:
+def _translate(path: str | Path, *, reverse=False) -> str:
+    return _translate_many([path], reverse=reverse)[0]
+
+
+def _settings(*, translate=None) -> dict:
+    translate = translate or _translate
     values = {key: getattr(config, key) for key in CONFIG_KEYS}
     # Linux 运行时绑定采用显式 Linux 路径，Windows 路径则先翻译。
     values['COMMAND_RUNTIME_PATHS'] = {
-        key: _translate(Path(value)) if Path(value).drive else value
+        key: translate(Path(value)) if Path(value).drive else value
         for key, value in values['COMMAND_RUNTIME_PATHS'].items()}
-    values['TOOL_ROOTS'] = {name: {**entry, 'path': _translate(Path(entry['path']))}
+    values['TOOL_ROOTS'] = {name: {**entry, 'path': translate(Path(entry['path']))}
                            for name, entry in values['TOOL_ROOTS'].items()}
     return values
 
@@ -81,15 +92,20 @@ def execute_wsl_tool(operation: str, arguments: dict) -> str:
     context = _context.get()
     identity = directory_identity(root)
     with opened_path(root, root, directory=True, expected_identity=identity):
-        linux_root = _translate(root)
+        worker = _worker_script()
+        protected_paths = {key: Path(getattr(config, key)) for key in ('PROJECT_ROOT', 'AGENT_STATE_DIR', 'AUDIT_LOG')}
+        paths = [root, worker, *protected_paths.values(),
+                 *(Path(value) for value in config.COMMAND_RUNTIME_PATHS.values() if Path(value).drive),
+                 *(Path(entry['path']) for entry in config.TOOL_ROOTS.values())]
+        translated = dict(zip(map(str, paths), _translate_many(paths), strict=True))
+        linux_root = translated[str(root)]
         if Path(_translate(linux_root, reverse=True)) != root or directory_identity(root) != identity:
             raise SandboxError('WSL 映射与已选择工作区不匹配')
-        script = _translate(_worker_script())
+        script = translated[str(worker)]
         identifier = uuid.uuid4().hex
         request = {'id': identifier, 'operation': operation, 'arguments': arguments,
-                   'root': linux_root, 'config': _settings(), 'policy': current_policy(),
-                   'paths': {key: _translate(Path(getattr(config, key)))
-                             for key in ('PROJECT_ROOT', 'AGENT_STATE_DIR', 'AUDIT_LOG')},
+                   'root': linux_root, 'config': _settings(translate=lambda path: translated[str(path)]), 'policy': current_policy(),
+                   'paths': {key: translated[str(path)] for key, path in protected_paths.items()},
                    'execution_environment': 'sandbox',
                    'flow_workspace_scope': bool(context and context.flow_workspace_scope)}
         argv = [*_launcher(), '/usr/bin/env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin',
@@ -97,10 +113,32 @@ def execute_wsl_tool(operation: str, arguments: dict) -> str:
                 'AI_AGENT_PROJECT_ROOT=/tmp/channel-agent-wsl-worker',
                 config.WINDOWS_WSL_PYTHON, '-B', '-u', script]
         audit('wsl_tool_started', strict=True, operation=operation, request_id=identifier)
-        return _exchange(argv, request, context.cancelled if context else None)
+        from agent_core.core.command_review import bound_review
+        command = arguments.get('command') if operation == 'run_command' else None
+        review = bound_review(command, arguments.get('network', False)) if isinstance(command, str) else None
+        if review is None:
+            return _exchange(argv, request, context.cancelled if context else None)
+        return _exchange(argv, request, context.cancelled if context else None, review=review)
 
 
-def _exchange(argv: list[str], request: dict, cancelled) -> str:
+def _review_confirmation_prompt(prompt, request, review):
+    """只增强与原请求完整一致的 run_command 确认，保留原始提示。"""
+    arguments = request.get('arguments', {})
+    command = arguments.get('command')
+    network = arguments.get('network', False)
+    reason = arguments.get('reason', '')
+    valid = (review and request.get('operation') == 'run_command' and isinstance(command, str)
+             and type(network) is bool and isinstance(reason, str) and review.command == command
+             and review.network == network and arguments.get('runtime_profile', 'system') == 'system'
+             and arguments.get('resource_profile', 'standard') == 'standard')
+    detail = command + (f"\n联网白名单：{request.get('config', {}).get('COMMAND_NETWORK_ALLOWLIST', [])}" if network else '') if valid else None
+    if valid and prompt == format_confirmation_prompt('run_command', detail, reason):
+        from agent_core.core.command_review import format_review
+        return format_review(review) + '\n原始确认提示：\n' + prompt
+    return prompt
+
+
+def _exchange(argv: list[str], request: dict, cancelled, *, review=None) -> str:
     process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=_environment(), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     events = queue.Queue(maxsize=64)
@@ -171,7 +209,8 @@ def _exchange(argv: list[str], request: dict, cancelled) -> str:
                 if event == 'ready' and not ready:
                     ready = True
                 elif event == 'confirm' and ready:
-                    allowed = not sent_cancel and confirm(record['prompt'], float(record['timeout']))
+                    prompt = _review_confirmation_prompt(record['prompt'], request, review)
+                    allowed = not sent_cancel and confirm(prompt, float(record['timeout']))
                     send({'type': 'decision', 'request_id': record['request_id'], 'allowed': bool(allowed)})
                 elif event == 'audit' and ready and isinstance(record.get('entry'), dict):
                     entry = record['entry']

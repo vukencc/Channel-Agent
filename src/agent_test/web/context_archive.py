@@ -1,12 +1,9 @@
 """DEBUG 专用私有归档浏览：按需读取、完整性校验、分页及密钥脱敏。"""
 import json
-import os
 import re
-import stat
 
 from agent_core.core.headless import redact_result
 from agent_core.core.history_context import HistoryContext
-from agent_core.core.files import opened_path
 
 
 class ContextArchiveReader(HistoryContext):
@@ -15,21 +12,17 @@ class ContextArchiveReader(HistoryContext):
         self.manager = manager
 
     @staticmethod
-    def _read_json(path):
+    def _read_json(path, directory_fd=None):
         try:
-            with opened_path(path.parent, path) as descriptor:
-                with os.fdopen(os.dup(descriptor), 'rb') as stream:
-                    info = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 64 * 1024 * 1024:
-                        raise PermissionError('归档必须是有界且没有硬链接的普通文件')
-                    content = stream.read(64 * 1024 * 1024 + 1)
-                    if len(content) > 64 * 1024 * 1024:
-                        raise PermissionError('归档读取超过容量上限')
-                    return json.loads(content)
+            return HistoryContext._read_json(path, directory_fd)
         except FileNotFoundError:
             raise
         except OSError:
             raise PermissionError('归档路径不能安全读取') from None
+        except json.JSONDecodeError:
+            raise
+        except ValueError:
+            raise PermissionError('归档必须是有界且没有硬链接的普通文件') from None
 
     def _redact(self, value):
         # 运行时模型与独立监督器不共享主模型配置，需补齐各自的已知密钥。

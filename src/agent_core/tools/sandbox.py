@@ -309,16 +309,20 @@ def _trusted_rule(action: str, paths: list[str] | None, command: str | None) -> 
     return None
 
 
+def format_confirmation_prompt(action: str, detail: str, reason: str = "") -> str:
+    prompt = f"[风险操作] {action}：{detail}"
+    return prompt + (f"\n  理由：{reason}" if reason else '')
+
+
 def ask_permission(action: str, detail: str, reason: str = "", *, paths: list[str] | None = None,
-                   command: str | None = None, force_confirmation: bool = False) -> bool:
+                   command: str | None = None, force_confirmation: bool = False,
+                   display_detail: str | None = None) -> bool:
     """
     风险操作确认：由策略判定为风险后调用。
 
     拒绝、超时、异常一律返回 False（fail-closed）。确认过程记审计。
     """
-    prompt = f"[风险操作] {action}：{detail}"
-    if reason:
-        prompt += f"\n  理由：{reason}"
+    prompt = format_confirmation_prompt(action, display_detail if display_detail is not None else detail, reason)
 
     policy = current_policy()
     if policy == 'readonly' or cancellation_requested():

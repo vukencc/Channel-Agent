@@ -14,6 +14,7 @@ from contextlib import nullcontext
 from typing import Literal
 
 from agent_core import config
+from agent_core.core.command_review import review_text
 from pydantic import BaseModel, Field
 
 from agent_core.tools.base import register_tool
@@ -118,8 +119,10 @@ def run_command(command: str, reason: str = "", network: bool = False,
         detail = command + (f'\n联网白名单：{config.COMMAND_NETWORK_ALLOWLIST}' if network else '')
     if runtime_profile != 'system' and limits is None:
         detail += f'\n运行时档位：{runtime_profile}，虚拟地址空间上限：{command_memory_limit_mb(runtime_profile)} MiB'
+    review = review_text(command, network)
     if not ask_permission("run_command", detail, reason, command=command,
-                          force_confirmation=network or limits is not None):
+                          force_confirmation=network or limits is not None,
+                          **({'display_detail': review + '\n原始确认说明：\n' + detail} if review else {})):
         return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
 
     try:
@@ -156,7 +159,9 @@ def _run_local_command(command: str, reason: str, network: bool,
             'network': '本机网络，包含 localhost；network 参数只控制 sandbox',
             'runtime_profile': runtime_profile, 'resource_profile': resource_profile,
             'resources': '本机资源，不施加 sandbox 的内存/CPU/文件/工作区限额'}, ensure_ascii=False)
-        if not ask_permission('run_command', plan, reason, command=command, force_confirmation=True):
+        review = review_text(command, network)
+        if not ask_permission('run_command', plan, reason, command=command, force_confirmation=True,
+                              **({'display_detail': review + '\n原始确认说明：\n' + plan} if review else {})):
             return '[已取消] 用户未确认（拒绝或确认超时），命令未执行。'
         validate_local_execution()
         audit('command_started', strict=True, execution_environment='local', timeout_seconds=timeout,

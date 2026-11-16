@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import threading
 
 _kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 _create = _kernel.CreateFileW
@@ -85,6 +86,53 @@ def _open(path: Path, *, directory: bool, writable: bool = False,
         raise
 
 
+_scopes = threading.local()
+
+
+@contextmanager
+def pinned_scope(prefix: Path):
+    """仅在同步操作内固定前缀及其祖先，退出时关闭全部句柄。"""
+    prefix = Path(prefix)
+    _validate(prefix)
+    stack = getattr(_scopes, 'stack', None)
+    if stack is None:
+        stack = _scopes.stack = []
+    shared = False
+    if stack:
+        try:
+            prefix.relative_to(stack[-1][0])
+            shared = True
+        except ValueError:
+            pass
+    handles = stack[-1][1] if shared else {}
+    stack.append((prefix, handles, frozenset((prefix, *prefix.parents))))
+    try:
+        yield
+    finally:
+        stack.pop()
+        if not shared:
+            for handle, _ in reversed(list(handles.values())):
+                _close(handle)
+
+
+def _pinned_directory(path: Path, scope):
+    if scope is None:
+        return None
+    _, handles, ancestors = scope
+    if path not in ancestors:
+        return None
+    if path not in handles:
+        handles[path] = _open(path, directory=True)
+    else:
+        handle, identity = handles[path]
+        info = _FileInfo()
+        if not _info(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if info.attributes & 0x400 or not info.attributes & 0x10 or _identity(handle) != identity:
+            raise PermissionError('路径权限或类型已发生变化，拒绝预览')
+    return handles[path]
+
+
 @contextmanager
 def opened_path(root: Path, target: Path, *, directory=False, expected_identity=None,
                 writable: bool = False, allow_replace: bool = False):
@@ -97,24 +145,48 @@ def opened_path(root: Path, target: Path, *, directory=False, expected_identity=
         parts = target.relative_to(root).parts
     except ValueError:
         raise PermissionError('路径不属于当前工作区') from None
+    stack = getattr(_scopes, 'stack', ())
+    scope = stack[-1] if stack else None
+    if scope is not None:
+        try:
+            target.relative_to(scope[0])
+        except ValueError:
+            scope = None
     handles = []
     fd = None
     try:
         current = Path(root.anchor)
-        handle, identity = _open(current, directory=True)
-        handles.append(handle)
-        for part in root.parts[1:]:
-            current /= part
+        def open_ancestor(path):
+            cached = _pinned_directory(path, scope)
+            if cached is not None:
+                return cached
+            result = _open(path, directory=True)
+            handles.append(result[0])
+            return result
+
+        if not root.parts[1:] and not parts:
             handle, identity = _open(current, directory=True)
             handles.append(handle)
+        else:
+            handle, identity = open_ancestor(current)
+        for index, part in enumerate(root.parts[1:]):
+            current /= part
+            if index == len(root.parts[1:]) - 1 and not parts:
+                handle, identity = _open(current, directory=True)
+                handles.append(handle)
+            else:
+                handle, identity = open_ancestor(current)
         if expected_identity is not None and identity != tuple(expected_identity):
             raise PermissionError('工作区目录身份已变化，拒绝预览')
         for index, part in enumerate(parts):
             current /= part
             is_directory = directory or index < len(parts) - 1
-            options = {'allow_replace': True} if allow_replace and not is_directory else {}
-            handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory, **options)
-            handles.append(handle)
+            if index < len(parts) - 1:
+                handle, _ = open_ancestor(current)
+            else:
+                options = {'allow_replace': True} if allow_replace and not is_directory else {}
+                handle, _ = _open(current, directory=is_directory, writable=writable and not is_directory, **options)
+                handles.append(handle)
         if not parts and not directory:
             raise ValueError('只支持普通文本文件或目录预览')
         handle = handles.pop()

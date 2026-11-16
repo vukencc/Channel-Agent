@@ -1,4 +1,7 @@
 import json
+import os
+
+import pytest
 
 from agent_core.tools import sandbox
 
@@ -24,8 +27,17 @@ def test_rotation_and_sync(sandbox_env, monkeypatch):
     monkeypatch.setattr(sandbox.os, 'fsync', lambda descriptor: calls.append(descriptor))
     sandbox.audit('before')
     path = sandbox.config.AUDIT_LOG
-    path.rename(path.with_suffix('.old'))
+    rotated = path.with_suffix('.old')
+    if os.name == 'nt':
+        # Windows 审计句柄固定叶文件；轮转前明确排空关闭，不能放宽删除共享。
+        from agent_core.core.audit_writer import close_audit_handles
+        with pytest.raises(OSError) as error:
+            path.rename(rotated)
+        assert error.value.winerror == 32
+        close_audit_handles(path.parent)
+    path.rename(rotated)
     sandbox.audit('after')
+    assert json.loads(rotated.read_text())['event'] == 'before'
     assert json.loads(path.read_text())['event'] == 'after'
     assert len(calls) == 2
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 
 from agent_core import config
+from agent_core.core.tool_observations import observe_text
 
 from pydantic import BaseModel, Field
 
@@ -187,10 +188,16 @@ def read_file(path: str, offset: int = 0, limit: int = config.FILE_READ_CHARS, s
 
     audit("executed", action="read_file", path=path, size=len(text), offset=offset, has_more=more)
     if offset == 0 and not more and not search:
-        return text
-    next_offset = offset + len(text)
-    state = f"next_offset={next_offset}" if more else "EOF"
-    return f"[文件分页] path={path} offset={offset} chars={len(text)} {state}\n[内容开始]\n{text}\n[内容结束]"
+        result, start = text, 0
+    else:
+        next_offset = offset + len(text)
+        state = f"next_offset={next_offset}" if more else "EOF"
+        header = f"[文件分页] path={path} offset={offset} chars={len(text)} {state}\n[内容开始]\n"
+        result, start = header + text + "\n[内容结束]", len(header)
+    if not text:
+        return result
+    return observe_text(result, reader_tool='read_file', body_spans=((start, start + len(text)),),
+                        recovery_notice='正文已省略；使用原调用参数重新读取当前文件，结果不是历史快照。')
 
 
 @register_tool(EditFileArgs, name="edit_file")

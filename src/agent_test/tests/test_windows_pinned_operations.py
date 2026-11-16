@@ -1,0 +1,278 @@
+"""受控验证 Windows 操作内目录句柄的复用和释放。"""
+import ctypes
+import importlib.util
+import inspect
+import os
+from pathlib import Path, PureWindowsPath
+import stat
+import sys
+import types
+
+import pytest
+
+
+@pytest.fixture
+def windows_files(monkeypatch):
+    class Function:
+        def __call__(self, *args):
+            return 1
+    class Kernel:
+        def __getattr__(self, name):
+            return Function()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: Kernel(), raising=False)
+    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(open_osfhandle=lambda handle, flags: handle))
+    source = Path(__file__).parents[2] / "agent_core/core/windows_files.py"
+    spec = importlib.util.spec_from_file_location("controlled_windows_files", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "Path", PureWindowsPath)
+    monkeypatch.setattr(os, "O_BINARY", 0, raising=False)
+    monkeypatch.setattr(os, "fstat", lambda fd: types.SimpleNamespace(st_mode=stat.S_IFREG))
+    monkeypatch.setattr(os, "close", lambda fd: None)
+    return module
+
+
+def test_reuses_only_ancestors_with_fresh_guards_and_closes(windows_files, monkeypatch):
+    module = windows_files
+    opened, closed, checked = [], [], []
+    def open_path(path, **options):
+        handle = len(opened) + 1
+        opened.append((str(path), handle))
+        return handle, (1, handle)
+    def info(handle, pointer):
+        checked.append(handle)
+        pointer._obj.attributes = 0x10
+        return True
+    monkeypatch.setattr(module, "_open", open_path)
+    monkeypatch.setattr(module, "_info", info)
+    monkeypatch.setattr(module, "_identity", lambda handle: (1, handle))
+    monkeypatch.setattr(module, "_close", closed.append)
+    root = PureWindowsPath("C:/state/flows")
+    with module.pinned_scope(root):
+        for _ in range(2):
+            with module.opened_path(root, root / "file.json"):
+                pass
+        assert len(opened) == 5  # 三个祖先只打开一次，叶文件每次打开
+        assert len(checked) == 3
+        assert closed == []
+    assert set(closed) == {1, 2, 3}
+
+
+def test_scope_checks_target_once_per_open_not_per_ancestor(windows_files, monkeypatch):
+    module = windows_files
+    counter = iter(range(1, 100))
+    monkeypatch.setattr(module, '_open', lambda path, **kwargs: ((handle := next(counter)), (1, handle)))
+    monkeypatch.setattr(module, '_close', lambda handle: None)
+    original = PureWindowsPath.relative_to
+    calls = []
+    def relative_to(path, *args, **kwargs):
+        calls.append((path, args))
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(PureWindowsPath, 'relative_to', relative_to)
+    root = PureWindowsPath('C:/one/two/three/four/five')
+    with module.pinned_scope(root):
+        calls.clear()
+        with module.opened_path(root, root / 'result.json'):
+            pass
+        assert len(calls) <= 2  # 工作区授权与当前作用域匹配各一次。
+
+
+@pytest.mark.parametrize('changed', ['reparse', 'identity'])
+def test_cached_ancestor_change_fails_closed_and_releases(windows_files, monkeypatch, changed):
+    module = windows_files
+    closed = []
+    counter = iter(range(1, 20))
+    monkeypatch.setattr(module, '_open', lambda path, **kwargs: ((handle := next(counter)), (1, handle)))
+    monkeypatch.setattr(module, '_close', closed.append)
+    def info(handle, pointer):
+        pointer._obj.attributes = 0x410 if changed == 'reparse' else 0x10
+        return True
+    monkeypatch.setattr(module, '_info', info)
+    monkeypatch.setattr(module, '_identity', lambda handle: (2, handle))
+    root = PureWindowsPath('C:/state/flows')
+    with pytest.raises(PermissionError):
+        with module.pinned_scope(root):
+            with module.opened_path(root, root / 'file.json'):
+                pass
+            with module.opened_path(root, root / 'file.json'):
+                pass
+    assert set(closed) == {1, 2, 3}
+
+
+def test_nested_scope_and_later_operation_do_not_leak(windows_files, monkeypatch):
+    module = windows_files
+    opened, closed = [], []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append(handle)
+        return handle, (1, handle)
+    def info(handle, pointer):
+        pointer._obj.attributes = 0x10
+        return True
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', closed.append)
+    monkeypatch.setattr(module, '_info', info)
+    monkeypatch.setattr(module, '_identity', lambda handle: (1, handle))
+    root = PureWindowsPath('C:/state/flows')
+    with module.pinned_scope(root):
+        with module.opened_path(root, root / 'file.json'):
+            pass
+        with module.pinned_scope(root):
+            with module.opened_path(root, root / 'file.json'):
+                pass
+        assert not closed
+    assert set(closed) == {1, 2, 3}
+    with module.pinned_scope(root):
+        with module.opened_path(root, root / 'file.json'):
+            pass
+    assert set(closed) == {1, 2, 3, 6, 7, 8}
+
+
+def test_unrelated_prefix_is_not_reused(windows_files, monkeypatch):
+    module = windows_files
+    opened, closed = [], []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append(handle)
+        return handle, (1, handle)
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', closed.append)
+    root = PureWindowsPath('D:/other')
+    with module.pinned_scope(PureWindowsPath('C:/state')):
+        for _ in range(2):
+            with module.opened_path(root, root / 'file.json'):
+                pass
+        assert set(closed) == {1, 2, 4, 5}
+    assert len(opened) == 6
+
+
+def test_same_drive_sibling_does_not_borrow_cached_ancestors(windows_files, monkeypatch):
+    module = windows_files
+    opened, closed = [], []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append((str(path), handle))
+        return handle, (1, handle)
+    def info(handle, pointer):
+        pointer._obj.attributes = 0x10
+        return True
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', closed.append)
+    monkeypatch.setattr(module, '_info', info)
+    monkeypatch.setattr(module, '_identity', lambda handle: (1, handle))
+    root = PureWindowsPath('C:/state/flows')
+    sibling = PureWindowsPath('C:/state/projects')
+    with module.pinned_scope(root):
+        with module.opened_path(root, root / 'file.json'):
+            pass
+        with module.opened_path(sibling, sibling / 'file.json'):
+            pass
+        assert len(opened) == 8
+        assert set(closed) == {5, 6, 7}
+    assert set(closed) == {1, 2, 3, 5, 6, 7}
+
+
+@pytest.mark.parametrize(('target', 'count'), [
+    ('c:/STATE/FLOWS/item.json', 5),
+    ('C:/state/flows-other/item.json', 8),
+])
+def test_scope_matches_windows_case_and_component_boundaries(windows_files, monkeypatch, target, count):
+    module = windows_files
+    opened = []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append(path)
+        return handle, (1, handle)
+    def info(handle, pointer):
+        pointer._obj.attributes = 0x10
+        return True
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', lambda handle: None)
+    monkeypatch.setattr(module, '_info', info)
+    monkeypatch.setattr(module, '_identity', lambda handle: (1, handle))
+    root = PureWindowsPath('C:/state')
+    with module.pinned_scope(root / 'flows'):
+        with module.opened_path(root, root / 'flows' / 'first.json'):
+            pass
+        with module.opened_path(root, PureWindowsPath(target)):
+            pass
+    assert len(opened) == count
+
+
+def test_scope_never_grants_root_access_to_sibling(windows_files, monkeypatch):
+    module = windows_files
+    monkeypatch.setattr(module, '_open', lambda *args, **kwargs: pytest.fail('越界路径不得打开'))
+    with module.pinned_scope(PureWindowsPath('C:/state')):
+        with pytest.raises(PermissionError):
+            with module.opened_path(PureWindowsPath('C:/state/flows'),
+                                    PureWindowsPath('C:/state/flows-other/file.json')):
+                pass
+
+
+def test_descendant_scope_shares_parent_handles_until_outer_exit(windows_files, monkeypatch):
+    module = windows_files
+    opened, closed = [], []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append((str(path), handle))
+        return handle, (1, handle)
+    def info(handle, pointer):
+        pointer._obj.attributes = 0x10
+        return True
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', closed.append)
+    monkeypatch.setattr(module, '_info', info)
+    monkeypatch.setattr(module, '_identity', lambda handle: (1, handle))
+    state = PureWindowsPath('C:/state')
+    flows = state / 'flows'
+    with module.pinned_scope(state):
+        with module.opened_path(flows, flows / 'first.json'):
+            pass
+        with module.pinned_scope(flows):
+            with module.opened_path(flows, flows / 'second.json'):
+                pass
+        assert set(closed) == {3}
+        assert len(opened) == 6  # 公共祖先复用；两个叶文件仍分别打开
+    assert set(closed) == {1, 2, 3, 5}
+
+
+def test_flow_get_keeps_scope_through_link_verification(windows_files, monkeypatch):
+    from agent_core.core import flows as flow_module
+    module = windows_files
+    monkeypatch.setitem(sys.modules, 'agent_core.core.windows_files', module)
+    monkeypatch.setattr(flow_module, 'os', types.SimpleNamespace(name='nt'))
+    service = flow_module.FlowService.__new__(flow_module.FlowService)
+    service.directory = PureWindowsPath('C:/state/flows')
+    service.records = {'flow': {'id': 'flow', 'project_id': 'project'}}
+    def check_path(identifier):
+        assert module._scopes.stack[-1][0] == service.directory.parent
+    def check_link(value):
+        assert module._scopes.stack[-1][0] == service.directory.parent
+    service._path = check_path
+    service._check_project_link = check_link
+    assert not inspect.iscoroutinefunction(flow_module.FlowService.get)
+    assert service.get('flow') == service.records['flow']
+    assert not module._scopes.stack
+
+
+@pytest.mark.parametrize('inner', ['C:/state/projects', 'C:/state'])
+def test_sibling_and_ancestor_nested_scopes_are_independent(windows_files, monkeypatch, inner):
+    module = windows_files
+    opened, closed = [], []
+    def open_path(path, **kwargs):
+        handle = len(opened) + 1
+        opened.append(handle)
+        return handle, (1, handle)
+    monkeypatch.setattr(module, '_open', open_path)
+    monkeypatch.setattr(module, '_close', closed.append)
+    outer = PureWindowsPath('C:/state/flows')
+    nested = PureWindowsPath(inner)
+    with module.pinned_scope(outer):
+        with module.opened_path(outer, outer / 'first.json'):
+            pass
+        with module.pinned_scope(nested):
+            with module.opened_path(nested, nested / 'second.json'):
+                pass
+        assert {5, 6}.issubset(closed)
+        assert not {1, 2, 3}.intersection(closed)
+    assert {1, 2, 3, 5, 6}.issubset(closed)

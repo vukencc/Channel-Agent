@@ -116,13 +116,13 @@ def test_compaction_writes_private_manifest_and_complete_immutable_chunks(contex
             durable_before = copy.deepcopy(session.record['messages'])
             await _service(manager).prepare(session, messages)
             folder = context_env.directory(session.id) / 'context'
-            manifest = json.loads((folder / 'manifest.json').read_text())
+            manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             assert manifest['revision'] >= 1
             assert manifest['chunks']
             for meta in manifest['chunks']:
                 chunk_id = meta.get('ID', meta.get('id'))
                 assert re.fullmatch(r'[a-f0-9]{32}', chunk_id)
-                chunk = json.loads((folder / 'chunks' / f'{chunk_id}.json').read_text())
+                chunk = json.loads((folder / 'chunks' / f'{chunk_id}.json').read_text(encoding='utf-8'))
                 assert chunk['ID'] == chunk_id
                 assert set(chunk['Time']) >= {'start', 'end', 'created_at'}
                 assert chunk['Summary']
@@ -162,7 +162,7 @@ def test_recovery_is_idempotent_and_append_advances_summary(context_env, monkeyp
                 {'role': 'user', 'content': 'next request'},
             ]
             await service.prepare(session, appended)
-            assert json.loads(path.read_text())['revision'] > json.loads(before)['revision']
+            assert json.loads(path.read_text(encoding='utf-8'))['revision'] > json.loads(before)['revision']
             assert any(kind == 'session' and previous for kind, previous, _ in second.summaries)
         finally:
             await restored.shutdown()
@@ -217,7 +217,7 @@ def test_read_page_under_metadata_sized_output_limit_must_advance_or_reject(cont
         try:
             service = _service(manager)
             await service.prepare(session, _messages())
-            manifest = json.loads((context_env.directory(session.id) / 'context' / 'manifest.json').read_text())
+            manifest = json.loads((context_env.directory(session.id) / 'context' / 'manifest.json').read_text(encoding='utf-8'))
             chunk_id = manifest['chunks'][0]['ID']
             one = await service.read(session, chunk_id, offset=0, limit=1)
             assert one['total_chars'] > 100
@@ -240,7 +240,7 @@ def test_read_page_under_metadata_sized_output_limit_must_advance_or_reject(cont
     asyncio.run(run())
 
 
-def test_private_context_symlink_is_rejected(context_env, tmp_path):
+def test_private_context_symlink_is_rejected(context_env, tmp_path, symlink_capable):
     async def run():
         manager, session = await _manager(context_env)
         try:
@@ -332,9 +332,9 @@ def test_session_summary_uses_chunk_summaries_while_archive_keeps_all_raw_histor
             assert 'question-0' in json.dumps(chunk_inputs, ensure_ascii=False)
             assert 'answer-0' in json.dumps(chunk_inputs, ensure_ascii=False)
             folder = context_env.directory(session.id) / 'context'
-            manifest = json.loads((folder / 'manifest.json').read_text())
+            manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             archived = [message for item in manifest['chunks']
-                        for message in json.loads(json.loads((folder / 'chunks' / (item['ID'] + '.json')).read_text())['RawHistory'])]
+                        for message in json.loads(json.loads((folder / 'chunks' / (item['ID'] + '.json')).read_text(encoding='utf-8'))['RawHistory'])]
             assert any(message.get('content', '').startswith('question-0') for message in archived)
             assert any(message.get('content', '').startswith('answer-0') for message in archived)
         finally:
@@ -353,14 +353,14 @@ def test_failed_manifest_publish_keeps_previous_revision(context_env, monkeypatc
             await service.prepare(session, messages)
             path = context_env.directory(session.id) / 'context' / 'manifest.json'
             before = path.read_bytes()
-            original_write = context_env.atomic_write
+            original_write = service._write_history
 
-            def fail_manifest(target, text):
-                if str(target).endswith('/context/manifest.json'):
+            def fail_manifest(target, directory_fd, text, *, immutable=False):
+                if target == path:
                     raise OSError('injected manifest failure')
-                return original_write(target, text)
+                return original_write(target, directory_fd, text, immutable=immutable)
 
-            monkeypatch.setattr(context_env, 'atomic_write', fail_manifest)
+            monkeypatch.setattr(service, '_write_history', fail_manifest)
             appended = messages + [
                 {'role': 'assistant', 'content': 'new answer ' + 'x' * 300},
                 {'role': 'user', 'content': 'new request'},
@@ -379,7 +379,7 @@ def test_other_session_cannot_read_private_chunk(context_env):
         try:
             service = _service(manager)
             await service.prepare(owner, _messages())
-            manifest = json.loads((context_env.directory(owner.id) / 'context' / 'manifest.json').read_text())
+            manifest = json.loads((context_env.directory(owner.id) / 'context' / 'manifest.json').read_text(encoding='utf-8'))
             item = manifest['chunks'][0]
             chunk_id = item.get('ID', item.get('id'))
             other = manager.create()
@@ -431,7 +431,7 @@ def test_failed_summary_with_full_previous_summary_still_records_new_fact(contex
             first = _messages(6)
             await service.prepare(session, first)
             path = context_env.directory(session.id) / 'context' / 'manifest.json'
-            before = json.loads(path.read_text())
+            before = json.loads(path.read_text(encoding='utf-8'))
             assert len(before['session_summary']) == 2000
             supervisor.fail = True
             appended = first + [{'role': 'assistant', 'content': 'previous current answer'}]
@@ -442,7 +442,7 @@ def test_failed_summary_with_full_previous_summary_still_records_new_fact(contex
                 ])
             appended.append({'role': 'user', 'content': 'next current request'})
             await service.prepare(session, appended)
-            after = json.loads(path.read_text())
+            after = json.loads(path.read_text(encoding='utf-8'))
             assert after['revision'] > before['revision']
             assert after['summary_kind'] == 'extractive_fallback'
             assert unique_fact in after['session_summary']

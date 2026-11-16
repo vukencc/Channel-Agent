@@ -6,6 +6,8 @@
 
 ## 当前工作与 Git
 
+- 2026-11-16 Windows 设计助手和客服 Flow：WSL 与 Native 基线 `9559867`，Core 97 文件，Native 干净；草稿 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 未合并，0.6.1 未发布。真实案例 3399876 五节点严格完成并正常排空，主业务闭环经独立审查通过；原 QA 保留 19/20，CF001 critical 为 false，规格对替代方案未知时的优先级未唯一规定，不能追认为全绿。两项非阻断措辞问题与原 5 秒队列三次中一次超时保留待办。连接、长循环和关键交接的已发现阻断已解决，合并与正式包发布仍待完成；d342 候选 16/16、exit 0 不含最新源码。用户禁止桌面与浏览器，可见 UI 尚未验；原 `.env` 归档开关待安全新 EXE 到位后配置。详情及验证边界见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
+
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
 - 最终 [PR CI 43355569316](https://github.com/vukencc/Channel-Agent/actions/runs/43355569316) Linux 2475 passed、60 skipped、5 deselected，Windows 955 passed、48 skipped。正式标签 Windows 首次运行的 PowerShell 冷启动辅助进程在 15 秒超时，尚未触发权限断言；原用例本机通过，未改代码和期限，一次重跑通过，随后两平台包构建成功。正式 Windows ZIP 独立审计无发现；Linux 仅核对工作流、API 摘要和实际下载的校验侧车，未独立下载或运行 tar 包。详见[验收记录](windows-portable-validation-2026-11-13.md)。
 - 本机候选真实只读 CLI 10/10、源码 Qt 离屏受控组件 5 passed；用户按 Esc 停止可见 GUI 检查，不能记为通过。候选包不等于正式标签构建，失败与中断证据见[便携验收记录](windows-portable-validation-2026-11-13.md)。
@@ -95,7 +97,7 @@
 - 经典 Agent 工具由框架管理。Flow 节点可收窄有效工具并定义自定义工具，`read_file`/`list_files` 基础锁定，部署及祖先能力上限同时约束 schema 和执行。自定义工具经 `run_command` 执行；部署必须允许该工具。提示词不构成文件权限隔离。
 - 设计助手没有执行工具，可生成包含自定义工具定义的新的未绑定模板，不覆盖当前图或运行节点；设计和导入不执行代码。便携 JSON 不携带项目目录、运行身份、连接凭据或知识库；未知模型仅经显式继承选择清空引用。旧测试配方 `schema_version` 格式不能当作 `format=agent-flow/version=1` 的便携文件直接导入。
 - Flow 的 local 命令通过 Bubblewrap 限制持久写入到项目，保留网络与 localhost，隔离不可用时拒绝；经典会话 local 语义不同。所有模式继续遵守选定权限、确认、审计和工具结果配对。
-- `prepare_context` 是模型调用前准备输入窗口，不代表已 Compact。结构化归档须满足独立的软/硬预算条件；无 `history_read` 时最新未交付完整工具批次受保护，不能容纳时在付费摘要和归档发布前进入检查点，不扩大预算或拆分工具配对。详见 [上下文管理](context-management.md)。
+- prepare_context 是模型调用前准备输入窗口，不代表已 Compact。结构化归档须满足独立的软/硬预算条件；无论是否有 history_read，本轮所有未成功交付的完整工具批次均受保护，失败或部分交付不确认；不能容纳时在付费摘要和归档发布前进入检查点，不扩大预算或拆分工具配对。历史工具提供真实小页与 offset，完整 JSON 上限为 TOOL_MAX_OUTPUT 和 1500 字符中的较小值。详见 [上下文管理](context-management.md)。
 - Debug 保持原上下两行标签与短竖箭头；所有子 Agent 行完整显示，服务端按根会话树隔离。右侧局部详情独立滚动，不强制滚到页面底部；全部 Agent 停止后时间轴冻结。不要擅自重设计主图。
 
 ## 验证事实与复用

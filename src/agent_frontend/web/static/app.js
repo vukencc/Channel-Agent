@@ -1111,6 +1111,15 @@
     renderModels();
     window.FlowUI?.refreshModels?.();
   }
+  let modelTestController = null;
+  function cancelModelTest() {
+    const pending = modelTestController;
+    modelTestController = null;
+    if (pending) {
+      jsonApi(`/api/models/${encodeURIComponent(pending.modelId)}/test-connection/cancel`, { method: "POST", keepalive: true, body: { request_id: pending.requestId } }).catch(() => {});
+      pending.controller.abort();
+    }
+  }
   async function openModels() {
     resetModelForm(); $("models-dialog").showModal();
     $("model-list").replaceChildren(element("p", "field-hint", "正在读取模型…"));
@@ -1120,13 +1129,37 @@
     const fragment = document.createDocumentFragment();
     state.modelLibrary.forEach((model) => {
       const row = element("article", "model-entry"), info = element("div", "model-entry-info"), actions = element("div", "model-entry-actions");
-      info.append(element("strong", "", model.name || model.id), element("span", "", model.model), element("small", "", model.has_api_key ? "已配置密钥" : "未配置密钥"));
-      const select = element("button", "text-button", "选择"); select.type = "button";
-      select.addEventListener("click", () => {
-        // Saving the surrounding session form applies the selection.
-        fillSelect("settings-model", state.meta.models, model.id, "model");
-        $("models-dialog").close(); toast("已选择模型，保存会话设置后生效。");
-      }); actions.append(select);
+      const route = model.proxy_mode === "windows_system" ? "Windows 系统代理" : "环境代理";
+      info.append(element("strong", "", model.name || model.id), element("span", "", model.model), element("small", "", `${route} · ${model.has_api_key ? "已配置密钥" : "未配置密钥"}`));
+      const testStatus = element("small", "", "测试会发送短请求，可能产生费用。"); testStatus.setAttribute("role", "status"); info.append(testStatus);
+      const test = element("button", "text-button", "测试连接"); test.type = "button";
+      test.addEventListener("click", async () => {
+        if (modelTestController) return;
+        const controller = new AbortController(), startedAt = performance.now();
+        const pending = { controller, modelId: model.id, requestId: crypto.randomUUID().replaceAll("-", "") }; modelTestController = pending;
+        document.querySelectorAll("[data-model-test]").forEach((button) => { button.disabled = true; });
+        testStatus.textContent = "正在测试连接…";
+        try {
+          const result = await jsonApi(`/api/models/${encodeURIComponent(model.id)}/test-connection`, { method: "POST", signal: controller.signal, body: { request_id: pending.requestId } });
+          if (modelTestController !== pending) return;
+          const resultRoute = (result.proxy_mode || model.proxy_mode) === "windows_system" ? "Windows 系统代理" : "环境代理";
+          const elapsed = typeof result.elapsed_s === "number" ? `${result.elapsed_s.toFixed(1)} 秒` : "耗时未知";
+          testStatus.textContent = `${result.ok ? "连接成功" : "连接失败"} · ${resultRoute} · ${elapsed} ${result.message || ""}`;
+        } catch (error) {
+          if (error.name !== "AbortError" && modelTestController === pending) testStatus.textContent = `连接测试失败 · ${route} · ${((performance.now() - startedAt) / 1000).toFixed(1)} 秒：${error.message}`;
+        } finally {
+          if (modelTestController === pending) { modelTestController = null; document.querySelectorAll("[data-model-test]").forEach((button) => { button.disabled = false; }); }
+        }
+      });
+      test.dataset.modelTest = "true"; test.disabled = Boolean(modelTestController); actions.append(test);
+      if (state.settingsId && $("settings-dialog").open) {
+        const select = element("button", "text-button", "选择"); select.type = "button";
+        select.addEventListener("click", () => {
+          // Saving the surrounding session form applies the selection.
+          fillSelect("settings-model", state.meta.models, model.id, "model");
+          $("models-dialog").close(); toast("已选择模型，保存会话设置后生效。");
+        }); actions.append(select);
+      }
       if (model.editable) {
         const edit = element("button", "text-button", "编辑"); edit.type = "button";
         edit.addEventListener("click", () => { resetModelForm(); state.editingModel = model.id; $("model-name").value = model.name || ""; $("model-id").value = model.model || ""; $("model-base-url").value = model.base_url || ""; $("model-context-tokens").value = model.context_tokens ?? ""; $("model-response-reserve").value = model.response_reserve_tokens ?? ""; $("model-proxy-mode").value = model.proxy_mode || "environment"; setText("model-form-title", "编辑模型"); setText("model-key-hint", "留空保留现有密钥；修改服务地址须重新输入对应密钥。"); $("model-name").focus(); });
@@ -1382,6 +1415,7 @@
     { label: "新建项目", keywords: "new create session flow", icon: "＋", run: openNew },
     { label: "查看全部会话", keywords: "sessions list", icon: "◇", run: () => switchSidebar("sessions") },
     { label: "工作区文件", keywords: "files explorer", icon: "▤", run: () => switchSidebar("files") },
+    { label: "模型管理", keywords: "model models 连接 代理", icon: "✧", run: openModels },
     { label: "会话设置", keywords: "settings policy model workspace permissions", icon: "⚙", requireSession: true, run: openSettings },
     { label: "查看与编辑会话记忆", keywords: "memory", icon: "◈", requireSession: true, run: openMemory },
     { label: "查看任务计划与步骤证据", keywords: "plan steps 计划 步骤", icon: "☷", requireSession: true, run: openPlan },
@@ -1457,7 +1491,7 @@
   $("new-mode").addEventListener("change", updateNewMode);
   $("new-browse").addEventListener("click", () => window.FlowUI.pickDirectory({ input: $("new-project-path"), valid: () => $("new-dialog").open }));
   window.WorkingUI.init({ api: jsonApi, enter: () => { window.FlowUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); } });
-  window.FlowUI.init({ api: jsonApi, platform: () => state.meta.platform || "linux", models: () => normalizeOptions(state.meta.models, "model"), modelCatalog: () => state.defaultModelAvailable === null ? null : { models: state.modelLibrary, default_model_available: state.defaultModelAvailable }, selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { window.WorkingUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
+  window.FlowUI.init({ api: jsonApi, openModels, platform: () => state.meta.platform || "linux", models: () => normalizeOptions(state.meta.models, "model"), modelCatalog: () => state.defaultModelAvailable === null ? null : { models: state.modelLibrary, default_model_available: state.defaultModelAvailable }, selectSession: async (id) => { if (!state.sessions.has(id)) await refreshSessions(); if (state.sessions.has(id)) selectSession(id); else toast("节点会话暂不可用。", "error"); }, enter: () => { window.WorkingUI.hide(); saveDraft(); state.activeId = null; state.selectionGeneration++; $("welcome").hidden = true; $("conversation").hidden = true; $("sidebar").classList.remove("mobile-open"); renderSessions(); renderTabs(); }, toast });
   $("refresh-sessions").addEventListener("click", refreshSessions); $("session-search").addEventListener("input", renderSessions);
   $("composer-form").addEventListener("submit", sendMessage); $("stop-agent").addEventListener("click", () => stopSession());
   $("message-input").addEventListener("input", () => { saveDraft(); resizeInput(); renderComposer(); state.slashIndex = 0; renderSlash(); });
@@ -1483,8 +1517,8 @@
   $("workspace-parent").addEventListener("click", () => browseWorkspace(state.workspaceBrowseParent));
   $("workspace-select").addEventListener("click", () => { $("settings-project-path").value = state.workspaceBrowsePath; $("workspace-picker").hidden = true; state.workspaceBrowseGeneration++; });
   $("reset-workspace").addEventListener("click", () => { $("settings-project-path").value = ""; $("workspace-picker").hidden = true; state.workspaceBrowseGeneration++; });
-  $("manage-models").addEventListener("click", openModels); $("model-form").addEventListener("submit", saveModel); $("model-reset").addEventListener("click", resetModelForm);
-  $("models-dialog").addEventListener("close", () => { $("model-api-key").value = ""; });
+  ["manage-models", "sidebar-models"].forEach((id) => $(id).addEventListener("click", openModels)); $("model-form").addEventListener("submit", saveModel); $("model-reset").addEventListener("click", resetModelForm);
+  $("models-dialog").addEventListener("close", () => { cancelModelTest(); $("model-api-key").value = ""; });
   $("open-memory").addEventListener("click", openMemory); $("memory-form").addEventListener("submit", saveMemory);
   $("refresh-plan").addEventListener("click", () => refreshPlan());
   $("plan-progress").addEventListener("click", openPlan);
