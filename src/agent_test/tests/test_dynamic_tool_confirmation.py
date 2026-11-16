@@ -30,7 +30,7 @@ def test_dynamic_confirmation_shows_code_and_arguments_without_changing_audit(tm
     assert '已取消' in result and not executed
     assert 'send_reply' in prompts[0] and '你好' in prompts[0]
     assert definition['code'] in prompts[0] and 'python3 -c' in prompts[0]
-    audit_text = (tmp_path / 'audit.jsonl').read_text()
+    audit_text = (tmp_path / 'audit.jsonl').read_text(encoding='utf-8')
     assert 'python3 -c' in audit_text
     assert definition['code'] not in audit_text and '你好' not in audit_text
 
@@ -163,7 +163,7 @@ def test_smart_sandbox_decision_and_audit_use_original_command(tmp_path, monkeyp
     detail, actual = risks[0]
     assert detail == actual and actual.startswith('python3 -c ')
     assert definition['code'] in prompts[0] and '你好' in prompts[0] and actual in prompts[0]
-    audit_entries = [json.loads(line) for line in (tmp_path / 'audit.jsonl').read_text().splitlines()]
+    audit_entries = [json.loads(line) for line in (tmp_path / 'audit.jsonl').read_text(encoding='utf-8').splitlines()]
     assert next(row for row in audit_entries if row['event'] == 'confirm')['detail'] == actual
     if allowed:
         assert executed == [actual]
@@ -199,7 +199,7 @@ def test_real_wsl_worker_review_transfers_to_host_confirmation(tmp_path, sandbox
     assert '已取消' in result
     assert definition['code'] in prompts[0] and '你好' in prompts[0] and actual in prompts[0]
     assert '[风险操作] run_command：' in prompts[0]
-    audit_text = (tmp_path / 'audit.jsonl').read_text()
+    audit_text = (tmp_path / 'audit.jsonl').read_text(encoding='utf-8')
     assert '你好' not in audit_text and 'worker_tool' not in audit_text
     from dataclasses import replace
     prompts.clear()
