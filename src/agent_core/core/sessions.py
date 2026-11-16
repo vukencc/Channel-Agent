@@ -15,7 +15,7 @@ from typing import Callable
 
 from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, limits_scope, effective_limits, validate_limits, preset
-from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, permission_mode_guide, rag_runtime_protocol
+from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, runtime_file_workflow_guide, permission_mode_guide, rag_runtime_protocol
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
 from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
 from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
@@ -1306,34 +1306,36 @@ class SessionManager:
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
                 schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
-                if any(schema['function']['name'] == 'rag_search' for schema in schemas):
+                tool_names = {schema['function']['name'] for schema in schemas}
+                file_guide = runtime_file_workflow_guide(tool_names)
+                if 'rag_search' in tool_names:
                     protocol = rag_runtime_protocol(history[0].get('content', ''))
                     if protocol:
                         budget_text += '\n' + protocol
                 budget_text += '\n' + delegation_guide([schema['function']['name'] for schema in schemas],
                                                        session.record.get('delegated_from'), concise=round_index > 0)
-                extra_chars = len(memory_text) - len(memory) + len(FILE_WORKFLOW_GUIDE) + 1 + len(budget_text)
+                extra_chars = len(memory_text) - len(memory) + len(file_guide) + 1 + len(budget_text)
                 schedule_summary = partial(self._schedule_summary, session) if config.CONTEXT_SUMMARY_BACKGROUND else None
                 if self.history_context is not None:
                     session.phase = '准备模型上下文'
                     self._observe_phase(session, 'context_prepare')
                     self.notify()
                     history, context_metrics = await self.history_context.prepare(session, history,
-                        schemas=schemas, runtime='\n' + FILE_WORKFLOW_GUIDE + budget_text, memory=memory)
+                        schemas=schemas, runtime='\n' + file_guide + budget_text, memory=memory)
                 else:
                     async def prepare_legacy(reference):
                         combined = private_memory + reference
                         text = ('\n\n' + memory_label + '\n' + combined) if combined else ''
                         candidate = [dict(message) for message in history]
                         if config.MODEL_STABLE_PREFIX:
-                            candidate[0]['content'] += '\n' + FILE_WORKFLOW_GUIDE
+                            candidate[0]['content'] += '\n' + file_guide
                             candidate.append({'role': 'system', 'content': text + budget_text})
                         else:
-                            candidate[0]['content'] += text + '\n' + FILE_WORKFLOW_GUIDE + budget_text
+                            candidate[0]['content'] += text + '\n' + file_guide + budget_text
                         return await prepare_model_history(candidate, judge=partial(self._complete, session_id=session.id),
                             cache=session.context_summaries, builder=build_model_history, schemas=schemas,
                             schedule_summary=schedule_summary,
-                            memory_chars=len(combined), extra_chars=len(text) - len(combined) + len(FILE_WORKFLOW_GUIDE) + 1 + len(budget_text),
+                            memory_chars=len(combined), extra_chars=len(text) - len(combined) + len(file_guide) + 1 + len(budget_text),
                             eligible_observations=delivered_observations)
                     fitted_workspace = False
                     try:
@@ -1377,14 +1379,18 @@ class SessionManager:
                         session.phase = f'等待模型按小步骤恢复（{recovered}/{session_limit("MODEL_RECOVERY_LIMIT")}）'
                         self._observe_phase(session, 'recovery')
                         await self.save(session)
-                        recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
-                            '请基于当前工具结果继续：只输出一个小步骤，优先分页读取或 edit_file 局部替换；'
-                            '每次新增内容尽量不超过 2000 字符，不要输出整份文件，不得重复已成功操作。')
+                        if file_guide == FILE_WORKFLOW_GUIDE:
+                            recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
+                                '请基于当前工具结果继续：只输出一个小步骤，优先分页读取或 edit_file 局部替换；'
+                                '每次新增内容尽量不超过 2000 字符，不要输出整份文件，不得重复已成功操作。')
+                        else:
+                            recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
+                                '请基于当前工具结果继续，只输出一个小步骤，不得重复已成功操作。')
                         if self.history_context is not None:
                             # 从持久原文重新组装，不能将带标题的模型窗口再次作为原始历史归档。
                             history, recovery_context = await self.history_context.prepare(session,
                                 [dict(message) for message in session.record['messages']], schemas=schemas,
-                                runtime='\n' + FILE_WORKFLOW_GUIDE + budget_text + recovery_notice, memory=memory)
+                                runtime='\n' + file_guide + budget_text + recovery_notice, memory=memory)
                         else:
                             if config.MODEL_STABLE_PREFIX:
                                 history.append({'role': 'system', 'content': recovery_notice})

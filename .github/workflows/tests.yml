@@ -84,6 +84,7 @@ jobs:
             'src/agent_test/tests/test_chunking.py',
             'src/agent_test/tests/test_context.py',
             'src/agent_test/tests/test_context_boundaries.py',
+            'src/agent_test/tests/test_runtime_file_guidance_scope.py',
             'src/agent_test/tests/test_context_supervisor.py',
             'src/agent_test/tests/test_compact_budget_headroom.py',
             'src/agent_test/tests/test_runtime_models.py',
