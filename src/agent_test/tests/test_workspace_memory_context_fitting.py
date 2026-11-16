@@ -21,7 +21,8 @@ def test_previously_delivered_memory_fits_latest_tool_batch(tmp_path, monkeypatc
     monkeypatch.setattr(config, "WORKSPACE_MEMORY_ENABLED", True)
     monkeypatch.setattr(config, "CONTEXT_SUMMARY", False)
     monkeypatch.setattr(config, 'MODEL_RECOVERY_LIMIT', 0)
-    monkeypatch.setattr(config, "MODEL_INPUT_CHARS", 10000)
+    # 无工具时运行指导更短；仍须在真实 6000 字符读取上限内制造预算压力。
+    monkeypatch.setattr(config, "MODEL_INPUT_CHARS", 7000)
     monkeypatch.setattr(config, "MODEL_INPUT_TOKENS", 8000)
     monkeypatch.setattr(config, 'MODEL_STABLE_PREFIX', False)
     monkeypatch.setattr(config, 'WORKSPACE_MEMORY_INJECT_CHARS', 6000)
@@ -75,7 +76,7 @@ def test_previously_delivered_memory_fits_latest_tool_batch(tmp_path, monkeypatc
             call = {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'batch', 'function': {'name': 'read_file', 'arguments': '{"path":"input.txt","limit":6000}'}}]}
             fits = []
             for count in range(100, 1501, 25):
-                batch = [*current_history, call, {'role': 'tool', 'tool_call_id': 'batch', 'content': '工具结果' * count + '余' * 100}]
+                batch = [*current_history, call, {'role': 'tool', 'tool_call_id': 'batch', 'content': '工具结果' * count}]
                 floor = [dict(message) for message in batch]
                 floor[0]['content'] = floor[0]['content'].replace(frame.full, frame.floor)
                 try:
@@ -89,6 +90,17 @@ def test_previously_delivered_memory_fits_latest_tool_batch(tmp_path, monkeypatc
             assert fits, '未能构造完整记忆超预算且保底记忆可容纳的工具批次'
             result_count = fits[len(fits) // 2]
             (project / 'input.txt').write_text('工具结果' * result_count, encoding='utf-8')
+            # 使用实际返回正文复核边界；真实读取的分页头也必须计入预算。
+            result = '工具结果' * result_count
+            if case == 'delivered':
+                with tool_context(context):
+                    result = read_file('input.txt', limit=6000)
+            actual_batch = [*current_history, call, {'role': 'tool', 'tool_call_id': 'batch', 'content': result}]
+            with pytest.raises(ContextBudgetError):
+                build_model_history(actual_batch, schemas=schemas_now)
+            actual_floor = [dict(message) for message in actual_batch]
+            actual_floor[0]['content'] = actual_floor[0]['content'].replace(frame.full, frame.floor)
+            build_model_history(actual_floor, schemas=schemas_now)
             return call
         return {"role": "assistant", "content": "done"}
     async def run():
@@ -112,7 +124,7 @@ def test_previously_delivered_memory_fits_latest_tool_batch(tmp_path, monkeypatc
         session = manager.create(prompt='测试系统提示', workspace_path=str(project))
         manager.submit(session, "读取文件" + ('请求' * 4000 if case == 'unread' else ''))
         await session.task
-        assert session.record["status"] == ('idle' if case == 'delivered' else 'error' if case == 'failed_partial' else 'checkpoint')
+        assert session.record["status"] == ('idle' if case == 'delivered' else 'error' if case == 'failed_partial' else 'checkpoint'), session.record.get('error')
         assert all('私有会话记忆独占' not in str(message) for message in session.record['messages'])
         await manager.shutdown()
         session_store.close()
