@@ -32,7 +32,10 @@ def _windows_settings() -> tuple[bool, str, str]:
                     return winreg.QueryValueEx(key, name)[0]
                 except FileNotFoundError:
                     return default
-            return bool(read('ProxyEnable', 0)), read('ProxyServer', ''), read('ProxyOverride', '')
+            enabled = bool(read('ProxyEnable', 0))
+            if not enabled and (read('AutoConfigURL', '') or read('AutoDetect', 0)):
+                raise ModelProxyError(_PROXY_ERROR)
+            return enabled, read('ProxyServer', ''), read('ProxyOverride', '')
     except (OSError, ValueError, TypeError):
         raise ModelProxyError(_PROXY_ERROR) from None
 
@@ -64,10 +67,12 @@ def _no_proxy_matches(url: httpx.URL) -> bool:
 
 
 def select_system_proxy(base_url: str) -> str | None:
-    """固定代理存在且有效时返回选中地址；排除规则返回 None。"""
+    """跟随系统手动代理开关；关闭或匹配排除规则时直连。"""
     try:
         enabled, server, exclusions = _windows_settings()
-        if not enabled or not isinstance(server, str) or not server.strip() or not isinstance(exclusions, str):
+        if not enabled:
+            return None
+        if not isinstance(server, str) or not server.strip() or not isinstance(exclusions, str):
             raise ValueError
         choices = {}
         for part in server.split(';'):

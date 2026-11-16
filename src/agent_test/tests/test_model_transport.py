@@ -5,6 +5,8 @@ import shutil
 import ssl
 import subprocess
 import threading
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 from agent_core.core import llm
 from agent_core.core import model_transport
@@ -27,10 +29,60 @@ def test_system_exclusions_and_no_proxy(monkeypatch):
 
 
 def test_unavailable_proxy_is_safe(monkeypatch):
-    monkeypatch.setattr(model_transport, "_windows_settings", lambda: (False, "secret", ""))
+    def unavailable():
+        raise model_transport.ModelProxyError(model_transport._PROXY_ERROR)
+    monkeypatch.setattr(model_transport, "_windows_settings", unavailable)
     with pytest.raises(model_transport.ModelProxyError) as exc:
         model_transport.select_system_proxy("https://api.example")
     assert "secret" not in str(exc.value)
+
+
+def test_disabled_system_proxy_uses_direct_and_ignores_stale_proxy(monkeypatch):
+    monkeypatch.setenv('ALL_PROXY', 'http://127.0.0.1:1')
+    monkeypatch.setenv('HTTP_PROXY', 'http://127.0.0.1:1')
+    monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:1')
+    monkeypatch.setattr(model_transport, '_windows_settings', lambda: (False, 'stale:invalid', ''))
+
+    async def exercise():
+        received = []
+
+        async def serve(reader, writer):
+            received.append(await reader.readuntil(b'\r\n\r\n'))
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok')
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(serve, '127.0.0.1', 0)
+        port = server.sockets[0].getsockname()[1]
+        url = f'http://127.0.0.1:{port}/path'
+        try:
+            assert model_transport.select_system_proxy(url) is None
+            async with model_transport.system_http_client(url) as client:
+                assert (await client.get(url)).text == 'ok'
+            assert received[0].startswith(b'GET /path ')
+            assert client.is_closed
+        finally:
+            server.close()
+            await server.wait_closed()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('automatic', [{}, {'AutoConfigURL': 'https://private.example/proxy.pac'}, {'AutoDetect': 1}])
+def test_disabled_manual_proxy_rejects_unsupported_automatic_settings(monkeypatch, automatic):
+    settings = {'ProxyEnable': 0, 'ProxyServer': 'old:invalid', **automatic}
+    def query(key, name):
+        if name not in settings:
+            raise FileNotFoundError(name)
+        return settings[name], 1
+    registry = SimpleNamespace(HKEY_CURRENT_USER=object(), OpenKey=lambda *args: nullcontext(None), QueryValueEx=query)
+    monkeypatch.setattr(model_transport, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setitem(__import__('sys').modules, 'winreg', registry)
+    if automatic:
+        with pytest.raises(model_transport.ModelProxyError) as exc:
+            model_transport._windows_settings()
+        assert 'private.example' not in str(exc.value)
+    else:
+        assert model_transport._windows_settings() == (False, 'old:invalid', '')
 
 
 def test_runtime_system_does_not_validate_environment(monkeypatch):
