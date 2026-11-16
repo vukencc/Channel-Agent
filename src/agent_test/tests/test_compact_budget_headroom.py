@@ -106,7 +106,7 @@ async def run_engineering_workload(store, service_class=HistoryContext, *, steps
         manifest = service.cache[session.id]
         folder = store.directory(session.id) / 'context'
         for metadata in manifest['chunks']:
-            archived = json.loads((folder / 'chunks' / (metadata['ID'] + '.json')).read_text())
+            archived = json.loads((folder / 'chunks' / (metadata['ID'] + '.json')).read_text(encoding='utf-8'))
             assert json.loads(archived['RawHistory']) == messages[metadata['Time']['start']:metadata['Time']['end']]
         return {'steps': steps, 'seconds': round(time.perf_counter() - started, 4),
                 'summary_calls': supervisor.summary_calls, 'compactions': compact_count,

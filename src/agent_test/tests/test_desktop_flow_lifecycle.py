@@ -208,7 +208,7 @@ def test_save_and_exit_persists_hidden_dirty_graph_and_prompts(lifecycle, monkey
     monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Save)
     window.close()
     wait(app, lambda: not bridge.is_running and not bridge.worker_alive, 15)
-    stored = json.loads((bridge.state_dir / 'flows' / f'{flow_id}.json').read_text())
+    stored = json.loads((bridge.state_dir / 'flows' / f'{flow_id}.json').read_text(encoding='utf-8'))
     assert stored['handoff'] == '保留的初始交接'
     assert stored['nodes'][0]['prompt'] == '保存的初始提示'
     assert stored['edges'] == [{'source': first, 'target': second}]
@@ -262,7 +262,7 @@ def test_model_referenced_by_flow_cannot_be_deleted(lifecycle, binding):
     wait(app, lambda: bool(errors))
     assert 'Flow' in errors[-1]
     assert any(row['id'] == profile for row in window.state['models'])
-    stored = json.loads((bridge.state_dir / 'flows' / f'{flow["id"]}.json').read_text())
+    stored = json.loads((bridge.state_dir / 'flows' / f'{flow["id"]}.json').read_text(encoding='utf-8'))
     assert (stored if binding == 'flow' else stored['nodes'][0])['model_profile'] == profile
 
 
@@ -305,7 +305,7 @@ def test_delete_dirty_flow_then_close_saves_only_remaining_drafts(lifecycle, mon
     assert {result['id'] for result in saved} == ({retained_id} if retained_id else set())
     assert not deleted_path.exists()
     if retained_id:
-        stored = json.loads((bridge.state_dir / 'flows' / f'{retained_id}.json').read_text())
+        stored = json.loads((bridge.state_dir / 'flows' / f'{retained_id}.json').read_text(encoding='utf-8'))
         assert stored['handoff'] == '保留的初始交接'
         assert [node['prompt'] for node in stored['nodes']] == ['保存的初始提示', '后续验证提示']
         assert len(stored['edges']) == 1

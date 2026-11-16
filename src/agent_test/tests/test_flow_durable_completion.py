@@ -54,14 +54,14 @@ def test_completion_write_failure_preserves_queue_and_retry(tmp_path, monkeypatc
             return real_write(path, data)
         def fail_sync(path):
             nonlocal failed
-            if failure == "directory_sync" and not failed and json.loads(service._path(identifier).read_text())["run"]["status"] == "completed":
+            if failure == "directory_sync" and not failed and json.loads(service._path(identifier).read_text(encoding='utf-8'))["run"]["status"] == "completed":
                 failed = True
                 raise OSError(errno.EIO, "sync failed")
             return real_sync(path)
         def fail_notify():
             nonlocal failed
             notified.append((service.records[identifier].get("run") or {}).get("status"))
-            if failure == "notification" and not failed and json.loads(service._path(identifier).read_text())["run"]["status"] == "completed":
+            if failure == "notification" and not failed and json.loads(service._path(identifier).read_text(encoding='utf-8'))["run"]["status"] == "completed":
                 failed = True
                 raise RuntimeError("notification failed")
             return real_notify()
@@ -76,14 +76,14 @@ def test_completion_write_failure_preserves_queue_and_retry(tmp_path, monkeypatc
             await asyncio.wait_for(asyncio.shield(service.tasks[identifier]), 5)
             if failure == "post_replace":
                 assert service.records[identifier]["run"]["status"] == "persistence_failed"
-                disk = json.loads(service._path(identifier).read_text())
+                disk = json.loads(service._path(identifier).read_text(encoding='utf-8'))
                 assert disk["run"]["status"] == "completed"
                 assert len(disk["pending_runs"]) == 1
                 with pytest.raises(PermissionError):
                     service.get(identifier)
                 with pytest.raises(PermissionError):
                     service.retry_completion(identifier)
-                assert json.loads(service._path(identifier).read_text()) == disk
+                assert json.loads(service._path(identifier).read_text(encoding='utf-8')) == disk
                 assert len(calls) == 1
                 return
             current = service.get(identifier)
@@ -96,7 +96,7 @@ def test_completion_write_failure_preserves_queue_and_retry(tmp_path, monkeypatc
             assert len(current["pending_runs"]) == 1
             assert len(calls) == 1
             assert not manager.project_reservations
-            disk = json.loads(service._path(identifier).read_text())
+            disk = json.loads(service._path(identifier).read_text(encoding='utf-8'))
             assert disk["run"]["status"] == ("running" if failure.startswith("before_publish") else "completed")
             with pytest.raises(ValueError):
                 service.start(identifier)
