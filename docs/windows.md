@@ -62,8 +62,8 @@ Start-Process -FilePath .\ChannelAgent.exe -ArgumentList '--portable-info', 'D:\
 在 Windows 本地盘源码根目录中执行，不能使用 WSL Python 构建 Windows exe：
 
 ```powershell
-uv sync --locked --group packaging --extra desktop --extra web --extra documents --extra vision --python 3.12
-uv run --no-sync python -m agent_test.scripts.build_windows
+uv sync --locked --group packaging --extra desktop --extra web --extra documents --extra vision --python 3.13
+uv run --no-sync --python 3.13 python -m agent_test.scripts.build_windows
 ```
 
 构建使用锁定的 PyInstaller，默认 `--layout onefile`；需要目录版时传入 `--layout onedir`，该版须保留 exe 同级的 `_internal`。窗口包带 Python、Qt、Core、Web/Debug 资源及 CPU 推理依赖。因包含 PyTorch/ONNX 运行库，体积较大。`dist/` 保存免安装目录、ZIP 和校验值；每次构建使用独立名称，不覆盖已有成品。构建和自检记录放在新建的 `.cache/reports/windows-package-*`。构建逐一核对 exe 内的应用字节码与当前源码，从其他工作目录启动实际 exe，移除开发 Python 的路径并执行自检，通过后才生成分发 ZIP。`--skip-self-check` 仅用于定位构建问题，不能据此宣称成品验收通过。
@@ -72,18 +72,20 @@ uv run --no-sync python -m agent_test.scripts.build_windows
 
 ## 准备原生环境
 
-将仓库放在本地 NTFS 磁盘，例如 `D:\AI\AgentSrcCode\ChannelAgent`。安装 Python 3.12 或以上、Git 和 Windows 版 [uv](https://docs.astral.sh/uv/getting-started/installation/)，在仓库目录打开 PowerShell：
+将仓库放在本地 NTFS 磁盘，例如 `D:\AI\AgentSrcCode\ChannelAgent`。项目要求 Python 3.12 或以上；Windows 原生环境和成品构建推荐 Python 3.13。安装 Git 和 Windows 版 [uv](https://docs.astral.sh/uv/getting-started/installation/)，在仓库目录打开 PowerShell：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-uv sync --locked --extra desktop --extra web --python 3.12
+uv sync --locked --extra desktop --extra web --python 3.13
 if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
-uv run --no-sync ai-agent-gui
+uv run --no-sync --python 3.13 ai-agent-gui
 ```
 
-仅使用 Web 时可省略 `--extra desktop`，并以 `uv run --no-sync ai-agent-web` 启动。CLI 入口为 `uv run --no-sync ai-agent-startup`。Web 和 CLI 启动前须填写有效的模型服务配置，桌面也可通过模型管理添加连接。已有 `.env` 会保留。同一状态目录由一个进程独占，同时运行多个界面时为其他进程指定独立的 `--state-dir`。配置方式见 [快速上手](getting-started.md)。
+仅使用 Web 时可省略 `--extra desktop`，并以 `uv run --no-sync --python 3.13 ai-agent-web` 启动。CLI 入口为 `uv run --no-sync --python 3.13 ai-agent-startup`。同步和运行都显式选择 3.13，避免仓库的 Linux 3.12 默认版本覆盖选择。Web 和 CLI 启动前须填写有效的模型服务配置，桌面也可通过模型管理添加连接。已有 `.env` 会保留。同一状态目录由一个进程独占，同时运行多个界面时为其他进程指定独立的 `--state-dir`。配置方式见 [快速上手](getting-started.md)。
 
 桌面加载系统已有的中文字体。精简 Windows 镜像缺少中文字体时，需要补齐系统字体组件。
+
+Windows CPython 3.12 的默认单调时钟精度可能影响 asyncio 短延时；[Python 3.13](https://docs.python.org/3.13/whatsnew/3.13.html#time) 在 Windows 改用高精度计数器。应用入口为自己创建的粗粒度默认循环提供兼容处理，保留 3.12 正常启动；不更改自定义策略、已经运行的循环或全局策略。嵌入 Core 的调用方负责自己的事件循环，不能假定其 3.12 默认循环已获得相同处理。验证状态见[跟进报告](flow-wording-queue-validation-2026-11-17.md)。WSL 隔离执行器仍使用下面的 Linux 3.12 环境。
 
 ## 模型连接与代理
 
@@ -131,6 +133,8 @@ uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe
 Windows 的 `local` 命令执行、托管后台命令任务和维护清理当前不可用；隔离环境或映射不可用时命令拒绝执行，不回退到宿主。文件工具与隔离命令仍受项目边界、权限策略、确认和审计约束。实际模型执行、已有轨迹回放和受控界面夹具属于不同验证，不能互相视为验收结果。其他平台的当前边界见[平台能力](platform-design.md)。
 
 状态目录和审计使用当前用户与 SYSTEM 的私有 ACL，所有者显式设为当前用户；管理员身份启动也遵循同一规则。已有模型密钥文件出现非私有所有者或额外授权时拒绝读取，不能通过重新保存自动放宽权限。Windows 状态发布保留文件刷新和句柄重命名。Windows 没有与 POSIX 目录 `fsync` 完全相同的持久化保证，发布后刷新失败时需要重新读取磁盘记录确认结果。
+
+Windows 状态文本写入从独占创建临时文件开始，保留同一个句柄完成写入、刷新和原子发布，减少关闭后再次打开源文件的等待。父目录及祖先在此期间保持固定，源和目标的重解析点、类型及硬链接检查不变；发布后刷新失败仍向调用方报告异常，不据此假定旧目标保留。
 
 Flow 状态写入和项目关联读取会在一次同步操作内保留祖先目录句柄，复用时仍检查目录身份、类型与重解析点；叶文件继续逐次打开并核验。操作结束即关闭句柄，没有跨操作缓存。句柄使用 Windows 已授予访问权的语义，目录 ACL 的新授权检查在新操作重新打开时进行；本轮原生安全与性能验证见[验证记录](designer-windows-e2e-validation-2026-11-15.md)。
 

@@ -331,7 +331,9 @@ def validate_runtime_config() -> None:
         if globals()[name] < 0:
             errors.append(f'{name} 不能为负数')
     try:
-        from agent_core.core.session_limits import effective_limits
+        from agent_core.core.session_limits import effective_limits, validate_limits
+        if ALLOW_UNKNOWN_MODEL_INPUT_OVERRIDE and MODEL_INPUT_TOKENS != 0:
+            validate_limits({'MODEL_INPUT_TOKENS': MODEL_INPUT_TOKENS})
         effective_limits({})
         for profile in MODEL_PROFILES:
             effective_limits({'model_profile': profile})
@@ -372,6 +374,7 @@ ENABLE_DEBUG_TOOL = env_bool("ENABLE_DEBUG_TOOL", False)
 ENABLE_FILE_EXTRAS = env_bool("ENABLE_FILE_EXTRAS", False)
 
 MODEL_INPUT_TOKENS = env_int("MODEL_INPUT_TOKENS", 0)
+ALLOW_UNKNOWN_MODEL_INPUT_OVERRIDE = env_bool('ALLOW_UNKNOWN_MODEL_INPUT_OVERRIDE', False)
 # 未声明容量时维持保守的 16k 输入窗口；绝不按模型名称猜测代理服务容量。
 MODEL_CONTEXT_TOKENS = env_int("MODEL_CONTEXT_TOKENS", 0)
 MODEL_RESPONSE_RESERVE_TOKENS = env_int("MODEL_RESPONSE_RESERVE_TOKENS", 4096)

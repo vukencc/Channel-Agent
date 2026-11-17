@@ -1,8 +1,10 @@
 # Windows 设计助手端到端验证（2026-11-15）
 
-> 状态：进行中 · [文档导航](README.md) · [Windows 指南](windows.md) · [Agent Flow](agent-flow.md)
+> 状态：历史验证记录 · [文档导航](README.md) · [Windows 指南](windows.md) · [Agent Flow](agent-flow.md)
 
 ## 2026-11-16 当前状态
+
+2026-11-17 后续修复、队列时钟诊断及真实业务复验见 [Flow 话术与 Windows 队列报告](flow-wording-queue-validation-2026-11-17.md)；授权 32k 复验的两项原 P3 通过，其他语义待办保留。下面保留 0.6.1 交付时的原结果和边界，不追改历史失败。
 
 [PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 已合并，[0.6.1 正式发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.1)；合并提交及注解标签指向 `55472e91ae19c5fbfd6421dca5c2bcfcf985dfeb`。[正式运行 43857331513](https://github.com/vukencc/Channel-Agent/actions/runs/43857331513) 六项任务成功，Release 于 2026-11-16 11:34:46 UTC 发布，共六项资产。用户禁止桌面和浏览器操作，可见 GUI 未验；用户便携根已仅将 `ENABLE_STRUCTURED_CONTEXT` 设为 true，旧应用未重启，新进程生效。
 

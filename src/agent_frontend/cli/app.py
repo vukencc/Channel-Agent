@@ -23,6 +23,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from agent_core import config
 from agent_core.core import llm
 from agent_frontend.bootstrap import configure_debug_tools, create_observer, render_debug
+from agent_frontend.runtime_loop import run_runtime
 from agent_core.core.messages import is_user_request
 from agent_core.core.sessions import SessionManager
 from agent_core.core.storage import LazyRecord, SessionStore
@@ -490,7 +491,7 @@ class AgentCLI:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(run())
+            run_runtime(run())
         else:
             task = asyncio.create_task(run())
             self._ui_jobs.add(task)
@@ -569,7 +570,7 @@ class AgentCLI:
             self.refresh()
         self.notice = '正在创建独立会话快照…'
         if synchronous:
-            asyncio.run(create_branch())
+            run_runtime(create_branch())
         else:
             task = asyncio.create_task(create_branch())
             self._ui_jobs.add(task)
@@ -590,7 +591,7 @@ class AgentCLI:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(run())
+            run_runtime(run())
         else:
             task = asyncio.create_task(run())
             self._ui_jobs.add(task)
@@ -697,7 +698,7 @@ class AgentCLI:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(run())
+            run_runtime(run())
         else:
             job = asyncio.create_task(run())
             self._ui_jobs.add(job)
@@ -750,7 +751,7 @@ class AgentCLI:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(remove())
+            run_runtime(remove())
         else:
             task = asyncio.create_task(remove())
             self._ui_jobs.add(task)
@@ -1041,7 +1042,7 @@ def main():
             try:
                 # 第三方模型/解析器的诊断输出不得污染 JSON stdout。
                 with redirect_stdout(sys.stderr):
-                    result = asyncio.run(execute_once())
+                    result = run_runtime(execute_once())
             except (ValueError, OSError) as exc:
                 parser.exit(2, str(exc) + '\n')
             if args.json:
@@ -1058,6 +1059,6 @@ def main():
         async def launch():
             cli = AgentCLI(store)
             await cli.run()
-        asyncio.run(launch())
+        run_runtime(launch())
     finally:
         store.close()

@@ -335,6 +335,10 @@ class SessionStore:
 
     @staticmethod
     def atomic_write(path: Path, text: str):
+        if os.name == 'nt':
+            from agent_core.core.windows_files import atomic_write_text
+            atomic_write_text(path, text)
+            return
         descriptor, temporary = tempfile.mkstemp(prefix='.writing-', dir=path.parent)
         try:
             with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:

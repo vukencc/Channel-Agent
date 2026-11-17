@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 import threading
+import uuid
 
 _kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 _create = _kernel.CreateFileW
@@ -228,6 +230,48 @@ def hide_directory(path: Path) -> None:
                 raise ctypes.WinError(ctypes.get_last_error())
 
 
+def _verified_replace_handle(handle: int, target: Path, *, replace_open: bool = False) -> None:
+    """验证源和目标，再以源句柄替换并刷新。"""
+    info = _FileInfo()
+    if not _info(handle, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if info.attributes & (0x400 | 0x10) or info.links != 1:
+        raise PermissionError('源文件类型或硬链接不安全')
+    try:
+        destination, _ = _open(target, directory=False)
+    except FileNotFoundError:
+        pass
+    else:
+        _close(destination)
+    flush = _kernel.FlushFileBuffers
+    flush.argtypes = [wintypes.HANDLE]
+    flush.restype = wintypes.BOOL
+    if not flush(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+    name = str(target).encode('utf-16-le')
+    class _RenameInfo(ctypes.Structure):
+        _fields_ = [('replace', wintypes.DWORD if replace_open else wintypes.BOOLEAN),
+                    ('root', wintypes.HANDLE),
+                    ('length', wintypes.DWORD),
+                    ('name', ctypes.c_ubyte * (len(name) + 2))]
+    rename = _RenameInfo()
+    # FileRenameInfoEx: REPLACE_IF_EXISTS | POSIX_SEMANTICS。
+    # 仅原子快照启用；不忽略只读属性，普通工具仍保持旧句柄保护。
+    rename.replace = 0x3 if replace_open else 1
+    rename.root = None
+    rename.length = len(name)
+    rename.name[:len(name)] = name
+    set_info = _kernel.SetFileInformationByHandle
+    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    set_info.restype = wintypes.BOOL
+    if not set_info(handle, 22 if replace_open else 3, ctypes.byref(rename), ctypes.sizeof(rename)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    # 失败时替换可能已经发生，调用方不得假定原目标仍存在。
+    if not flush(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+    # Windows 没有等价于 POSIX 目录 fsync 的保证。
+
+
 def atomic_replace(source: Path, target: Path, *, replace_open: bool = False) -> None:
     """以已打开的文件句柄原子替换同一目录内的目标。"""
     source, target = Path(source), Path(target)
@@ -242,46 +286,43 @@ def atomic_replace(source: Path, target: Path, *, replace_open: bool = False) ->
         if handle == _INVALID:
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            info = _FileInfo()
-            if not _info(handle, ctypes.byref(info)):
-                raise ctypes.WinError(ctypes.get_last_error())
-            if info.attributes & (0x400 | 0x10) or info.links != 1:
-                raise PermissionError('源文件类型或硬链接不安全')
-            try:
-                destination, _ = _open(target, directory=False)
-            except FileNotFoundError:
-                pass
-            else:
-                _close(destination)
-            flush = _kernel.FlushFileBuffers
-            flush.argtypes = [wintypes.HANDLE]
-            flush.restype = wintypes.BOOL
-            if not flush(handle):
-                raise ctypes.WinError(ctypes.get_last_error())
-            name = str(target).encode('utf-16-le')
-            class _RenameInfo(ctypes.Structure):
-                _fields_ = [('replace', wintypes.DWORD if replace_open else wintypes.BOOLEAN),
-                            ('root', wintypes.HANDLE),
-                            ('length', wintypes.DWORD),
-                            ('name', ctypes.c_ubyte * (len(name) + 2))]
-            rename = _RenameInfo()
-            # FileRenameInfoEx: REPLACE_IF_EXISTS | POSIX_SEMANTICS。
-            # 仅原子快照启用；不忽略只读属性，普通工具仍保持旧句柄保护。
-            rename.replace = 0x3 if replace_open else 1
-            rename.root = None
-            rename.length = len(name)
-            rename.name[:len(name)] = name
-            set_info = _kernel.SetFileInformationByHandle
-            set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
-            set_info.restype = wintypes.BOOL
-            if not set_info(handle, 22 if replace_open else 3, ctypes.byref(rename), ctypes.sizeof(rename)):
-                raise ctypes.WinError(ctypes.get_last_error())
-            # 失败时替换可能已经发生，调用方不得假定原目标仍存在。
-            if not flush(handle):
-                raise ctypes.WinError(ctypes.get_last_error())
-            # Windows 没有等价于 POSIX 目录 fsync 的保证。
+            _verified_replace_handle(handle, target, replace_open=replace_open)
         finally:
             _close(handle)
+
+
+def atomic_write_text(target: Path, text: str) -> None:
+    """以新建句柄写入并原子替换文本文件。"""
+    target = Path(target)
+    _validate(target)
+    temporary = target.parent / (".writing-" + uuid.uuid4().hex)
+    _validate(temporary)
+    with opened_path(target.parent, target.parent, directory=True):
+        handle = _create(str(temporary), 0x80000000 | 0x40000000 | 0x10000,
+                         0x1 | 0x2, None, 1, 0x00200000, None)
+        if handle == _INVALID:
+            raise ctypes.WinError(ctypes.get_last_error())
+        fd = None
+        try:
+            fd = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+            handle = None
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                fd = None
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+                _verified_replace_handle(msvcrt.get_osfhandle(stream.fileno()), target)
+        finally:
+            failed = sys.exc_info()[0] is not None
+            if fd is not None:
+                os.close(fd)
+            if handle is not None:
+                _close(handle)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                if not failed:
+                    raise
 
 
 def fsync_directory(path: Path) -> None:

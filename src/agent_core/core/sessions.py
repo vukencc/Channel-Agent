@@ -1,5 +1,6 @@
 """Concurrent agent sessions; blocking tools run in context-isolated worker threads."""
 import copy
+import hashlib
 import uuid
 import json
 import asyncio
@@ -383,7 +384,8 @@ class SessionManager:
             await asyncio.sleep(0)
 
     def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
-               completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None):
+               completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None,
+               handoff_span: tuple[int, int] | None = None):
         contract = (HandoffContract.model_validate(handoff_contract).model_dump(exclude_none=True)
                     if handoff_contract is not None else None)
         if self.sessions.get(session.id) is not session:
@@ -397,6 +399,11 @@ class SessionManager:
             raise ValueError('消息不能为空')
         if self.store.session_bytes(session.id) + len(text.encode('utf-8')) > config.SESSION_MAX_MB * 1024 * 1024:
             raise ValueError('会话超过 SESSION_MAX_MB，请先 /export 归档并新建会话；不会自动删除历史')
+        if handoff_span is not None:
+            if (not flow_id or not isinstance(handoff_span, tuple) or len(handoff_span) != 2
+                    or any(type(value) is not int for value in handoff_span)
+                    or not 0 <= handoff_span[0] < handoff_span[1] <= len(text)):
+                raise ValueError('交接范围无效')
         session.cancelled.clear()
         session.started_at = time.monotonic()
         session.partial = ''
@@ -412,6 +419,11 @@ class SessionManager:
         session.record.update(status='queued', error='')
         session.record['last_run']['input_index'] = len(session.record['messages'])
         message = {'role': 'user', 'content': text}
+        if handoff_span is not None:
+            start, end = handoff_span
+            message['_flow_handoff'] = {'owner': session.id, 'turn': session.record['last_run']['turn_id'],
+                'start': start, 'end': end, 'full_digest': hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                'span_digest': hashlib.sha256(text[start:end].encode('utf-8')).hexdigest()}
         if attachments:
             message['_attachments'] = copy.deepcopy(attachments)
         session.record['messages'].append(message)
