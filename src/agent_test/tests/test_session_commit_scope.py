@@ -68,12 +68,15 @@ def test_commit_scope_closes_and_failure_does_not_publish(tmp_path, monkeypatch,
         assert events == [('enter', directory)]
         if fail:
             raise OSError('controlled failure before index publication')
-        original_write(path, text)
+        # 仅模拟提交作用域的平台分支，写盘仍使用宿主平台的真实原子后端。
+        with monkeypatch.context() as write_patch:
+            write_patch.setattr(storage, 'os', os)
+            original_write(path, text)
     scoped_module = types.SimpleNamespace(pinned_scope=scope)
     if os.name == 'nt':
         # 保留真实 Windows 原子写盘后端；这里只替换被测作用域入口。
-        from agent_core.core.windows_files import atomic_replace
-        scoped_module.atomic_replace = atomic_replace
+        from agent_core.core.windows_files import atomic_write_text
+        scoped_module.atomic_write_text = atomic_write_text
     monkeypatch.setitem(sys.modules, 'agent_core.core.windows_files', scoped_module)
     monkeypatch.setattr(storage, 'os', WindowsOS())
     monkeypatch.setattr(store, 'atomic_write', write)
