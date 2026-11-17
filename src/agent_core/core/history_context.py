@@ -1085,6 +1085,19 @@ class HistoryContext:
             self.recovery_visible[session.id] = visible
             history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
             after = self._metrics(history, schemas, messages[current], messages)
+            if existing_input and session.id in self.input_projections:
+                # 只比较同一最终窗口，不能为放回原文额外归档或删减可选进度。
+                projection = self.input_projections.pop(session.id)
+                try:
+                    full_history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
+                    full_metrics = self._metrics(full_history, schemas, messages[current], messages)
+                except BaseException:
+                    self.input_projections[session.id] = projection
+                    raise
+                if full_metrics['utilization'] <= 1:
+                    history, after = full_history, full_metrics
+                else:
+                    self.input_projections[session.id] = projection
             while visible['pages'] and after['utilization'] > 1:
                 visible['pages'].pop(0)
                 visible['truncated'] = True

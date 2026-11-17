@@ -305,14 +305,113 @@ def test_successful_delivery_projects_at_existing_soft_threshold(input_store):
     asyncio.run(run())
 
 
-def test_published_reference_sticks_after_pressure_clears_and_reader_revocation_restores_input(input_store):
+def test_published_reference_restores_full_input_when_final_window_fits(input_store):
+    async def run():
+        manager, session, text, upstream, schemas, _ = await _soft_pressure_projection(input_store)
+        try:
+            service = manager.history_context
+            manifest = copy.deepcopy(service.cache[session.id])
+            runtime = '\n受控运行时参考：' + '界' * 9500
+            history, metrics = await service.prepare(session, session.record['messages'], schemas=schemas, runtime=runtime)
+            assert '## 用户输入\n' + text in [message.get('content') for message in history]
+            assert any(upstream in message.get('content', '') for message in history if message.get('role') == 'user')
+            assert request_tokens(history, schemas) + 2000 <= 16000
+            assert metrics['utilization'] <= 1
+            assert service.cache[session.id] == manifest
+            assert [message['content'] for message in session.record['messages'] if message.get('role') == 'user'] == [text]
+        finally:
+            await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_published_reference_remains_when_full_final_window_exceeds_budget(input_store):
+    async def run():
+        manager, session, text, upstream, schemas, _ = await _soft_pressure_projection(input_store)
+        try:
+            service = manager.history_context
+            manifest = copy.deepcopy(service.cache[session.id])
+            runtime = '\n受控运行时参考：' + '界' * 11000
+            history, metrics = await service.prepare(session, session.record['messages'], schemas=schemas, runtime=runtime)
+            user = next(message for message in history if message.get('role') == 'user'
+                        and '当前节点任务' in message.get('content', ''))
+            assert upstream not in user['content'] and manifest['input_refs'][0]['ID'] in user['content']
+            full = copy.deepcopy(history)
+            next(message for message in full if message.get('role') == 'user'
+                 and '当前节点任务' in message.get('content', ''))['content'] = '## 用户输入\n' + text
+            assert request_tokens(full, schemas) + 2000 > 16000
+            assert metrics['utilization'] <= 1
+            assert service.cache[session.id] == manifest
+        finally:
+            await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_restored_input_keeps_acknowledged_progress_and_unread_tool_batch(input_store):
+    async def run():
+        manager, session, text, _, _, _ = await _soft_pressure_projection(input_store)
+        try:
+            service = manager.history_context
+            session.record['tool_names'] = ['history_read', 'read_file']
+            schemas = [item for item in all_schemas() if item['function']['name'] in session.record['tool_names']]
+            identifier = service.cache[session.id]['input_refs'][0]['ID']
+            async def execute(name, arguments, call_id):
+                call = {'id': call_id, 'type': 'function', 'function':
+                        {'name': name, 'arguments': json.dumps(arguments)}}
+                session.record['messages'].append({'role': 'assistant', 'content': '', 'tool_calls': [call]})
+                content = await manager._tool(session, call)
+                result = {'role': 'tool', 'tool_call_id': call_id, 'content': str(content), '_provenance': 'executed'}
+                session.record['messages'].append(result)
+                await manager.save(session)
+                return result
+            await execute('history_read', {'chunk_id': identifier, 'offset': 0, 'limit': 100}, 'history-page')
+            delivered, _ = await service.prepare(session, session.record['messages'], schemas=schemas)
+            service.mark_delivered(session, delivered)
+            (manager.workspace(session) / 'unread.txt').write_text('真实未读证据' * 100, encoding='utf-8')
+            unread = await execute('read_file', {'path': 'unread.txt'}, 'unread-file')
+            refs = copy.deepcopy(service.cache[session.id]['input_refs'])
+            history, metrics = await service.prepare(session, session.record['messages'], schemas=schemas)
+            assert '## 用户输入\n' + text in [message.get('content') for message in history]
+            assert unread in history
+            context = next(message['content'] for message in history
+                           if message.get('content', '').startswith('## History积累\n'))
+            progress = json.loads(context.split('\n', 2)[2])['recovery_progress']
+            assert progress['pages'] and progress['pages'][0]['chunk_id'] == identifier
+            assert metrics['utilization'] <= 1
+            assert service.cache[session.id]['input_refs'] == refs
+            # 即使去掉可选进度后能放回原文，也不能为原文主动删除进度。
+            room = 16000 - 2000 - request_tokens(history, schemas)
+            assert room > 0
+            near, near_metrics = await service.prepare(session, session.record['messages'], schemas=schemas,
+                                                       runtime='界' * (room + 1))
+            projected = next(message for message in near if message.get('role') == 'user'
+                             and '当前节点任务' in message.get('content', ''))
+            assert identifier in projected['content'] and unread in near
+            full = copy.deepcopy(near)
+            next(message for message in full if message.get('role') == 'user'
+                 and '当前节点任务' in message.get('content', ''))['content'] = '## 用户输入\n' + text
+            assert request_tokens(full, schemas) + 2000 > 16000
+            context_message = next(message for message in full
+                                   if message.get('content', '').startswith('## History积累\n'))
+            header, marker, data = context_message['content'].split('\n', 2)
+            decoded = json.loads(data)
+            assert decoded.pop('recovery_progress')['pages'] == progress['pages']
+            context_message['content'] = header + '\n' + marker + '\n' + json.dumps(
+                decoded, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            assert request_tokens(full, schemas) + 2000 <= 16000
+            assert near_metrics['utilization'] <= 1
+        finally:
+            await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_published_reference_restores_input_after_pressure_clears_and_reader_revocation(input_store):
     async def run():
         manager, session, text, upstream, schemas, previous = await _soft_pressure_projection(input_store)
         try:
             refs = copy.deepcopy(manager.history_context.cache[session.id]['input_refs'])
             history, _ = await manager.history_context.prepare(session, session.record['messages'], schemas=schemas)
             user = [m['content'] for m in history if m.get('role') == 'user'][-1]
-            assert upstream not in user and refs[0]['ID'] in user
+            assert user == '## 用户输入\n' + text and upstream in user
             restored = copy.deepcopy(history)
             next(m for m in restored if m.get('role') == 'user' and '当前节点任务' in m.get('content', ''))['content'] = '## 用户输入\n' + text
             assert (request_tokens(restored, schemas) + 2000) / 16000 < config.CONTEXT_COMPACT_RATIO
