@@ -6,6 +6,9 @@
 
 ## 当前工作与 Git
 
+- 2026-11-17 P3 / 队列跟进：源码 `0dfe8e8` 的第六轮真实业务在用户授权的独立 32k 输入进程完成，716.299726 秒正常排空，五节点严格完成，原 QA 20/20、两项原 P3 经独立复核通过；普通默认仍为 16k。前五轮未通过全部业务验收或取消，及第五轮 CF007 捏造描述（B-03 / P2）保留，第六轮未再现不证明一般性修复。另有检索次数归属错误 B-04 / P3 和转交理由夸大客户表述 B-05 / P3；原 QA 全通过不等于全部语义通过。原模型、模板、数据、QA、强度及时限保持，详细证据与边界见[跟进报告](flow-wording-queue-validation-2026-11-17.md)。交付入口为 [PR #61](https://github.com/vukencc/Channel-Agent/pull/61)，最终状态以 PR 页面为准。
+- 队列保留原 5 秒及全部断言；`209b3c6` 和 `7ad0b87` 的实验已由 `0c9c60d` 完整撤回。`0dfe8e8` 原生 stock 3.13.3 队列单独 3/3、当前 27 项恢复测试后 3/3 通过，有限样本不保证所有负载。Linux 全量 2926 passed、74 skipped、5 deselected（238.16 秒），真实隔离探针退出 0、97 Core 和 HEAD 不变；[CI 44045174352](https://github.com/vukencc/Channel-Agent/actions/runs/44045174352) Linux 2921 passed、Windows 1484 passed。本机 Native 扩展集 190 passed、2 skipped、7 failed，七项为旧源码同样失败的 `env_sync` 换行、权限和符号链接兼容问题，该文件未纳入 Windows CI；此前 `75e96da` 受支持选择集 1400 passed、104 skipped。受控 F07 两平台轮询及 SSE 各 64/64 及时且持久，详细条件与失败见[跟进报告](flow-wording-queue-validation-2026-11-17.md)。本轮无 UI 改动、未做可见验收，也未请求新发布或 exe 构建；用户现有数据保留，变更记于 Unreleased。
+
 - 2026-11-16 设计助手与客服 Flow：正式 Windows exe 已复制至 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.1-windows-x64.exe`，哈希与发布资产一致，0.6.0 和用户数据保留。真实案例 3399876 五节点严格完成并正常排空，主业务闭环独立审查通过；原 QA 保留 19/20，CF001 critical 为 false，规格对替代方案未知时的优先级未唯一规定，不能追认为全绿。两项非阻断措辞问题与原 5 秒队列三次中一次超时保留待办。用户禁止桌面与浏览器，可见 UI 尚未验；用户便携根仅将 `ENABLE_STRUCTURED_CONTEXT` 安全设为 true，后续只读核验通过；旧应用未重启，新进程生效。正式包审计及验证边界见[本轮记录](designer-windows-e2e-validation-2026-11-15.md)。
 
 - 正式 EXE 的本机交付副本为 `D:\AI\AgentSrcCode\ChannelAgent\dist\official-v0.6.0\ChannelAgent-0.6.0-windows-x64.exe`，331,163,213 字节；从已验证的正式 ZIP 提取，SHA256 与独立发布资产一致。原 `dist/ChannelAgent-0.6.0-windows-x64.exe` 是历史候选，未覆盖。
