@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import os
 import re
 
 import pytest
@@ -162,7 +163,11 @@ def test_successful_full_input_delivery_releases_only_upstream_span(input_store,
                     await service.read(session, ref)
             elif mode == 'journal_tamper':
                 journal = input_store.directory(session.id) / 'messages.jsonl'
-                journal.write_text(journal.read_text(encoding='utf-8').replace('用户背景', '改写背景'), encoding='utf-8')
+                before = journal.read_bytes()
+                changed = before.replace('用户背景'.encode('utf-8'), '改写背景'.encode('utf-8'))
+                # 同字节长度改写，保留已提交范围与换行，专门验证日志内容校验。
+                assert changed != before and len(changed) == len(before)
+                journal.write_bytes(changed)
                 with pytest.raises(PermissionError):
                     await service.read(session, ref)
             elif mode == 'metadata_tamper':
@@ -337,7 +342,9 @@ def test_reference_private_chunk_rejects_links_to_external_source(input_store, t
                 chunk.hardlink_to(source)
             else:
                 chunk.symlink_to(source)
-            with pytest.raises(ValueError if link_kind == 'hardlink' else PermissionError):
+            # Windows 在 opened_path 身份固定阶段拒绝硬链接，Linux 由描述符校验拒绝。
+            expected_error = ValueError if link_kind == 'hardlink' and os.name != 'nt' else PermissionError
+            with pytest.raises(expected_error):
                 await manager.history_context.read(session, ref)
             assert source.read_bytes() == before
         finally:
