@@ -46,7 +46,13 @@ def _resolve(record, endpoint=None):
     if capacity:
         tokens = min(tokens, capacity - reserve)
     elif not default_model:
-        tokens = min(tokens, 16000)
+        process_cap = config.MODEL_INPUT_TOKENS
+        if config.ALLOW_UNKNOWN_MODEL_INPUT_OVERRIDE and (type(process_cap) is not int or process_cap != 0):
+            # 仅信任进程显式授权的有界上限；子会话不能借覆盖扩大此上限。
+            authorized = validate_limits({'MODEL_INPUT_TOKENS': process_cap})['MODEL_INPUT_TOKENS']
+            tokens = min(tokens, authorized)
+        else:
+            tokens = min(tokens, 16000)
     chars = values['MODEL_INPUT_CHARS'] or 4 * tokens
     if capacity:
         chars = min(chars, 4 * tokens)
