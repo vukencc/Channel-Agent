@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,7 @@ from agent_core.core.storage import SessionStore
     "声称外部动作已完成须有权威回执；本地模拟动作须明确标为模拟",
     "来源自述的事实须保留并标明来源及核实状态，不得因尚未核实而称未提供",
 ])
-def test_designer_sends_evidence_wording_contract(tmp_path, instruction):
+def test_designer_sends_evidence_wording_contract(tmp_path: Path, instruction: str) -> None:
     seen = []
 
     async def model(history, *, session_id, emit):
