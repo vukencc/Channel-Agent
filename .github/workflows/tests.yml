@@ -138,6 +138,7 @@ jobs:
             'src/agent_test/tests/test_working_tooltip_pointer.py',
             'src/agent_test/tests/test_dynamic_feedback_validation.py',
             'src/agent_test/tests/test_flow_designer.py',
+            'src/agent_test/tests/test_designer_evidence_wording.py',
             'src/agent_test/tests/test_designer_request_errors.py',
             'src/agent_test/tests/test_designer_import_retry.py',
             'src/agent_test/tests/test_designer_connection_diagnostics.py',
