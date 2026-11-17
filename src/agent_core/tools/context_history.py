@@ -13,7 +13,7 @@ from agent_core import config
 from agent_core.core.session_service import current_service
 from agent_core.core.history_locations import TOOL_NAME_PATTERN
 from agent_core.tools.base import register_tool
-from agent_core.tools.sandbox import audit, cancellation_requested
+from agent_core.tools.sandbox import audit, cancellation_requested, _context as _tool_context
 
 
 HISTORY_TOOL_RESULT_CHARS = 1500
@@ -202,10 +202,22 @@ def history_read(chunk_id: str, before: int = 0, after: int = 0,
         raise ValueError('最多读取两个相邻历史片段')
     # 原文生产端按完整 JSON 上限选页；不在执行后裁剪字符串或伪报 next_offset。
     maximum = min(config.TOOL_MAX_OUTPUT, HISTORY_TOOL_RESULT_CHARS)
-    limit = min(limit, max(1, maximum - 512))
-    result = _run(lambda history, session: history.read(
-        session, chunk_id, before=before, after=after, offset=offset, limit=limit,
-        output_limit=maximum))
+    args = {'chunk_id': chunk_id, 'before': before, 'after': after, 'offset': offset, 'limit': limit}
+    effective_limit = min(limit, max(1, maximum - 512))
+    tool_context = _tool_context.get()
+    async def read_page(history, session):
+        result = await history.read(session, chunk_id, before=before, after=after, offset=offset,
+                                    limit=effective_limit, output_limit=maximum)
+        payload = _complete_json(result)
+        capture = getattr(history, 'capture_history_page', None)
+        if tool_context is not None and capture is not None and tool_context.session_id == session.id:
+            try:
+                await capture(session, tool_context.tool_call_id, tool_context.turn_id, args, payload, result)
+            except Exception:
+                # 进度是可丢弃的提示，不能改变真实工具回执。
+                pass
+        return payload
+    payload = _run(read_page)
     audit('read', action='history_read', chunk_id=chunk_id,
           before=before, after=after, offset=offset)
-    return _complete_json(result)
+    return payload

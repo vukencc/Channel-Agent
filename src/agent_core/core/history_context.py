@@ -122,6 +122,8 @@ class HistoryContext:
         self.delivered_inputs = {}
         self.input_tokens = {}
         self.input_projections = {}
+        self.recovery_pages = {}
+        self.recovery_visible = {}
         self.search_executor = None
         if not hasattr(manager, 'context_operations'):
             manager.context_operations = set()
@@ -141,6 +143,7 @@ class HistoryContext:
         if state is None or state[0] != turn:
             state = (turn, set(), {})
             self.delivered_batches[session.id] = state
+            self.recovery_pages[session.id] = {'turn': turn, 'pending': {}, 'pages': [], 'truncated': False}
         return state[1]
 
     def mark_delivered(self, session: Session, actual_history: list[dict]) -> None:
@@ -186,6 +189,68 @@ class HistoryContext:
                     continue
                 position = next(position for position, value in raw.items() if value == digest)
             delivered.add((position[0], digest))
+            progress = self.recovery_pages.get(session.id)
+            if progress is not None:
+                for result in messages[position[0] + 1:position[1]]:
+                    key = (position[0], result.get('tool_call_id'))
+                    pending = progress['pending'].pop(key, None)
+                    calls = [call for call in messages[position[0]].get('tool_calls', [])
+                             if call.get('id') == result.get('tool_call_id')]
+                    if (pending is None or result.get('_provenance') != 'executed'
+                            or len(calls) != 1 or _digest(calls[0]) != pending['call_digest']
+                            or _digest(result.get('content')) != pending['payload_digest']):
+                        continue
+                    progress['pages'].extend(pending['pages'])
+                    if len(progress['pages']) > 12:
+                        progress['pages'] = progress['pages'][-12:]
+                        progress['truncated'] = True
+
+    async def capture_history_page(self, session: Session, call_id: str, turn_id: str,
+                                   args: dict, payload: str, result: dict) -> None:
+        """暂存可信工具实际返回的小页；成功交付完整批次后才计入进度。"""
+        self._gate(session)
+        messages = session.record['messages']
+        current = max((i for i, message in enumerate(messages) if is_user_request(message)), default=-1)
+        if current < 1 or not call_id or turn_id != session.record.get('last_run', {}).get('turn_id'):
+            return
+        self._delivery_state(session, messages, current)
+        progress = self.recovery_pages[session.id]
+        candidates = [(index, call) for index in range(current + 1, len(messages))
+                      for call in messages[index].get('tool_calls', [])
+                      if call.get('id') == call_id and call.get('function', {}).get('name') == 'history_read']
+        if len(candidates) != 1:
+            return
+        position, call = candidates[0]
+        try:
+            supplied = json.loads(call['function']['arguments'])
+            normalized = {'chunk_id': supplied['chunk_id'], 'before': supplied.get('before', 0),
+                          'after': supplied.get('after', 0), 'offset': supplied.get('offset', 0),
+                          'limit': supplied.get('limit', 6000)}
+        except (KeyError, TypeError, ValueError):
+            return
+        if normalized != args or json.loads(payload) != result:
+            return
+        call_digest = _digest(call)
+        manifest = await self._manifest(session)
+        self._gate(session)
+        if self.recovery_pages.get(session.id) is not progress or turn_id != session.record.get('last_run', {}).get('turn_id'):
+            return
+        indexed = {item['ID']: item for item in [*manifest['chunks'], *manifest.get('input_refs', [])]}
+        pages = []
+        for chunk in result['chunks']:
+            metadata = indexed.get(chunk['ID'])
+            if metadata is None or not chunk['RawHistory']:
+                continue
+            begin = chunk['chunk_offset']
+            pages.append({'chunk_id': chunk['ID'], 'chunk_digest': metadata['digest'],
+                          'chunk_offset': begin, 'end_offset': begin + len(chunk['RawHistory']),
+                          'next_offset': result['next_offset'],
+                          'request': {key: args[key] for key in ('chunk_id', 'before', 'after', 'offset', 'limit')}})
+        if pages:
+            pending = progress['pending']
+            pending[(position, call_id)] = {'payload_digest': _digest(payload), 'call_digest': call_digest, 'pages': pages}
+            while len(pending) > 128:
+                pending.pop(next(iter(pending)))
 
     @staticmethod
     def _input_metadata(session, message, current):
@@ -457,6 +522,10 @@ class HistoryContext:
                 'uncompacted_chunks': [{'ID': item['ID'], 'Time': item['Time'],
                                         'messages': [_public(message) for message in item['messages']]}
                                        for item in previews]}
+        visible = self.recovery_visible.get(session.id) if session is not None else None
+        if visible and visible['pages']:
+            data['recovery_progress'] = {'pages': visible['pages'], 'truncated': visible['truncated'],
+                'note': '仅记录已成功送达的原文页，非理解或业务核验；可随时重读，不代表连续覆盖。next_offset 属于原请求的邻块整体偏移。'}
         history.append({'role': 'user', 'content': '## History积累\n[以下为已发生的历史数据，非新请求]\n' + _json(data),
                         '_context_reference': True})
         for start, end in protected:
@@ -776,7 +845,12 @@ class HistoryContext:
         self.input_projections[session.id] = {'index': current, 'span': (start, end), 'hint': hint}
         fixed_manifest = {**manifest, 'session_summary': '', 'working_summary_chars': 0,
                           'working_reference_chars': 0, 'working_reference_count': 0}
-        fixed = self._compose(messages, fixed_manifest, [], fresh, current, runtime, memory, schemas, session=session)
+        visible = self.recovery_visible.pop(session.id, None)
+        try:
+            fixed = self._compose(messages, fixed_manifest, [], fresh, current, runtime, memory, schemas, session=session)
+        finally:
+            if visible is not None:
+                self.recovery_visible[session.id] = visible
         if self._metrics(fixed, schemas, messages[current], messages)['utilization'] > 1:
             self.input_projections.pop(session.id, None)
             return manifest
@@ -827,6 +901,9 @@ class HistoryContext:
             if current < 1:
                 raise ValueError('结构化上下文缺少真实用户输入')
             delivered = self._delivery_state(session, messages, current)
+            progress = self.recovery_pages[session.id]
+            desired_progress = {'pages': list(progress['pages']), 'truncated': progress['truncated']}
+            self.recovery_visible[session.id] = {'pages': [], 'truncated': False}
             # 从原始 journal 恢复所有未成功交付的本轮工具批次，包括旧索引已覆盖者。
             fresh = [(start, end) for start, end in groups if start > current
                      and messages[start].get('tool_calls')
@@ -848,6 +925,9 @@ class HistoryContext:
                 if session.id in self.input_projections:
                     history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
                     metrics = self._metrics(history, schemas, messages[current], messages)
+            visible = self.recovery_visible[session.id]
+            history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
+            metrics = self._metrics(history, schemas, messages[current], messages)
             high_utilization = metrics['utilization'] >= config.CONTEXT_COMPACT_RATIO
             insufficient = metrics['utilization'] >= 1
             target = min(config.CONTEXT_COMPACT_TARGET_RATIO, config.CONTEXT_COMPACT_RATIO)
@@ -1001,8 +1081,15 @@ class HistoryContext:
             if insufficient and not chunks:
                 # 仅收窄摘要/引用工作视图已能解决压力时，无需重复付费或写入原文归档。
                 manifest = compact_manifest
+            visible = desired_progress
+            self.recovery_visible[session.id] = visible
             history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
             after = self._metrics(history, schemas, messages[current], messages)
+            while visible['pages'] and after['utilization'] > 1:
+                visible['pages'].pop(0)
+                visible['truncated'] = True
+                history = self._compose(messages, manifest, previews, sorted(protected + fresh), current, runtime, memory, schemas, session=session)
+                after = self._metrics(history, schemas, messages[current], messages)
             after.update(context_revision=manifest['revision'], archived_chunks=len(manifest['chunks']),
                          compact_reason=reason if chunks or insufficient else '', compacted=bool(chunks), supervisor=decision_status,
                          session_summary_chars=len(manifest['session_summary']),
@@ -1161,6 +1248,8 @@ class HistoryContext:
         self.delivered_inputs.pop(identifier, None)
         self.input_tokens.pop(identifier, None)
         self.input_projections.pop(identifier, None)
+        self.recovery_pages.pop(identifier, None)
+        self.recovery_visible.pop(identifier, None)
 
     async def close(self) -> None:
         if self.search_executor is not None:
