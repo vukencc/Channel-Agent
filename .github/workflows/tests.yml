@@ -45,6 +45,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     env:
+      UV_PYTHON: '3.13'
       PYTHONUTF8: '1'
       PYTHON_DOTENV_DISABLED: '1'
       QT_QPA_PLATFORM: 'offscreen'
@@ -54,7 +55,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
-          python-version: '3.12'
+          python-version: '3.13'
           enable-cache: true
       - name: 设置 Windows 独立测试目录
         shell: pwsh
@@ -63,7 +64,7 @@ jobs:
           "AGENT_STATE_DIR=$env:RUNNER_TEMP/agent-state" >> $env:GITHUB_ENV
           "AUDIT_LOG=$env:RUNNER_TEMP/agent-audit.jsonl" >> $env:GITHUB_ENV
           "RAG_CACHE_DIR=$env:RUNNER_TEMP/agent-rag" >> $env:GITHUB_ENV
-      - run: uv sync --locked --extra web --extra desktop
+      - run: uv sync --locked --extra web --extra desktop --python 3.13
       - name: Windows 原生文件、状态、GUI 和 Web 回归
         shell: pwsh
         run: |
@@ -96,6 +97,7 @@ jobs:
             'src/agent_test/tests/test_flow_handoff_contract.py',
             'src/agent_test/tests/test_flow_handoff_context.py',
             'src/agent_test/tests/test_flow_handoff_reference.py',
+            'src/agent_test/tests/test_runtime_loop.py',
             'src/agent_test/tests/test_history_input_reference.py',
             'src/agent_test/tests/test_history_recovery_progress.py',
             'src/agent_test/tests/test_tool_observations.py',

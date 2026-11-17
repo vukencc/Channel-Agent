@@ -93,7 +93,8 @@ class RuntimeBridge(QObject):
 
     def _run(self) -> None:
         try:
-            asyncio.run(self._serve())
+            from agent_frontend.runtime_loop import run_runtime
+            run_runtime(self._serve())
         except BaseException as exc:
             # 未知异常只展示类别，避免底层响应或 URL 泄漏凭据。
             if isinstance(exc, RuntimeError) and str(exc).startswith('该状态目录已有 CLI'):

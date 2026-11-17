@@ -28,8 +28,22 @@ def main():
     print(f'WebUI：http://{hostname}:{args.port}', flush=True)
     if config.DEBUG:
         print(f'运行调试：http://{hostname}:{args.port}/debug', flush=True)
-    uvicorn.run(create_app(state_dir=args.state_dir), host=args.host, port=args.port,
-                workers=1, access_log=False, proxy_headers=False, timeout_graceful_shutdown=30)
+    from agent_frontend.runtime_loop import run_runtime, use_high_resolution_clock
+    app = create_app(state_dir=args.state_dir)
+    options = dict(host=args.host, port=args.port, workers=1, access_log=False,
+                   proxy_headers=False, timeout_graceful_shutdown=30)
+    if not use_high_resolution_clock():
+        uvicorn.run(app, **options)
+    elif hasattr(uvicorn.Config, 'get_loop_factory'):
+        uvicorn.run(app, loop='agent_frontend.runtime_loop:new_runtime_loop', **options)
+    else:
+        server = uvicorn.Server(uvicorn.Config(app, **options))
+        try:
+            run_runtime(server.serve())
+        except KeyboardInterrupt:
+            pass
+        if not server.started:
+            raise SystemExit(3)
 
 
 if __name__ == '__main__':
