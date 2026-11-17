@@ -375,7 +375,7 @@ def test_restored_input_keeps_acknowledged_progress_and_unread_tool_batch(input_
             context = next(message['content'] for message in history
                            if message.get('content', '').startswith('## History积累\n'))
             progress = json.loads(context.split('\n', 2)[2])['recovery_progress']
-            assert progress['pages'] and progress['pages'][0]['chunk_id'] == identifier
+            assert progress['rows'] and progress['rows'][0][0] == identifier
             assert metrics['utilization'] <= 1
             assert service.cache[session.id]['input_refs'] == refs
             # 即使去掉可选进度后能放回原文，也不能为原文主动删除进度。
@@ -394,7 +394,7 @@ def test_restored_input_keeps_acknowledged_progress_and_unread_tool_batch(input_
                                    if message.get('content', '').startswith('## History积累\n'))
             header, marker, data = context_message['content'].split('\n', 2)
             decoded = json.loads(data)
-            assert decoded.pop('recovery_progress')['pages'] == progress['pages']
+            assert decoded.pop('recovery_progress')['rows'] == progress['rows']
             context_message['content'] = header + '\n' + marker + '\n' + json.dumps(
                 decoded, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
             assert request_tokens(full, schemas) + 2000 <= 16000

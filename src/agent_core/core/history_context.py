@@ -524,8 +524,20 @@ class HistoryContext:
                                        for item in previews]}
         visible = self.recovery_visible.get(session.id) if session is not None else None
         if visible and visible['pages']:
-            data['recovery_progress'] = {'pages': visible['pages'], 'truncated': visible['truncated'],
-                'note': '仅记录已成功送达的原文页，非理解或业务核验；可随时重读，不代表连续覆盖。next_offset 属于原请求的邻块整体偏移。'}
+            rows = []
+            for page in visible['pages']:
+                row = [page['chunk_id'], page['chunk_offset'], page['end_offset'], page['next_offset']]
+                request = page['request']
+                if request['before'] or request['after'] or request['chunk_id'] != page['chunk_id']:
+                    row.extend([request['chunk_id'], request['before'], request['after'], request['offset']])
+                rows.append(row)
+            data['recovery_progress'] = {
+                'columns': ['chunk_id', 'chunk_offset', 'end_offset', 'next_offset'],
+                'neighbor_columns': ['request_chunk_id', 'before', 'after', 'request_offset'],
+                'rows': rows, 'truncated': visible['truncated'],
+                'note': '已送达的原文页；非理解或业务核验，不代表连续覆盖，可重读。'
+                        'chunk_offset/end_offset为块内字符位置，next_offset为原请求邻块整体偏移；'
+                        '邻块行附加neighbor_columns，普通行省略。'}
         history.append({'role': 'user', 'content': '## History积累\n[以下为已发生的历史数据，非新请求]\n' + _json(data),
                         '_context_reference': True})
         for start, end in protected:

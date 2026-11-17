@@ -39,7 +39,16 @@ SCHEMAS = [s for s in all_schemas() if s['function']['name'] in ('history_read',
 
 def _progress(history):
     data = next(m['content'] for m in history if m.get('content', '').startswith('## History积累\n'))
-    return json.loads(data.split('\n', 2)[2]).get('recovery_progress', {})
+    progress = json.loads(data.split('\n', 2)[2]).get('recovery_progress', {})
+    if 'rows' in progress:
+        pages = []
+        for row in progress['rows']:
+            page = dict(zip(progress['columns'], row[:4]))
+            page['request'] = ({'chunk_id': row[4], 'before': row[5], 'after': row[6], 'offset': row[7]}
+                               if len(row) == 8 else {'chunk_id': row[0], 'before': 0, 'after': 0})
+            pages.append(page)
+        progress['pages'] = pages
+    return progress
 
 
 async def _tool(manager, session, name, arguments, identifier):
@@ -86,6 +95,38 @@ async def _page(manager, session, identifier, offset=0, limit=6000):
     return result, page
 
 
+def test_delivered_twelve_page_model_view_is_compact_and_navigable(recovery_store):
+    async def run():
+        manager, session, meta, chunk, before = await _archive(recovery_store)
+        try:
+            service = manager.history_context
+            for i in range(12):
+                await _page(manager, session, meta['ID'], offset=i * 350, limit=100)
+                window, _ = await service.prepare(session, session.record['messages'], schemas=SCHEMAS)
+                service.mark_delivered(session, window)
+            window, _ = await service.prepare(session, session.record['messages'], schemas=SCHEMAS)
+            message = next(m for m in window if m.get('content', '').startswith('## History积累\n'))
+            header, raw = message['content'].rsplit('\n', 1)
+            data = json.loads(raw)
+            progress = data.pop('recovery_progress')
+            assert progress['columns'] == ['chunk_id', 'chunk_offset', 'end_offset', 'next_offset']
+            assert progress['neighbor_columns'] == ['request_chunk_id', 'before', 'after', 'request_offset']
+            internal = service.recovery_pages[session.id]['pages']
+            assert len(internal) == len(progress['rows']) == 12
+            assert all(row == [page['chunk_id'], page['chunk_offset'], page['end_offset'], page['next_offset']]
+                       for row, page in zip(progress['rows'], internal))
+            without = copy.deepcopy(window)
+            target = next(m for m in without if m.get('content', '').startswith('## History积累\n'))
+            target['content'] = header + '\n' + json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            assert request_tokens(window, SCHEMAS) - request_tokens(without, SCHEMAS) <= 350
+            assert all(page['chunk_digest'] == meta['digest'] for page in internal)
+            assert chunk.read_bytes() == before
+        finally:
+            await manager.shutdown()
+    from agent_core.core.context import request_tokens
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('permission', ['smart', 'readonly', 'full_access'])
 def test_successful_page_ack_survives_ordinary_compaction_with_exact_ranges(recovery_store, permission):
     async def run():
@@ -116,7 +157,8 @@ def test_successful_page_ack_survives_ordinary_compaction_with_exact_ranges(reco
             assert pages, '已送达小页在普通压缩后丢失了精确恢复进度'
             actual = {(p['chunk_offset'], p['end_offset'], p['next_offset']) for p in pages if p['chunk_id'] == meta['ID']}
             assert set(expected) <= actual
-            assert all(p['chunk_digest'] == meta['digest'] for p in pages if p['chunk_id'] == meta['ID'])
+            assert all(p['chunk_digest'] == meta['digest'] for p in service.recovery_pages[session.id]['pages']
+                       if p['chunk_id'] == meta['ID'])
             assert chunk.read_bytes() == before
         finally:
             await manager.shutdown()
@@ -338,6 +380,7 @@ def test_neighbor_page_progress_tracks_each_actual_chunk_slice(recovery_store):
             assert {(p['chunk_id'], p['chunk_offset'], p['end_offset']) for p in pages} == expected
             assert all(p['next_offset'] == page['next_offset'] for p in pages)
             assert all(p['request']['chunk_id'] == second['ID'] and p['request']['before'] == 1 for p in pages)
+            assert all(p['request']['after'] == 0 and p['request']['offset'] == len(first_raw) - 50 for p in pages)
             assert first_path.read_bytes() == first_before
             assert second_path.read_bytes() == second_before
         finally:
@@ -383,7 +426,7 @@ def test_soft_compaction_summary_expansion_evicts_advisory_progress_before_check
                 service.mark_delivered(session, window)
             baseline, metrics = await service.prepare(session, session.record['messages'], schemas=SCHEMAS)
             previous_pages = _progress(baseline)['pages']
-            runtime = '界' * int(16000 * .97 - metrics['sent_tokens'] - metrics['reserved_tokens'])
+            runtime = '界' * int(16000 * .93 - metrics['sent_tokens'] - metrics['reserved_tokens'])
             assert runtime
             supervisor = ControlledSupervisor(expanded=True)
             service.supervisor = supervisor
@@ -400,7 +443,7 @@ def test_soft_compaction_summary_expansion_evicts_advisory_progress_before_check
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('base_utilization', [.88, .97])
+@pytest.mark.parametrize('base_utilization', [.895, .99])
 def test_optional_progress_alone_cannot_trigger_compaction(recovery_store, base_utilization):
     from types import SimpleNamespace
     from agent_core.core.context import request_tokens
