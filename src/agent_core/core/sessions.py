@@ -20,7 +20,7 @@ from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, runtime
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
 from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
 from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
-from agent_core.core.storage import SessionStore, finish_pending_tools, wait_for_io_completion, now
+from agent_core.core.storage import SessionStore, finish_pending_tools, wait_for_io_completion
 from agent_core.core.session_service import session_service_context
 from agent_core.core.communication import SessionCommunication
 from agent_core.core.messages import is_user_request
@@ -60,9 +60,6 @@ class Session:
     deleting: bool = False
     tool_workers: set = field(default_factory=set)
     flow_task_ids: list[str] = field(default_factory=list)
-    save_generation: int = 0
-    terminal_guard: threading.Event | None = None
-    terminal_saved: bool = False
 
     @property
     def id(self):
@@ -346,9 +343,6 @@ class SessionManager:
     def save(self, session: Session):
         if self.sessions.get(session.id) is not session or session.deleting:
             raise ValueError('会话已删除或正在删除，拒绝重新创建记录')
-        session.save_generation += 1
-        if session.terminal_guard is not None:
-            session.terminal_guard.set()
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -411,7 +405,6 @@ class SessionManager:
                     or not 0 <= handoff_span[0] < handoff_span[1] <= len(text)):
                 raise ValueError('交接范围无效')
         session.cancelled.clear()
-        session.terminal_saved = False
         session.started_at = time.monotonic()
         session.partial = ''
         session.partial_reasoning = ''
@@ -1247,64 +1240,6 @@ class SessionManager:
         session.record['inbox_cursor'] = page['next_seq']
         await self.save(session)
 
-    @staticmethod
-    def _terminal_metadata(record: dict, elapsed: float, history_limit: int,
-                           status: str | None = None) -> tuple[dict, dict]:
-        run = record['last_run']
-        run.update(total_s=round(elapsed, 3), status=record['status'] if status is None else status)
-        history_entry = copy.deepcopy(run)
-        record.setdefault('run_history', []).append(history_entry)
-        record['run_history'] = record['run_history'][-history_limit:]
-        return run, history_entry
-
-    async def _dependent_terminal(self, session: Session) -> str:
-        """同一队列依次提交回复与终态；并发保存会使预测终态失效。"""
-        guard = threading.Event()
-        session.terminal_guard = guard
-        generation = session.save_generation
-        started = session.started_at
-        cancelled_event = session.cancelled
-        history_limit = config.RUN_HISTORY_LIMIT
-        def build_next(snapshot: dict) -> dict:
-            terminal = copy.deepcopy({key: value for key, value in snapshot.items() if key != 'messages'})
-            terminal['messages'] = snapshot['messages']
-            terminal.update(status='idle', updated_at=now())
-            self._terminal_metadata(terminal, time.monotonic() - started, history_limit)
-            return terminal
-        future = None
-        try:
-            future = self.store.save_dependent_async(session.record, build_next,
-                lambda: guard.is_set() or cancelled_event.is_set())
-            baseline = copy.deepcopy(session.record)
-            self.pending_saves.add(future)
-            future.add_done_callback(self.pending_saves.discard)
-            self.notify()
-            terminal, failure = await asyncio.shield(future)
-            if session.cancelled.is_set():
-                raise asyncio.CancelledError
-            if failure is not None:
-                session.record.update(status='error', error='保存失败：本轮终态未确认，请检查本地存储。')
-                session.record['last_run'].update(status='error', stop_reason='persistence_failed')
-                return 'failed'
-            if (terminal is None or guard.is_set() or generation != session.save_generation
-                    or session.record != baseline):
-                return 'fallback'
-            session.record['last_run'] = terminal['last_run']
-            session.record['run_history'] = terminal['run_history']
-            session.record['updated_at'] = terminal['updated_at']
-            session.terminal_saved = True
-            return 'saved'
-        except BaseException:
-            guard.set()
-            if future is not None:
-                try:
-                    await wait_for_io_completion(future)
-                except BaseException:
-                    pass
-            raise
-        finally:
-            session.terminal_guard = None
-
     async def _run(self, session, handoff_contract=None):
         contexts = []
         # 仅在此运行中产生并完整交付的观察可用于后续工作窗口。
@@ -1542,22 +1477,8 @@ class SessionManager:
                         turn_id=session.record['last_run']['turn_id'], metrics={'tokens_source': 'unknown'})
                 session.partial = ''
                 session.partial_reasoning = ''
+                await self.save(session)
                 calls = reply.get('tool_calls', [])
-                background = (session.assessment_task, session.memory_task, session.summary_task)
-                eligible = (not calls and handoff_contract is None
-                            and (not policy.automatic or bool((reply.get('content') or '').strip()))
-                            and self.task_plans is None and self.agent_tasks is None
-                            and type(self.observer) is NullObserver
-                            and not config.MEMORY_AUTO_EXTRACT and not config.RAG_ASSESS
-                            and not config.WORKSPACE_MEMORY_ENABLED and not session.cancelled.is_set()
-                            and not session.record.get('delegated_from') and not session.record.get('branch')
-                            and all(task is None or task.done() for task in background))
-                if eligible:
-                    transition = await self._dependent_terminal(session)
-                    if transition == 'failed':
-                        return
-                else:
-                    await self.save(session)
                 if not calls:
                     if policy.automatic:
                         unfinished, waiting = execution_state(self, session)
@@ -1796,11 +1717,6 @@ class SessionManager:
 
     async def _finish_turn(self, session: Session, *, workspace_memory_allowed: bool = False) -> None:
         record = session.record
-        if session.terminal_saved and record['status'] == 'idle' and not session.cancelled.is_set():
-            session.terminal_saved = False
-            session.phase = ''
-            logger.info('turn_finished session=%s %s', session.id, json.dumps(record['last_run'], ensure_ascii=False))
-            return
         if record['status'] in {'cancelled', 'error'}:
             finish_pending_tools(record['messages'])
         if session.partial:
@@ -1811,15 +1727,16 @@ class SessionManager:
             session.partial = ''
         session.partial_reasoning = ''
         session.phase = '保存本轮状态'
-        elapsed = time.monotonic() - session.started_at
-        status = record['status']
-        record['last_run'].update(total_s=round(elapsed, 3), status=status)
+        run = record['last_run']
+        run.update(total_s=round(time.monotonic() - session.started_at, 3), status=record['status'])
         if self.task_plans is not None:
             try:
                 await wait_for_io_completion(asyncio.create_task(self.task_plans.finish_run(session)))
             except Exception as exc:
                 record['error'] = (record.get('error', '') + '\n计划保存失败：' + str(exc)).strip()
-        run, history_entry = self._terminal_metadata(record, elapsed, config.RUN_HISTORY_LIMIT, status)
+        history_entry = copy.deepcopy(run)
+        record.setdefault('run_history', []).append(history_entry)
+        record['run_history'] = record['run_history'][-config.RUN_HISTORY_LIMIT:]
         persisted = await self._save_terminal_state(session, run, history_entry)
         if persisted and workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED:
             if session.cancelled.is_set():

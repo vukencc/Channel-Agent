@@ -126,12 +126,11 @@ def _pinned_directory(path: Path, scope):
     if path not in handles:
         handles[path] = _open(path, directory=True)
     else:
-        handle, _ = handles[path]
+        handle, identity = handles[path]
         info = _FileInfo()
         if not _info(handle, ctypes.byref(info)):
             raise ctypes.WinError(ctypes.get_last_error())
-        # 作用域持有同一私有句柄时其身份不变，但每次仍须检查最新类型和重解析属性。
-        if info.attributes & 0x400 or not info.attributes & 0x10:
+        if info.attributes & 0x400 or not info.attributes & 0x10 or _identity(handle) != identity:
             raise PermissionError('路径权限或类型已发生变化，拒绝预览')
     return handles[path]
 

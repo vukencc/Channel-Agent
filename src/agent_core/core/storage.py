@@ -16,7 +16,6 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 
 def now() -> str:
@@ -234,29 +233,6 @@ class SessionStore:
             return int(identifier, 16) % len(self._session_writers)
         except (TypeError, ValueError) as exc:
             raise ValueError('无效会话 ID') from exc
-
-    def save_dependent_async(self, record: dict, build_next: Callable[[dict], dict],
-                             cancelled: Callable[[], bool]) -> asyncio.Future:
-        """同一写入队列先提交原快照，再按结果决定是否提交依赖快照。"""
-        if isinstance(record, LazyRecord):
-            record.materialize()
-        record['updated_at'] = now()
-        snapshot = copy.deepcopy({key: value for key, value in record.items() if key != 'messages'})
-        snapshot['messages'] = record['messages']
-        snapshot['_count'] = len(record['messages'])
-        snapshot['_system'] = copy.deepcopy(record['messages'][0])
-        def write_pair():
-            self.save(snapshot)
-            if cancelled():
-                return None, None
-            terminal = build_next(snapshot)
-            try:
-                self.save(terminal)
-            except Exception as exc:
-                return None, exc
-            return terminal, None
-        writer = self._session_writers[self._session_lane(snapshot['id'])]
-        return asyncio.get_running_loop().run_in_executor(writer, write_pair)
 
     def save(self, record: dict):
         if isinstance(record, LazyRecord):
