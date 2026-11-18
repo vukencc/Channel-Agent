@@ -19,6 +19,20 @@ LOCAL_SECTION = '# ---- 本地额外设置与注释 ----'
 
 def _read(path: Path, *, optional: bool = False) -> str | None:
     """同一描述符检查普通文件，拒绝链接及可能阻塞的 FIFO。"""
+    if os.name == 'nt':
+        from agent_core.core.files import opened_path
+        path = path.absolute()
+        try:
+            with opened_path(path.parent, path) as descriptor:
+                with os.fdopen(os.dup(descriptor), 'rb') as stream:
+                    try:
+                        return stream.read().decode('utf-8')
+                    except UnicodeError:
+                        raise ValueError(f'{path.name} 必须采用 UTF-8 编码') from None
+        except FileNotFoundError:
+            if optional:
+                return None
+            raise
     if path.is_symlink():
         raise ValueError(f'{path.name} 不能是符号链接')
     try:
@@ -53,18 +67,20 @@ def _parse(text: str, label: str):
     return bindings, keys
 
 
-def _render(template_bindings, local_bindings, local_keys):
+def _render(template_bindings, local_bindings, local_keys, newline):
     chunks = []
     known = {item.key for item in template_bindings if item.key is not None}
     template_comments = {line.strip() for item in template_bindings if item.key is None
                          for line in item.original.string.splitlines() if line.strip()}
     for item in template_bindings:
+        original = item.original.string
+        body = original.lstrip('\r\n')
+        prefix = original[:len(original) - len(body)]
+        prefix = prefix.replace('\r\n', '\n').replace('\n', newline)
         if item.key in local_keys:
-            original = item.original.string
-            prefix = original[:len(original) - len(original.lstrip('\r\n'))]
-            chunks.append(prefix + local_keys[item.key].original.string.strip('\r\n') + '\n')
+            chunks.append(prefix + local_keys[item.key].original.string.strip('\r\n') + newline)
         else:
-            chunks.append(item.original.string.rstrip('\r\n') + '\n')
+            chunks.append(prefix + body.rstrip('\r\n') + newline)
     # 保留独有注释及额外键的相对顺序；模板注释和自动分组标题不重复追加。
     extras = []
     for item in local_bindings:
@@ -76,7 +92,7 @@ def _render(template_bindings, local_bindings, local_keys):
                 if line.strip() and line.strip() not in template_comments and line.strip() != LOCAL_SECTION:
                     extras.append(line)
     if extras:
-        chunks.append('\n' + LOCAL_SECTION + '\n' + '\n'.join(extras) + '\n')
+        chunks.append(newline + LOCAL_SECTION + newline + newline.join(extras) + newline)
     return ''.join(chunks)
 
 
@@ -110,11 +126,125 @@ def _check_values(before, after):
                 raise ValueError('重排会改变已有变量展开结果，请先检查引用顺序：' + ', '.join(changed))
 
 
+def _windows_is_private(path: Path) -> bool:
+    """检查私有 ACE 且禁止继承，避免未来父目录授权改变私有性。"""
+    import ctypes
+    from ctypes import wintypes
+    from agent_core.core.windows_security import verify_private_path
+
+    try:
+        verify_private_path(path)
+    except PermissionError:
+        return False
+    security = ctypes.WinDLL('advapi32', use_last_error=True)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.LocalFree.argtypes = [wintypes.LPVOID]
+    security.GetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
+        wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID,
+        ctypes.POINTER(wintypes.LPVOID)]
+    security.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    security.GetSecurityDescriptorControl.argtypes = [wintypes.LPVOID,
+        ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+    descriptor = wintypes.LPVOID()
+    error = security.GetNamedSecurityInfoW(str(path), 1, 4, None, None, None, None,
+                                           ctypes.byref(descriptor))
+    if error:
+        raise ctypes.WinError(error)
+    try:
+        control, revision = wintypes.WORD(), wintypes.DWORD()
+        if not security.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return bool(control.value & 0x1000)
+    finally:
+        kernel.LocalFree(descriptor)
+
+
+def _windows_private_temp(parent: Path) -> tuple[int, str]:
+    """创建时即指定私有 DACL，避免继承权限与写入之间的窗口。"""
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    security = ctypes.WinDLL('advapi32', use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.LocalFree.argtypes = [wintypes.LPVOID]
+    security.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    security.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                                               wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    security.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+    security.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.LPVOID), wintypes.LPVOID]
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [('length', wintypes.DWORD), ('descriptor', wintypes.LPVOID),
+                    ('inherit', wintypes.BOOL)]
+
+    token, descriptor, sid_text = wintypes.HANDLE(), wintypes.LPVOID(), wintypes.LPWSTR()
+    handle = None
+    path = None
+    created = False
+    try:
+        if not security.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        length = wintypes.DWORD()
+        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(length))
+        buffer = ctypes.create_string_buffer(length.value)
+        if not security.GetTokenInformation(token, 1, buffer, length, ctypes.byref(length)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sid = ctypes.cast(buffer, ctypes.POINTER(wintypes.LPVOID))[0]
+        if not security.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sddl = f'O:{sid_text.value}D:P(A;;FA;;;SY)(A;;FA;;;{sid_text.value})'
+        if not security.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        path = str(parent / ('.env-sync-' + uuid.uuid4().hex))
+        handle = kernel.CreateFileW(path, 0xC0000000, 0, ctypes.byref(attributes), 1, 0x80, None)
+        if handle == ctypes.c_void_p(-1).value:
+            handle = None
+            raise ctypes.WinError(ctypes.get_last_error())
+        created = True
+        fd = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+        handle = None
+        created = False
+        return fd, path
+    finally:
+        if handle is not None:
+            kernel.CloseHandle(handle)
+        if descriptor:
+            kernel.LocalFree(descriptor)
+        if sid_text:
+            kernel.LocalFree(sid_text)
+        if token:
+            kernel.CloseHandle(token)
+        if created:
+            os.unlink(path)
+
+
 def _write(target: Path, text: str, original: str | None):
-    descriptor, temporary = tempfile.mkstemp(prefix='.env-sync-', dir=target.parent)
+    if os.name == 'nt':
+        from agent_core.core.files import opened_path
+        target = target.absolute()
+        with opened_path(target.parent, target.parent, directory=True):
+            _write_locked(target, text, original)
+    else:
+        _write_locked(target, text, original)
+
+
+def _write_locked(target: Path, text: str, original: str | None):
+    if os.name == 'nt':
+        descriptor, temporary = _windows_private_temp(target.parent.absolute())
+    else:
+        descriptor, temporary = tempfile.mkstemp(prefix='.env-sync-', dir=target.parent)
     try:
         with os.fdopen(descriptor, 'w', encoding='utf-8', newline='\n') as stream:
-            os.chmod(temporary, 0o600)
+            if os.name != 'nt':
+                os.chmod(temporary, 0o600)
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
@@ -138,14 +268,27 @@ def sync_env(template: Path, target: Path, *, write: bool = False) -> dict:
     if not template_keys:
         raise ValueError('模板不能为空')
     local_bindings, local_keys = _parse(original or '', '本地配置')
-    rendered = _render(template_bindings, local_bindings, local_keys)
+    # 只看解析后的记录结束符，不能把多行值内部的换行当作布局。
+    newline = '\n'
+    for item in local_bindings:
+        record = item.original.string
+        if record.endswith('\n'):
+            newline = '\r\n' if record.endswith('\r\n') else '\n'
+            break
+    rendered = _render(template_bindings, local_bindings, local_keys, newline)
     proposed, _ = _parse(rendered, '同步结果')
     _check_values(local_bindings, proposed)
     report = {'changed': original != rendered,
               'added': [key for key in template_keys if key not in local_keys],
               'preserved': len(template_keys.keys() & local_keys.keys()),
               'local_only': [key for key in local_keys if key not in template_keys]}
-    if write and (report['changed'] or stat.S_IMODE(target.stat().st_mode) != 0o600):
+    private = False
+    if write and original is not None and not report['changed']:
+        if os.name == 'nt':
+            private = _windows_is_private(target)
+        else:
+            private = stat.S_IMODE(target.stat().st_mode) == 0o600
+    if write and not private:
         _write(target, rendered, original)
     return report
 
