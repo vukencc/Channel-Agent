@@ -91,6 +91,8 @@ jobs:
             'src/agent_test/tests/test_tool_timeout_drain.py',
             'src/agent_test/tests/test_retrieval_attempt_ledger.py',
             'src/agent_test/tests/test_flow_evidence_grounding.py',
+            'src/agent_test/tests/test_flow_source_clause_grounding.py',
+            'src/agent_test/tests/test_flow_project_io_dedup.py',
             'src/agent_test/tests/test_env_sync.py',
             'src/agent_test/tests/test_web_sse_terminal.py',
             'src/agent_test/tests/test_config.py',
