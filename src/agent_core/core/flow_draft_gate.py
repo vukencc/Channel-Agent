@@ -84,14 +84,19 @@ class FlowDraftGate:
         run.setdefault('draft_reviews', []).append(event)
         char_limit = session_limit('MODEL_INPUT_CHARS')
         sources = review_sources(self.session.record, char_limit=min(24000, char_limit // 2))
-        self.needs_sources = not any(row['kind'] in {'read_file', 'rag_search'} for row in sources)
+        read_paths = {row.get('path') for row in sources if row['kind'] == 'read_file'}
+        reported_paths = {row['path'] for row in sources if row['kind'] == 'custom_result' and row.get('path')}
+        pending_paths = sorted(reported_paths - read_paths)
+        self.needs_sources = bool(pending_paths) or not any(row['kind'] in {'read_file', 'rag_search'} for row in sources)
         event['source_count'] = len(sources)
         event['source_digest'] = hashlib.sha256(json.dumps(sources, ensure_ascii=True,
             separators=(',', ':'), sort_keys=True).encode()).hexdigest()
         if not sources:
             event['status'] = 'missing_source'
             return '尚无本轮可核对的原文。请先读取相关原始资料，或去掉无依据的事实断言，明确标注推断或待核实事项。'
-        history = review_messages(draft, sources)
+        task = self.session.flow_review_task
+        event['task_digest'] = hashlib.sha256(task.encode('utf-8', 'surrogatepass')).hexdigest()
+        history = review_messages(draft, sources, node_task=task)
         if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
             event['status'] = 'context_budget'
             return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
@@ -116,7 +121,12 @@ class FlowDraftGate:
                                                     session_id=self.session.id, emit=emit)
             if self.session.cancelled.is_set():
                 raise asyncio.CancelledError
-            feedback = review_feedback(parse_review_reply(answer), sources)
+            verdict = parse_review_reply(answer)
+            feedback = review_feedback(verdict, sources)
+            if feedback and verdict and verdict.get('status') == 'need_source':
+                self.needs_sources = True
+            if feedback and self.needs_sources and pending_paths:
+                feedback += ' 可用已有只读工具核对本轮资料工具传入的路径：' + json.dumps(pending_paths[:3], ensure_ascii=False)
             event['status'] = 'revise' if feedback else 'passed'
             return feedback
         except asyncio.CancelledError:

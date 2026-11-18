@@ -72,3 +72,23 @@ def test_parse_reviewer_reply_strictly():
         {"role": "assistant", "content": '[{"status":"pass"}]'},
     ]:
         assert parse_review_reply(message) is None
+
+def test_workflow_task_and_custom_tool_report_are_separate_data():
+    source = {"id": "S1", "kind": "custom_result", "scope": "tool_report",
+              "tool": "fetch", "path": "input.json", "text": "反馈内容"}
+    payload = json.loads(review_messages("原文明确提出诉求", [source], node_task="分类并模拟分流")[1]["content"])
+    assert payload["workflow_task"] == "分类并模拟分流"
+    assert payload["sources"] == [source]
+    assert "workflow_task" not in json.loads(review_messages("草稿", [])[1]["content"])
+    assert len(json.loads(review_messages("草稿", [], node_task="x" * 20000)[1]["content"])["workflow_task"]) <= 8192
+
+def test_need_source_is_strict_and_actionable():
+    result = review_feedback({"status": "need_source", "field": "reason", "needed": "原始反馈"}, [])
+    assert result and "原始反馈" in result and "reason" in result
+    assert review_feedback({"status": "need_source", "field": "reason", "needed": "原始反馈", "extra": 1}, [])
+    assert review_feedback({"status": "need_source", "field": "reason", "needed": "x" * 301}, [])
+
+def test_prompt_describes_workflow_and_report_boundaries():
+    prompt = review_messages("草稿", [], node_task="分类")[0]["content"]
+    for phrase in ("节点职责", "工具实际返回", "作者身份", "路由", "原权限"):
+        assert phrase in prompt

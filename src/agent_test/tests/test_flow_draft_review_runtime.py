@@ -40,7 +40,8 @@ def review_payload(history):
         payload = json.loads(history[1]["content"])
     except (TypeError, ValueError):
         return None
-    return payload if isinstance(payload, dict) and set(payload) == {"draft", "sources"} else None
+    return payload if (isinstance(payload, dict) and {"draft", "sources"} <= set(payload)
+                       and set(payload) <= {"draft", "sources", "workflow_task"}) else None
 
 
 @pytest.fixture
@@ -82,6 +83,7 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
         payload = review_payload(history)
         if payload is not None:
             reviews.append(payload)
+            assert "读取原文并记录排查建议后交接" in payload["workflow_task"]
             assert selected_schemas(TOOL_SCHEMAS) == []
             assert payload["sources"] and any(SOURCE in s["text"] for s in payload["sources"])
             assert "独立审查" in history[0]["content"]
@@ -341,3 +343,94 @@ def test_source_recovery_cannot_write_or_repeat_read_batch(runtime_store, monkey
     receipt = next(m for m in record["messages"] if m.get("tool_call_id") == identifier)
     assert receipt["_provenance"] == "not_executed"
     assert result["status"] != "completed"
+
+
+async def classification_scenario(runtime_store, *, need_source):
+    """真实临时资料和动态读取命令；仅模型判定使用离线回调。"""
+    store, project = runtime_store
+    task = "将页面提交故障分类为技术问题，路由人工排查；分类不表示客户明确要求人工。"
+    draft = "客户表示页面无法提交，分类为技术问题并路由人工排查。"
+    rows = [{"id": "CF-01", "text": SOURCE}, {"id": "CF-02", "text": "未选择的物流反馈"}]
+    (project / "feedback.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    (project / "unrelated.txt").write_text("当日排班：值班A。", encoding="utf-8")
+    lookup = {"name": "lookup_feedback", "description": "按事项选择读取反馈文件",
+              "parameters": {"type": "object", "properties": {
+                  "path": {"type": "string"}, "ids": {"type": "array", "items": {"type": "string"}}},
+                  "required": ["path", "ids"]},
+              "code": "def main(arguments):\n    import json\n    from pathlib import Path\n    rows = json.loads(Path(arguments['path']).read_text(encoding='utf-8'))\n    return [row for row in rows if row['id'] in arguments['ids']]\n"}
+    reviews = []
+    normal_index = 0
+
+    async def model(history, *, session_id, emit):
+        nonlocal normal_index
+        payload = review_payload(history)
+        if payload is not None:
+            assert selected_schemas(TOOL_SCHEMAS) == []
+            assert task in payload["workflow_task"]
+            assert "不是客户意愿" in history[0]["content"]
+            assert not any(task in row["text"] for row in payload["sources"])
+            reviews.append(payload)
+            if need_source and len(reviews) == 1:
+                assert any("当日排班" in row["text"] for row in payload["sources"])
+                assert not any(SOURCE in row["text"] for row in payload["sources"])
+                return assistant(json.dumps({"status": "need_source", "field": "客户故障描述",
+                                             "needed": "source.txt中的客户原文"}, ensure_ascii=False))
+            if need_source:
+                assert any(row["kind"] == "read_file" and SOURCE in row["text"] for row in payload["sources"])
+            else:
+                reports = [row for row in payload["sources"] if row["kind"] == "custom_result"]
+                assert len(reports) == 1 and reports[0]["scope"] == "tool_report"
+                assert reports[0]["tool"] == "lookup_feedback" and reports[0]["path"] == "feedback.json"
+                assert json.loads(reports[0]["text"]) == [rows[0]]
+            return assistant('{"status":"pass"}')
+        normal_index += 1
+        if normal_index == 1:
+            if need_source:
+                return assistant(calls=[call("unrelated", "read_file", path="unrelated.txt")])
+            return assistant(calls=[call("selected-feedback", "lookup_feedback", path="feedback.json", ids=["CF-01"])])
+        if need_source and normal_index == 3:
+            names = {schema["function"]["name"] for schema in selected_schemas(TOOL_SCHEMAS)}
+            assert names and names <= {"read_file", "list_files"}
+            return assistant(calls=[call("requested-source", "read_file", path="source.txt")])
+        if need_source and normal_index == 4:
+            assert selected_schemas(TOOL_SCHEMAS) == []
+        return assistant(draft)
+
+    manager = SessionManager(store, model=model)
+    service = FlowService(manager)
+    try:
+        flow = service.create(workspace_path=str(project), permission_policy="readonly" if need_source else "full_access")
+        flow["nodes"] = [{"id": "triage", "title": "分类", "prompt": task,
+                          "tool_names": ["read_file", "lookup_feedback"], "custom_tools": [lookup]}]
+        flow["edges"] = []
+        flow = service.save(flow)
+        service.start(flow["id"])
+        await service.tasks[flow["id"]]
+        session = next(iter(manager.sessions.values()))
+        audit = (store.directory(session.id) / "audit.jsonl").read_text(encoding="utf-8")
+        return session.record, service.get(flow["id"])["run"], reviews, audit, draft
+    finally:
+        await service.shutdown()
+        await manager.shutdown()
+
+
+def test_selected_dynamic_report_and_node_task_reach_independent_review(runtime_store):
+    record, result, reviews, audit, draft = asyncio.run(classification_scenario(runtime_store, need_source=False))
+    assert len(reviews) == 1
+    assert result["status"] == "completed"
+    assert result["nodes"]["triage"]["output_handoff"].endswith(draft)
+    assert "custom_tool_execution" in audit and "lookup_feedback" in audit
+    receipt = next(m for m in record["messages"] if m.get("tool_call_id") == "selected-feedback")
+    assert receipt["_provenance"] == "executed" and "[退出码] 0" in receipt["content"]
+    assert "未选择的物流反馈" not in receipt["content"]
+
+
+def test_need_source_after_unrelated_read_preserves_readonly_policy(runtime_store):
+    record, result, reviews, audit, draft = asyncio.run(classification_scenario(runtime_store, need_source=True))
+    assert len(reviews) == 2
+    assert result["status"] == "completed"
+    assert record["permission_policy"] == "readonly"
+    assert result["nodes"]["triage"]["output_handoff"].endswith(draft)
+    source = next(m for m in record["messages"] if m.get("tool_call_id") == "requested-source")
+    assert source["_provenance"] == "executed" and SOURCE in source["content"]
+    assert {event["name"] for event in record["last_run"]["tools"]} == {"read_file"}

@@ -60,6 +60,7 @@ class Session:
     deleting: bool = False
     tool_workers: set = field(default_factory=set)
     flow_task_ids: list[str] = field(default_factory=list)
+    flow_review_task: str = ''
 
     @property
     def id(self):
@@ -385,7 +386,8 @@ class SessionManager:
 
     def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
                completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None,
-               handoff_span: tuple[int, int] | None = None, user_input_span: tuple[int, int] | None = None):
+               handoff_span: tuple[int, int] | None = None, user_input_span: tuple[int, int] | None = None,
+               flow_node_task: str = ''):
         contract = (HandoffContract.model_validate(handoff_contract).model_dump(exclude_none=True)
                     if handoff_contract is not None else None)
         if self.sessions.get(session.id) is not session:
@@ -415,6 +417,7 @@ class SessionManager:
         if session.summary_task and not session.summary_task.done():
             session.summary_task.cancel()
         session.record.pop('assessment', None)
+        session.flow_review_task = flow_node_task[:8192] if flow_id else ''
         session.record['last_run'] = {'turn_id': uuid.uuid4().hex, 'model_calls': [], 'tools': []}
         session.record.update(status='queued', error='')
         session.record['last_run']['input_index'] = len(session.record['messages'])

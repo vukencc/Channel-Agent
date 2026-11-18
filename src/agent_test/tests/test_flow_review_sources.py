@@ -205,3 +205,94 @@ def test_duplicate_file_path_is_deduplicated_but_other_path_is_retained():
         data["last_run"]["tools"].append(event)
     rows = review_sources(data, char_limit=6)
     assert [(row["path"], row["text"]) for row in rows] == [("a.txt", "同一段"), ("b.txt", "同一段")]
+
+
+def test_real_custom_read_result_is_lower_trust(sandbox_env, monkeypatch):
+    from agent_core import config
+    from agent_core.core.custom_tools import custom_registry, validate_custom_tools
+
+    monkeypatch.setattr(config, "TOOL_PERMISSION_POLICY", "full_access")
+    spec = {"name": "lookup_feedback", "description": "读取", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False},
+            "code": "import json\nfrom pathlib import Path\ndef main(arguments):\n    return json.loads(Path(arguments[\"path\"]).read_text(encoding=\"utf-8\"))\n"}
+    (sandbox_env / "feedback.json").write_text("[{\"id\": \"A\", \"text\": \"反馈\"}]", encoding="utf-8")
+    content = custom_registry([spec])["lookup_feedback"].run(json.dumps({"path": "feedback.json"}))
+    assert content.startswith("[退出码] 0\n[stdout]\n")
+    data = record()
+    data.update(flow_id="flow", flow_node_id="node", custom_tools=validate_custom_tools([spec]), tool_names=["lookup_feedback"])
+    call, result = data["messages"][1]["tool_calls"][0], data["messages"][2]
+    call["function"] = {"name": "lookup_feedback", "arguments": json.dumps({"path": "feedback.json"})}
+    result.update(content=content)
+    result.pop("_context_observation")
+    data["last_run"]["tools"][0]["name"] = "lookup_feedback"
+    rows = review_sources(data, char_limit=1000)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "custom_result" and rows[0]["scope"] == "tool_report"
+    assert rows[0]["path"] == "feedback.json" and rows[0]["tool"] == "lookup_feedback"
+    assert json.loads(rows[0]["text"]) == [{"id": "A", "text": "反馈"}]
+
+
+def custom_record():
+    data = record()
+    spec = {"name": "lookup", "description": "测试", "parameters": {"type": "object", "properties": {"path": {"type": "string", "default": "input.json"}}}, "code": "def main(arguments): return []"}
+    data.update(flow_id="f", flow_node_id="n", custom_tools=[spec], tool_names=["lookup"])
+    data["messages"][1]["tool_calls"][0]["function"] = {"name": "lookup", "arguments": json.dumps({"path": "input.json", "ids": ["CF-01"], "limit": 10})}
+    data["messages"][2].update(content="[退出码] 0\n[stdout]\n[{\"id\":\"CF-01\",\"text\":\"客户反馈\"}]\n")
+    data["messages"][2].pop("_context_observation")
+    data["last_run"]["tools"][0]["name"] = "lookup"
+    return data
+
+
+def test_custom_default_path_is_only_a_hint():
+    data = custom_record()
+    data["messages"][1]["tool_calls"][0]["function"]["arguments"] = json.dumps({"ids": ["CF-01"], "limit": 10})
+    rows = review_sources(data, char_limit=1000)
+    assert len(rows) == 1 and rows[0]["path_hint"] == "input.json" and "path" not in rows[0]
+
+
+@pytest.mark.parametrize("mutation", ["denied", "timeout", "nonzero", "truncated", "invalid_json", "fake_status", "stderr", "unknown_tool", "disabled", "no_node", "duplicate", "old", "wrong_event", "absolute", "traversal", "write_echo", "write_receipt", "long_id", "scalar"])
+def test_custom_report_rejects_untrusted_cases(mutation):
+    data = custom_record()
+    call, result, event = data["messages"][1]["tool_calls"][0], data["messages"][2], data["last_run"]["tools"][0]
+    if mutation == "denied": result["_provenance"] = "not_executed"
+    elif mutation == "timeout": event["outcome"] = "timeout"
+    elif mutation == "nonzero": result["content"] = result["content"].replace("退出码] 0", "退出码] 1")
+    elif mutation == "truncated": result["content"] += "[输出已截断]"
+    elif mutation == "invalid_json": result["content"] = "[退出码] 0\n[stdout]\n[{"
+    elif mutation == "fake_status": result["content"] = "[退出码] 0\n[stdout]\n[退出码] 0\n[stdout]\n{}"
+    elif mutation == "stderr": result["content"] += "\n[stderr]\n警告"
+    elif mutation == "unknown_tool": data["custom_tools"] = []
+    elif mutation == "disabled": data["tool_names"] = []
+    elif mutation == "no_node": data.pop("flow_node_id")
+    elif mutation == "duplicate": data["messages"].append(copy.deepcopy(result))
+    elif mutation == "old": data["messages"].append({"role": "user", "content": "下轮"})
+    elif mutation == "wrong_event": event["tool_call_id"] = "other"
+    elif mutation == "absolute": call["function"]["arguments"] = json.dumps({"path": "/tmp/x"})
+    elif mutation == "traversal": call["function"]["arguments"] = json.dumps({"path": "../x"})
+    elif mutation == "write_echo": call["function"]["arguments"] = json.dumps({"path": "input.json", "message": "草稿正文"})
+    elif mutation == "write_receipt": result["content"] = '[退出码] 0\n[stdout]\n{"saved":true}'
+    elif mutation == "long_id": call["function"]["arguments"] = json.dumps({"path": "input.json", "ids": ["x" * 65]})
+    elif mutation == "scalar": result["content"] = "[退出码] 0\n[stdout]\n\"文本\""
+    assert review_sources(data, char_limit=1000) == []
+
+
+def test_custom_report_yields_to_user_and_has_half_budget_cap():
+    data = with_user_input(custom_record())
+    report = json.loads(data["messages"][2]["content"].split("[stdout]\n", 1)[1])
+    report_length = len(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+    rows = review_sources(data, char_limit=report_length * 2)
+    assert [row["kind"] for row in rows] == ["user_input", "custom_result"]
+    rows = review_sources(data, char_limit=report_length * 2 - 1)
+    assert [row["kind"] for row in rows] == ["user_input"]
+
+
+def test_first_party_same_path_and_content_suppresses_custom_duplicate():
+    data = custom_record()
+    stdout = data["messages"][2]["content"].split("[stdout]\n", 1)[1].strip()
+    observation = observe_text(stdout, reader_tool="read_file", body_spans=((0, len(stdout)),), recovery_notice="重读")
+    call = {"id": "builtin", "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": "input.json"})}}
+    result = {"role": "tool", "tool_call_id": "builtin", "content": stdout, "_provenance": "executed", "_event_id": "builtin_event", "_context_observation": extract_observation(observation)}
+    event = {"event_id": "builtin_event", "tool_call_id": "builtin", "turn_id": "turn", "name": "read_file", "source": "executed", "outcome": "completed", "execution_progress": True}
+    data["messages"] += [{"role": "assistant", "tool_calls": [call]}, result]
+    data["last_run"]["tools"].append(event)
+    rows = review_sources(data, char_limit=1000)
+    assert len(rows) == 1 and rows[0]["kind"] == "read_file"
