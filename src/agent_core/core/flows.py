@@ -753,9 +753,12 @@ class FlowService:
                         if upstream_text:
                             start = len(prefix) + len(model_handoff) - len(upstream_text)
                             span = (start, start + len(upstream_text))
+                        input_prefix = "\n本次新增信息：\n"
+                        input_start = len(prefix) + len(model_handoff) + len(input_prefix)
+                        direct_span = (input_start, input_start + len(input_text)) if input_text else None
                         self.manager.submit(session, (
                             prefix + model_handoff
-                            + ("\n本次新增信息：\n" + input_text if input_text else "")
+                            + (input_prefix + input_text if input_text else "")
                             + "\n" + introduction
                             + "\n当前节点：" + node["title"] + "\n当前节点任务：\n"
                             + ("遵循系统消息中的当前节点任务与输出约束。" if same_prompt else node["prompt"])
@@ -763,7 +766,7 @@ class FlowService:
                                + ("" if same_prompt else handoff_output_instruction(node["handoff_contract"]))
                                if node["handoff_contract"] is not None else
                                "\n只执行当前节点的职责；后续任务留在交接中。最后总结已改动、验证、未完成事项和风险。")
-                        ), flow_id=value["id"], handoff_contract=node["handoff_contract"], handoff_span=span)
+                        ), flow_id=value["id"], handoff_contract=node["handoff_contract"], handoff_span=span, user_input_span=direct_span)
                 result["turn_id"] = session.record["last_run"]["turn_id"]
                 try:
                     await session.task
@@ -778,6 +781,7 @@ class FlowService:
                     # 只映射受控状态码，不传播会话消息或服务商异常正文。
                     reasons = {
                         "model_connection": "模型连接中断，节点已保存检查点",
+                        "flow_source_review": "草稿的来源复核未完成，节点已保存检查点",
                         "cost_or_rate_budget": "费用或请求速率预算已达到限制，节点已保存检查点",
                         "context_budget": "上下文预算已达到限制，节点已保存检查点",
                         "plan_waiting": "任务计划受阻或等待必要信息，节点已保存检查点",

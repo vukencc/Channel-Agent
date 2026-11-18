@@ -385,7 +385,7 @@ class SessionManager:
 
     def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
                completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None,
-               handoff_span: tuple[int, int] | None = None):
+               handoff_span: tuple[int, int] | None = None, user_input_span: tuple[int, int] | None = None):
         contract = (HandoffContract.model_validate(handoff_contract).model_dump(exclude_none=True)
                     if handoff_contract is not None else None)
         if self.sessions.get(session.id) is not session:
@@ -419,11 +419,12 @@ class SessionManager:
         session.record.update(status='queued', error='')
         session.record['last_run']['input_index'] = len(session.record['messages'])
         message = {'role': 'user', 'content': text}
-        if handoff_span is not None:
-            start, end = handoff_span
-            message['_flow_handoff'] = {'owner': session.id, 'turn': session.record['last_run']['turn_id'],
-                'start': start, 'end': end, 'full_digest': hashlib.sha256(text.encode('utf-8')).hexdigest(),
-                'span_digest': hashlib.sha256(text[start:end].encode('utf-8')).hexdigest()}
+        for key, span in (('_flow_handoff', handoff_span), ('_flow_user_input', user_input_span)):
+            if span is not None:
+                start, end = span
+                message[key] = {'owner': session.id, 'turn': session.record['last_run']['turn_id'],
+                    'start': start, 'end': end, 'full_digest': hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                    'span_digest': hashlib.sha256(text[start:end].encode('utf-8')).hexdigest()}
         if attachments:
             message['_attachments'] = copy.deepcopy(attachments)
         session.record['messages'].append(message)
@@ -825,11 +826,13 @@ class SessionManager:
         session.summary_task.add_done_callback(self.summary_tasks.discard)
 
     @traced('model.total')
-    async def _call_model(self, history, *, disable_tools=False, **kwargs):
+    async def _call_model(self, history, *, disable_tools=False, source_reads=False, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
             session = self.sessions.get(kwargs.get('session_id'))
             names = [] if disable_tools else (self._effective_session_tools(session) if session else config.MODEL_TOOL_NAMES)
+            if source_reads:
+                names = [name for name in ('read_file', 'rag_search') if names is None or name in names]
             with self._concurrency_lock:
                 self._active_model_calls += 1
                 identifier = kwargs.get('session_id')
@@ -847,6 +850,8 @@ class SessionManager:
                 endpoint = (active_endpoint.get() if active_profile.get() == profile
                             else self.model_registry.resolve(profile))
                 schemas = [] if disable_tools else (self._session_schemas(session) if session else None)
+                if source_reads:
+                    schemas = filter_schemas(schemas or [], names)
                 with model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
                     with operation_span('model.request'):
                         return await self.model(history, **kwargs)
@@ -1248,6 +1253,27 @@ class SessionManager:
         delivered_workspace_frames = set()
         policy = TaskExecutionPolicy.for_session(session.record, session_limit('MAX_TOOL_ROUNDS'))
 
+        rounds = iter(policy.rounds())
+        next_stage = policy.progress_window
+        handoff_revisions = 0
+        recover_sources = False
+
+        def reserve_review_round() -> bool:
+            index = next(rounds, None)
+            if index is None:
+                return False
+            run = session.record['last_run']
+            run['model_rounds'] = index + 1
+            if config.ENABLE_SESSION_BUDGETS:
+                run['budget']['rounds_remaining'] = (
+                    None if policy.maximum_rounds is None else policy.maximum_rounds - index - 1)
+            return True
+
+        gate = None
+        if self.flow_workspace_scope(session):
+            from agent_core.core.flow_draft_gate import FlowDraftGate
+            gate = FlowDraftGate(self, session, reserve_review_round)
+
         def checkpoint(reason, message):
             session.record['status'] = 'checkpoint'
             session.record['last_run']['stop_reason'] = reason
@@ -1257,10 +1283,11 @@ class SessionManager:
             session.record['status'] = 'running'
             session.record['last_run']['automatic_continuations'] = 0
             session.record['last_run']['recovery_attempts'] = 0
-            for round_index in policy.rounds():
+            for round_index in rounds:
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
-                if round_index and round_index % policy.progress_window == 0:
+                if round_index >= next_stage:
+                    next_stage = (round_index // policy.progress_window + 1) * policy.progress_window
                     _, waiting = execution_state(self, session)
                     tools = session.record['last_run']['tools']
                     progressed = any(item.get('execution_progress', item['source'] == 'executed')
@@ -1415,8 +1442,11 @@ class SessionManager:
                 recovered = 0
                 while True:
                     try:
-                        reply = await self._call_model(history, session_id=session.id,
-                                                 emit=lambda kind, text: self.emit(session, kind, text))
+                        model_options = {}
+                        if handoff_revisions:
+                            model_options = {'source_reads': True} if recover_sources else {'disable_tools': True}
+                        reply = await self._call_model(history, session_id=session.id, **model_options,
+                            emit=lambda kind, text: self.emit(session, kind, text))
                         break
                     except (TimeoutError, ModelResponseError) as exc:
                         if recovered >= session_limit('MODEL_RECOVERY_LIMIT') or session.cancelled.is_set():
@@ -1482,6 +1512,15 @@ class SessionManager:
                 session.partial_reasoning = ''
                 await self.save(session)
                 calls = reply.get('tool_calls', [])
+                allowed_reads = recover_sources and all(call['function']['name'] in {'read_file', 'rag_search'}
+                                                        for call in calls)
+                recover_sources = False
+                if calls and handoff_revisions and not allowed_reads:
+                    for call in calls:
+                        session.record['messages'].append({'role': 'tool', 'tool_call_id': call['id'],
+                            'content': '[已拒绝] 交接修订不允许执行工具，尚未执行。', '_provenance': 'not_executed'})
+                    checkpoint('flow_source_review', '交接修订请求了工具，已保留此前结果。')
+                    break
                 if not calls:
                     if policy.automatic:
                         unfinished, waiting = execution_state(self, session)
@@ -1505,7 +1544,7 @@ class SessionManager:
                         session.record['last_run']['handoff_validation_failed'] = True
                     if (failure and failure['code'] == 'invalid_json' and isinstance(content, str) and content.strip()
                             and not unfinished and not waiting
-                            and (policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds)):
+                            and reserve_review_round()):
                         # 格式修正属于同一轮，只允许一次，且不开放工具。
                         instruction = ('请只修正上一条回答的输出格式，保留已有业务内容，不新增事实、操作或工具调用。'
                                        '只输出符合交接契约的单个 JSON 对象，不要代码围栏或附加文字。'
@@ -1536,10 +1575,6 @@ class SessionManager:
                             self.observer.event('handoff.finalization', session_id=session.id,
                                 turn_id=session.record['last_run']['turn_id'], state='cancelled')
                             raise asyncio.CancelledError
-                        session.record['last_run']['model_rounds'] = round_index + 2
-                        if config.ENABLE_SESSION_BUDGETS:
-                            session.record['last_run']['budget']['rounds_remaining'] = (
-                                None if policy.maximum_rounds is None else policy.maximum_rounds - round_index - 2)
                         session.phase = '修正交接格式'
                         self._observe_phase(session, 'handoff_finalization')
                         self.notify()
@@ -1583,6 +1618,25 @@ class SessionManager:
                                 state=session.record['last_run']['handoff_finalization']['status'])
                     if failure:
                         session.record['last_run']['handoff_validation_failed'] = True
+                    if gate and gate.pending_tools:
+                        checkpoint('flow_source_review', '有被拒绝的草稿尚未成功提交，请核对已保存的工具回执。')
+                        break
+                    if gate and not failure:
+                        feedback = await gate.check(reply.get('content') or '', stage='handoff',
+                                                    force=bool(handoff_revisions))
+                        if feedback:
+                            if gate.blocked or handoff_revisions >= 2:
+                                checkpoint('flow_source_review', gate.blocked or '交接修订后仍缺少来源支持。')
+                                break
+                            handoff_revisions += 1
+                            recover_sources = gate.needs_sources and handoff_revisions == 1
+                            restriction = ('可先用本节点已有的只读来源工具核对原资料，禁止写入或重发。' if recover_sources else
+                                           '禁止调用工具或重复提交。')
+                            session.record['messages'].append({'role': 'user', '_context_reference': True,
+                                'content': '仅修订上一份交接，保留已有操作、回执和输出格式。' + restriction
+                                           + '以下是来源审查反馈数据：' + json.dumps(feedback, ensure_ascii=False)})
+                            await self.save(session)
+                            continue
                     self.observer.event('model.final', session_id=session.id,
                         turn_id=session.record['last_run']['turn_id'], message_index=reply_index,
                         state='failed' if failure else 'completed')
@@ -1615,7 +1669,10 @@ class SessionManager:
                     else:
                         try:
                             with observation_context(batch_id=batch_id, tool_call_id=call['id']):
-                                result = await self._tool(session, call, evidence=evidence)
+                                if gate:
+                                    result = await gate.execute_tool(call, evidence)
+                                else:
+                                    result = await self._tool(session, call, evidence=evidence)
                         except Exception as exc:
                             result = f'工具执行失败: {type(exc).__name__}: {exc}'
                     if self.observer.enabled:
@@ -1713,6 +1770,9 @@ class SessionManager:
                             break
                     index += len(batch)
                 if evidence_capacity_reached:
+                    break
+                if gate and gate.blocked:
+                    checkpoint('flow_source_review', gate.blocked)
                     break
             else:
                 _, waiting = execution_state(self, session)
