@@ -26,6 +26,8 @@ class FlowDraftGate:
         self.blocked = ''
         self.needs_sources = False
         self.pending_tools: set[tuple[str, str]] = set()
+        self.pending_items: set[str] = set()
+        self.passed_items: set[str] = set()
 
     @staticmethod
     def tool_key(name: str, arguments: str) -> tuple[str, str]:
@@ -66,6 +68,79 @@ class FlowDraftGate:
         return result
 
     async def check(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None) -> str | None:
+        if stage != 'handoff' or self.blocked:
+            return await self._check_one(draft, stage=stage, force=force, call_id=call_id)
+        try:
+            value = json.loads(draft)
+        except (TypeError, ValueError, RecursionError):
+            value = draft
+        if not isinstance(value, str):
+            draft = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        if not force and not self.pending_items and not needs_review(draft):
+            return None
+        from agent_core.core.flow_review_items import review_units
+        char_limit = session_limit('MODEL_INPUT_CHARS')
+        sources = review_sources(self.session.record, char_limit=min(24000, char_limit // 2))
+        units = review_units(draft, sources, required_ids=frozenset(self.pending_items)) if sources else None
+        # 无法把先前整稿拒绝关联到事项时，保留整稿复审。
+        if units is None or (force and not self.pending_items):
+            return await self._check_one(draft, stage=stage, force=force or bool(self.pending_items), call_id=call_id)
+        original_sources = {row.get('id'): row for row in sources}
+
+        def observed(row):
+            original = original_sources.get(row.get('id')) if isinstance(row, dict) else None
+            return (isinstance(original, dict) and isinstance(row.get('text'), str)
+                    and row['text'] in original.get('text', '')
+                    and all(original.get(key) == value for key, value in row.items() if key != 'text'))
+        ids = [unit.get('item_id') for unit in units]
+        if (any(not isinstance(unit.get('item_id'), str) or not isinstance(unit.get('draft'), str)
+                or not isinstance(unit.get('sources'), list)
+                or not all(observed(row) for row in unit.get('sources', [])) for unit in units)
+                or len(ids) != len(set(ids)) or not self.pending_items.issubset(ids)):
+            return await self._check_one(draft, stage=stage, force=True, call_id=call_id)
+        if not units:
+            return None
+        events = self.session.record['last_run'].setdefault('draft_reviews', [])
+        start = len(events)
+        recovery = [False]
+        summary = []
+        feedback = None
+        cancelled = False
+        for unit in units:
+            item_id = unit['item_id']
+            key = hashlib.sha256(json.dumps([unit['draft'], unit['sources'], self.session.flow_review_task],
+                ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            item_digest = hashlib.sha256(item_id.encode('utf-8', 'surrogatepass')).hexdigest()
+            if key in self.passed_items and item_id not in self.pending_items:
+                summary.append({'item_sha256': item_digest, 'status': 'reused', 'draft_sha256': hashlib.sha256(
+                    unit['draft'].encode('utf-8', 'surrogatepass')).hexdigest()})
+                continue
+            try:
+                feedback = await self._check_one(unit['draft'], stage=stage, force=True,
+                    sources_override=unit['sources'], recovery=recovery)
+            except asyncio.CancelledError:
+                cancelled = True
+            child = events.pop()
+            summary.append({'item_sha256': item_digest, 'status': child['status'],
+                            'draft_sha256': child['draft_sha256'], 'attempts': child.get('attempts', [])})
+            if cancelled:
+                break
+            if feedback:
+                self.pending_items.add(item_id)
+                break
+            self.pending_items.discard(item_id)
+            self.passed_items.add(key)
+        event = {'stage': stage, 'status': summary[-1]['status'] if feedback or cancelled else 'passed',
+                 'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
+                 'unit_count': len(units), 'units': summary,
+                 'attempts': [attempt for row in summary for attempt in row.get('attempts', [])]}
+        events.insert(start, event)
+        if cancelled:
+            raise asyncio.CancelledError
+        return feedback
+
+    async def _check_one(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
+                         sources_override: list[dict] | None = None, recovery: list[bool] | None = None) -> str | None:
         if self.blocked:
             return self.blocked
         try:
@@ -83,7 +158,8 @@ class FlowDraftGate:
             event['tool_call_id'] = call_id
         run.setdefault('draft_reviews', []).append(event)
         char_limit = session_limit('MODEL_INPUT_CHARS')
-        sources = review_sources(self.session.record, char_limit=min(24000, char_limit // 2))
+        sources = (sources_override if sources_override is not None else
+                   review_sources(self.session.record, char_limit=min(24000, char_limit // 2)))
         read_paths = {row.get('path') for row in sources if row['kind'] == 'read_file'}
         reported_paths = {row['path'] for row in sources if row['kind'] == 'custom_result' and row.get('path')}
         pending_paths = sorted(reported_paths - read_paths)
@@ -96,7 +172,7 @@ class FlowDraftGate:
             return '尚无本轮可核对的原文。请先读取相关原始资料，或去掉无依据的事实断言，明确标注推断或待核实事项。'
         task = self.session.flow_review_task
         event['task_digest'] = hashlib.sha256(task.encode('utf-8', 'surrogatepass')).hexdigest()
-        history = review_messages(draft, sources, node_task=task)
+        history = review_messages(draft, sources, node_task=task, per_item=sources_override is not None)
         if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
             event['status'] = 'context_budget'
             return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
@@ -120,6 +196,8 @@ class FlowDraftGate:
                 if self.session.cancelled.is_set():
                     raise asyncio.CancelledError
                 if attempt:
+                    if recovery is not None:
+                        recovery[0] = True
                     # 重试只给审查员一条定位提醒，沿用原始草稿、来源、协议和权限。
                     notice = ('上一请求超时，请先核对各事项有争议的出处。已标明待核实的推测和流程路由，'
                               '只需确认标注与原文一致；无须重新完成各事项的业务任务。')
@@ -138,7 +216,7 @@ class FlowDraftGate:
                     break
                 except TimeoutError:
                     attempts[-1] = 'TimeoutError'
-                    if attempt or not session_limit('MODEL_RECOVERY_LIMIT'):
+                    if attempt or (recovery is not None and recovery[0]) or not session_limit('MODEL_RECOVERY_LIMIT'):
                         raise
             if self.session.cancelled.is_set():
                 raise asyncio.CancelledError

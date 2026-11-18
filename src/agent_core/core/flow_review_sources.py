@@ -35,7 +35,7 @@ def _custom_names(record: dict) -> dict[str, dict]:
     return {item["name"]: item for item in definitions if item["name"] in allowed}
 
 
-def _custom_args(arguments: object, definition: dict) -> tuple[str, str] | None:
+def _custom_args(arguments: object, definition: dict) -> tuple[str | None, str | None] | None:
     if not isinstance(arguments, dict):
         return None
     names = {"path", "file_path", "input_path", "source_path"}
@@ -50,11 +50,16 @@ def _custom_args(arguments: object, definition: dict) -> tuple[str, str] | None:
         properties = definition["parameters"].get("properties", {})
         defaults = [properties[name].get("default") for name in names & properties.keys()
                     if isinstance(properties[name], dict) and "default" in properties[name]]
-        if len(defaults) != 1:
+        if len(defaults) == 1:
+            path, path_kind = defaults[0], "path_hint"
+        elif (not defaults and set(properties) <= names | selectors
+              and arguments.keys() <= properties.keys()
+              and not names.intersection(definition["parameters"].get("required", []))):
+            # 只承认命令实际返回的资料记录，不从工具代码或 stdout 推断文件路径。
+            path, path_kind = None, None
+        else:
             return None
-        path = defaults[0]
-        path_kind = "path_hint"
-    if (not isinstance(path, str) or not path or len(path) > 512 or "\\" in path
+    if path_kind is not None and (not isinstance(path, str) or not path or len(path) > 512 or "\\" in path
             or any(ord(char) < 32 for char in path)
             or PurePosixPath(path).is_absolute() or PureWindowsPath(path).drive
             or any(part in {".", "..", ""} for part in path.split("/"))):
@@ -74,7 +79,34 @@ def _custom_args(arguments: object, definition: dict) -> tuple[str, str] | None:
     return path, path_kind
 
 
-def _custom_stdout(content: str) -> str | None:
+def _record_collection(value: object) -> bool:
+    """无路径的工具回报须含可区分的资料记录，不接纳状态回执。"""
+    if isinstance(value, dict):
+        if value.get("ok", True) is not True:
+            return False
+        items = value.get("items", value.get("records"))
+        if "count" in value and (type(value["count"]) is not int
+                                or not isinstance(items, list) or value["count"] != len(items)):
+            return False
+    else:
+        items = value
+    if not isinstance(items, list) or not items:
+        return False
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            return False
+        item_id = item.get("id")
+        if not isinstance(item_id, str) or not item_id or item_id in seen:
+            return False
+        if not any(isinstance(item.get(key), str) and item[key].strip()
+                   for key in ("text", "body", "content", "description")):
+            return False
+        seen.add(item_id)
+    return True
+
+
+def _custom_stdout(content: str, *, require_records: bool = False) -> str | None:
     prefix = '[退出码] 0\n[stdout]\n'
     if not content.startswith(prefix):
         return None
@@ -89,7 +121,10 @@ def _custom_stdout(content: str) -> str | None:
     # 常见写入回执仅报告产物状态，不能作为读取材料。
     if isinstance(value, dict) and {"saved", "written", "created", "updated", "deleted", "output_path"} & value.keys():
         return None
+    if require_records and not _record_collection(value):
+        return None
     return stdout if isinstance(value, (dict, list)) else None
+
 
 def review_sources(record: dict, *, char_limit: int) -> list[dict]:
     """返回完整观察区间；预算按正文字符计，不表示整个文件完整。"""
@@ -174,9 +209,10 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
                 continue
             if name in custom_names:
                 path_info = _custom_args(arguments, custom_names[name])
-                stdout = _custom_stdout(content)
-                if path_info is not None and stdout is not None:
-                    custom_rows.append((name, *path_info, stdout))
+                if path_info is not None:
+                    stdout = _custom_stdout(content, require_records=path_info[1] is None)
+                    if stdout is not None:
+                        custom_rows.append((name, *path_info, stdout))
                 continue
             observation = validate_observation(content, result.get("_context_observation"))
             if observation is None or observation.reader_tool != name:
@@ -208,8 +244,11 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
         identity = (name, path, path_kind, stdout)
         if (len(stdout) > budget or identity in seen or (path_kind == "path" and (path, stdout) in strong)):
             continue
-        rows.append({"id": f"T{len(seen) + 1}", "kind": "custom_result", "scope": "tool_report",
-                     "tool": name, path_kind: path, "text": stdout})
+        row = {"id": f"T{len(seen) + 1}", "kind": "custom_result", "scope": "tool_report",
+               "tool": name, "text": stdout}
+        if path_kind:
+            row[path_kind] = path
+        rows.append(row)
         seen.add(identity)
         budget -= len(stdout)
     return rows

@@ -67,7 +67,7 @@ def _review_field_hints(draft: str) -> list[str]:
         return []
 
 
-def review_messages(draft: str, sources: list[dict], *, node_task: str = "") -> list[dict]:
+def review_messages(draft: str, sources: list[dict], *, node_task: str = "", per_item: bool = False) -> list[dict]:
     """独立审查：草稿、观察片段和可选节点职责分别编码。"""
     rows = [{key: row[key] for key in ("id", "kind", "text", "scope", "path", "item_ref", "tool") if key in row}
             for row in sources if isinstance(row, dict)]
@@ -89,6 +89,9 @@ def review_messages(draft: str, sources: list[dict], *, node_task: str = "") -> 
         "不要编造引用。需要来源时请求按原权限补读，不要假定可以访问或强迫编造引文。"
         "没有可引用来源时不要声称通过。"
     )
+    if per_item:
+        system += ("本次只复核当前事项的完整记录和共享备注里归属于它的来源断言。"
+                   "各事项分别核对，整份交接待框架汇总。不要要求当前片段再次提供整个项目的所有记录。")
     payload = {"draft": draft, "sources": rows}
     hints = _review_field_hints(draft)
     if hints:

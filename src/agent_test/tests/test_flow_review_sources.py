@@ -297,3 +297,42 @@ def test_first_party_same_path_and_content_suppresses_custom_duplicate():
     data["last_run"]["tools"].append(event)
     rows = review_sources(data, char_limit=1000)
     assert len(rows) == 1 and rows[0]["kind"] == "read_file"
+
+def selector_result(arguments, output):
+    data = custom_record()
+    data["custom_tools"][0]["parameters"]["properties"] = {
+        "path": {"type": "string"}, "limit": {"type": "integer"},
+    }
+    data["messages"][1]["tool_calls"][0]["function"]["arguments"] = json.dumps(arguments)
+    data["messages"][2]["content"] = "[退出码] 0\n[stdout]\n" + json.dumps(output, ensure_ascii=False)
+    return data
+
+
+def test_selector_only_lookup_with_source_records_has_no_attributed_path():
+    output = {"ok": True, "path": "data.json", "total": 2, "count": 2, "skipped": 0,
+              "items": [{"id": "A", "text": "客户描述 A"}, {"id": "B", "text": "客户描述 B"}]}
+    sources = review_sources(selector_result({"limit": 0}, output), char_limit=4000)
+    assert len(sources) == 1
+    row = sources[0]
+    assert row["kind"] == "custom_result" and row["scope"] == "tool_report"
+    assert "path" not in row and "path_hint" not in row
+    assert json.loads(row["text"]) == output
+
+
+@pytest.mark.parametrize("output", [
+    {"ok": False, "items": [{"id": "A", "text": "错误回显"}]},
+    {"saved": True, "items": [{"id": "A", "text": "写入回显"}]},
+    [{"id": "A", "status": "written"}],
+    [{"id": "A", "text": "一"}, {"id": "A", "text": "二"}],
+    {"items": [{"id": "A", "text": "一"}], "count": 2},
+])
+def test_selector_without_path_does_not_promote_status_or_ambiguous_records(output):
+    assert review_sources(selector_result({"limit": 5}, output), char_limit=4000) == []
+
+
+def test_selector_without_path_requires_selection_only_declared_parameters():
+    output = [{"id": "A", "text": "一"}]
+    data = selector_result({"limit": 1}, output)
+    data["custom_tools"][0]["parameters"]["properties"]["body"] = {"type": "string"}
+    assert review_sources(data, char_limit=4000) == []
+    assert review_sources(selector_result({"limit": -1}, output), char_limit=4000) == []
