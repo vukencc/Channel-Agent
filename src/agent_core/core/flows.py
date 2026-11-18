@@ -199,22 +199,26 @@ class FlowService:
     @_pinned_write
     def _write(self, value, *, notify=True):
         path = self._path(value["id"])
-        if not path.exists() and value["id"] in self.records:
-            raise PermissionError("Flow 文件已在外部删除")
-        if path.exists():
+        try:
             with opened_path(self.directory, path) as descriptor:
                 info = os.fstat(descriptor)
                 with os.fdopen(os.dup(descriptor), encoding="utf-8") as stream:
                     raw = stream.read()
                     previous = Definition.model_validate(json.loads(raw))
+        except FileNotFoundError:
+            if path.exists():
+                raise
+            if value["id"] in self.records:
+                raise PermissionError("Flow 文件已在外部删除") from None
+        else:
             if previous.id != value["id"]:
                 raise PermissionError("Flow 文件身份不匹配")
             identity = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
             if self.file_identities.get(value["id"]) != identity:
                 raise PermissionError("Flow 文件已在外部变化")
-        self.manager.store.atomic_write(path, json.dumps(value, ensure_ascii=False, allow_nan=False))
-        info = path.stat(follow_symlinks=False)
         raw = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        self.manager.store.atomic_write(path, raw)
+        info = path.stat(follow_symlinks=False)
         self.file_identities[value["id"]] = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
         fsync_directory(self.directory)
         if notify:

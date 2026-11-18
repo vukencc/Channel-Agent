@@ -89,9 +89,12 @@ class ProjectService:
         stored = self._read(project_id)
         flow = self.flows.records[flow_id]
         if (stored["flow_id"] != flow_id or project["flow_id"] != flow_id
-                or flow["project_id"] != project_id or not self.flows._path(flow_id).exists()):
+                or flow["project_id"] != project_id):
             raise ValueError("项目与 Flow 的关联无效")
-        self.flows._verify_link_file(flow_id)
+        try:
+            self.flows._verify_link_file(flow_id)
+        except FileNotFoundError:
+            raise ValueError("项目与 Flow 的关联无效") from None
 
     def _path(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
@@ -119,10 +122,13 @@ class ProjectService:
 
     def _write(self, value):
         path = self._path(value["id"])
-        if not path.exists() and value["id"] in self.records:
-            raise PermissionError("项目文件已在外部删除")
-        if path.exists():
+        try:
             self._read(value["id"])
+        except FileNotFoundError:
+            if path.exists():
+                raise
+            if value["id"] in self.records:
+                raise PermissionError("项目文件已在外部删除") from None
         self.manager.store.atomic_write(path, json.dumps(value, ensure_ascii=False, allow_nan=False))
         info = path.stat(follow_symlinks=False)
         self.file_identities[value["id"]] = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
