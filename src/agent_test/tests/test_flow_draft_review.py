@@ -92,3 +92,27 @@ def test_prompt_describes_workflow_and_report_boundaries():
     prompt = review_messages("草稿", [], node_task="分类")[0]["content"]
     for phrase in ("节点职责", "工具实际返回", "作者身份", "路由", "原权限"):
         assert phrase in prompt
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_large_json_has_path_hints_and_keeps_full_input(fenced):
+    draft = json.dumps({"items": [{"id": "A", "a/b~c": "客户明确提出诉求", "text": "字" * 1100}]}, ensure_ascii=False)
+    if fenced:
+        draft = "```json\n" + draft + "\n```"
+    sources = [{"id": "S1", "kind": "read_file", "text": "原始内容"}]
+    messages = review_messages(draft, sources)
+    payload = json.loads(messages[1]["content"])
+    assert payload["draft"] == draft
+    assert payload["sources"] == sources
+    assert payload["review_field_hints"] == ["/items/0/a~1b~0c"]
+    assert "跨字段" in messages[0]["content"]
+
+def test_path_hints_fall_back_on_invalid_or_excessive_structure():
+    for draft in [
+        "客户明确提出诉求" + "字" * 1100,
+        json.dumps({"text": "字" * 1100, "items": ["客户明确提出诉求"] * 65}, ensure_ascii=False),
+        json.dumps({"text": "字" * 1100, "items": [[[[[[[[[["客户明确提出诉求"]]]]]]]]]]}, ensure_ascii=False),
+        '{"a":"客户明确提出诉求","a":"' + "字" * 1100 + '"}',
+    ]:
+        payload = json.loads(review_messages(draft, [])[1]["content"])
+        assert payload["draft"] == draft
+        assert "review_field_hints" not in payload
