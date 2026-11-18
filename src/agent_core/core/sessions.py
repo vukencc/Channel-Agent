@@ -1544,7 +1544,7 @@ class SessionManager:
                         session.record['last_run']['handoff_validation_failed'] = True
                     if (failure and failure['code'] == 'invalid_json' and isinstance(content, str) and content.strip()
                             and not unfinished and not waiting
-                            and reserve_review_round()):
+                            and (policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds)):
                         # 格式修正属于同一轮，只允许一次，且不开放工具。
                         instruction = ('请只修正上一条回答的输出格式，保留已有业务内容，不新增事实、操作或工具调用。'
                                        '只输出符合交接契约的单个 JSON 对象，不要代码围栏或附加文字。'
@@ -1575,6 +1575,9 @@ class SessionManager:
                             self.observer.event('handoff.finalization', session_id=session.id,
                                 turn_id=session.record['last_run']['turn_id'], state='cancelled')
                             raise asyncio.CancelledError
+                        if not reserve_review_round():
+                            checkpoint('tool_budget', '原模型交互轮次已用完，交接格式尚未修正。')
+                            break
                         session.phase = '修正交接格式'
                         self._observe_phase(session, 'handoff_finalization')
                         self.notify()
