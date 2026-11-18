@@ -46,6 +46,8 @@ class RagSearchArgs(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=config.RAG_MAX_TOP_K, strict=True,
                              description='显式返回数量上限，留空按 breadth 决定')
     updated_after: datetime | None = Field(default=None, description='仅检索此 ISO 8601 时间之后修改的文件，必须带时区，例如 2026-01-01T00:00:00Z')
+    item_ref: str | None = Field(default=None, max_length=64, strict=True,
+        description='可选事项标识，沿用来源条目标识；仅用于调用账本关联，不参与检索或认证')
 
     @field_validator('updated_after')
     @classmethod
@@ -57,10 +59,13 @@ class RagSearchArgs(BaseModel):
 
 @register_tool(RagSearchArgs, name="rag_search", concurrency="read")
 def rag_search(query: str, strictness: str = "normal", breadth: str = "normal", source: str = '',
-               top_k: int | None = None, updated_after: datetime | None = None) -> str:
+               top_k: int | None = None, updated_after: datetime | None = None,
+               item_ref: str | None = None) -> str:
     """
     从本地知识库中检索与问题最相关的文本片段。
     """
+    if item_ref is not None and (not isinstance(item_ref, str) or len(item_ref) > 64):
+        raise ValueError('item_ref 必须是最多 64 字符的文本')
     options = {}
     if top_k is not None:
         if type(top_k) is not int or not 1 <= top_k <= config.RAG_MAX_TOP_K:

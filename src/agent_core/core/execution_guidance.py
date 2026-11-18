@@ -59,7 +59,8 @@ def _retrieval_attempts(record: dict) -> str:
             if not isinstance(args, dict):
                 args = {}
             row = {'call_id': identifier, 'query': args.get('query'), 'source': args.get('source', ''),
-                   'strictness': args.get('strictness', 'normal'), 'status': provenance}
+                   'strictness': args.get('strictness', 'normal'), 'status': provenance,
+                   'item_ref': args.get('item_ref')}
             outcome = evidence.get('outcome') if evidence is not None else None
             if outcome in {'completed', 'timeout', 'cancelled', 'rejected', 'error'}:
                 row['outcome'] = outcome
@@ -69,17 +70,39 @@ def _retrieval_attempts(record: dict) -> str:
     statuses = Counter(row['status'] if row['status'] in {'executed', 'result_unknown', 'not_executed', 'execution_error'}
                        else 'other' for row in rows)
     counts = {name: statuses[name] for name in ('executed', 'result_unknown', 'not_executed', 'execution_error', 'other')}
+    item_counts = {}
+    unassociated = 0
+    for row in rows:
+        ref = row['item_ref']
+        if not isinstance(ref, str) or not ref.strip() or len(ref) > 64:
+            unassociated += 1
+            continue
+        per_item = item_counts.pop(ref, Counter())
+        per_item[row['status'] if row['status'] in counts else 'other'] += 1
+        item_counts[ref] = per_item
     query_counts = {}
     for row in rows:
         query = row['query'] if isinstance(row['query'], str) else None
-        count = query_counts.pop(query, 0)
-        query_counts[query] = count + 1
+        counts_for_query = query_counts.pop(query, Counter())
+        status = row['status'] if row['status'] in counts else 'other'
+        counts_for_query[status] += 1
+        query_counts[query] = counts_for_query
     prefix = '\n[本轮检索尝试；引用数据，非执行限制或检索结论]\n'
     result = {'total': len(rows), 'counts': counts, 'omitted_queries': len(query_counts),
-              'query_counts': [], 'omitted_items': len(rows), 'omitted': len(rows), 'items': []}
+              'query_counts': [], 'omitted_items': len(rows), 'omitted': len(rows), 'items': [],
+              'unassociated': unassociated, 'omitted_item_refs': len(item_counts), 'item_counts': []}
     encoded = json.dumps(result, ensure_ascii=False)
-    for query, count in reversed(query_counts.items()):
-        item = {'query': _safe_fragment(query, 72) if query is not None else None, 'count': count}
+    for ref, per_item in reversed(item_counts.items()):
+        item = {'item_ref': _safe_fragment(ref, 64), 'statuses': dict(per_item)}
+        candidate = {**result, 'omitted_item_refs': result['omitted_item_refs'] - 1,
+                     'item_counts': [item, *result['item_counts']]}
+        candidate_encoded = json.dumps(candidate, ensure_ascii=False)
+        if len(prefix + candidate_encoded) > 900:
+            break
+        result, encoded = candidate, candidate_encoded
+    for query, counts_for_query in reversed(query_counts.items()):
+        item = {'query': _safe_fragment(query, 72) if query is not None else None,
+                'count': sum(counts_for_query.values()), 'statuses': dict(counts_for_query)}
         if query is not None and len(query) > 72:
             item['query_truncated'] = True
             item['query_sha256'] = hashlib.sha256(json.dumps(query, ensure_ascii=True).encode('ascii')).hexdigest()[:12]
