@@ -1336,7 +1336,8 @@ class SessionManager:
                         '摘要和上游交接可能有误，来源不足时标明待核实，不补造细节。'
                         '检索时可在 item_ref 沿用来源中的条目标识，作为关联线索而非身份认证；'
                         '检索尝试按实际查询和状态核对与事项的对应依据；不同事项不得借用次数，'
-                        '总次数或相同查询次数不自动等于某事项次数，无法确认的归为未归属。')
+                        '总次数或相同查询次数不自动等于某事项次数，无法确认的归为未归属。'
+                        '只有上游摘要声称次数而看不到对应事项回执时，标为上游自述或省略非必要次数；不得将上限当实际调用数。')
                 if self.task_plans is not None:
                     budget_text += ('\n复杂任务用 plan_create/revise 记录步骤与验收，开始前 plan_update，'
                         '外部执行用 plan_bind 等待，结果用 plan_get 提供的证据 ID 记录；'
@@ -1656,12 +1657,25 @@ class SessionManager:
                         # 等待批次收尾，禁止在旧写线程仍活动时开放下一轮。
                         await pending
                         raise
-                    for call, (result, metrics) in zip(batch, results):
+                    receipts = [''] * len(batch)
+                    if self.flow_workspace_scope(session) and any(call['function']['name'] == 'rag_search' for call in batch):
+                        from agent_core.core.execution_guidance import retrieval_batch_receipts
+                        receipts = retrieval_batch_receipts(session.record, batch, results)
+                    for call, (result, metrics), receipt in zip(batch, results, receipts):
                         session.record['last_run']['tools'].append(metrics)
                         logger.info('tool_metrics session=%s %s', session.id, metrics)
                         from agent_core.core.tool_observations import extract_observation
                         metadata = extract_observation(result) if metrics['source'] == 'executed' else None
-                        message = {'role': 'tool', 'tool_call_id': call['id'], 'content': str(result)}
+                        content = str(result)
+                        if receipt:
+                            content += receipt
+                            if metadata is not None:
+                                from agent_core.core.tool_observations import observe_text
+                                content = observe_text(content, reader_tool=metadata['reader_tool'],
+                                    body_spans=tuple(tuple(span) for span in metadata['body_spans']),
+                                    recovery_notice=metadata['recovery_notice'])
+                                metadata = extract_observation(content)
+                        message = {'role': 'tool', 'tool_call_id': call['id'], 'content': str(content)}
                         message['_provenance'] = metrics['source']
                         message['_event_id'] = metrics['event_id']
                         if metadata is not None:
@@ -1677,11 +1691,24 @@ class SessionManager:
                                 await self.task_plans.record_evidence(session, call, result, metrics['source'], event_id=metrics['event_id'])
                             except EvidenceCapacityError as exc:
                                 # 已执行批次全部落盘；剩余调用明确标为未执行，保持工具协议配对。
-                                for skipped in calls[index + len(batch):]:
-                                    session.record['messages'].append({
+                                skipped_calls = calls[index + len(batch):]
+                                skipped_messages = []
+                                for skipped in skipped_calls:
+                                    skipped_messages.append({
                                         'role': 'tool', 'tool_call_id': skipped['id'],
                                         'content': '[未执行] 计划证据索引容量不足，工具尚未执行。',
                                         '_provenance': 'not_executed', '_event_id': uuid.uuid4().hex})
+                                skipped_receipts = [''] * len(skipped_calls)
+                                if self.flow_workspace_scope(session) and any(skipped['function']['name'] == 'rag_search' for skipped in skipped_calls):
+                                    from agent_core.core.execution_guidance import retrieval_batch_receipts
+                                    skipped_results = [(message['content'], {'event_id': message['_event_id'],
+                                        'source': 'not_executed', 'name': skipped['function']['name'],
+                                        'tool_call_id': skipped['id'], 'outcome': 'rejected'})
+                                        for skipped, message in zip(skipped_calls, skipped_messages)]
+                                    skipped_receipts = retrieval_batch_receipts(session.record, skipped_calls, skipped_results)
+                                for message, receipt in zip(skipped_messages, skipped_receipts):
+                                    message['content'] += receipt
+                                    session.record['messages'].append(message)
                                 checkpoint('plan_evidence_capacity',
                                     f'工具结果已保存，但计划证据索引容量不足：{exc}；'
                                     '请检查原始工具结果并整理或归档计划后继续。')

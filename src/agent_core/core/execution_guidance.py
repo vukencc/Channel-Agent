@@ -14,12 +14,12 @@ def _safe_fragment(value: str, limit: int) -> str:
     return value[:limit].encode('utf-8', errors='backslashreplace').decode('utf-8')
 
 
-def _retrieval_attempts(record: dict) -> str:
-    """本轮真实配对检索的有界事实索引，不是执行限制或检索结论。"""
+def _retrieval_rows(record: dict) -> list[dict]:
+    """只采集本轮成对的检索调用与来源状态。"""
     messages = record.get('messages', [])
     current = next((i for i in range(len(messages) - 1, -1, -1) if is_user_request(messages[i])), -1)
     if current < 0:
-        return ''
+        return []
     events = {item.get('event_id'): item for item in record.get('last_run', {}).get('tools', [])
               if isinstance(item, dict) and isinstance(item.get('event_id'), str)}
     rows = []
@@ -58,13 +58,79 @@ def _retrieval_attempts(record: dict) -> str:
                 args = {}
             if not isinstance(args, dict):
                 args = {}
-            row = {'call_id': identifier, 'query': args.get('query'), 'source': args.get('source', ''),
+            row = {'call_id': identifier, 'event_id': event_id, 'query': args.get('query'), 'source': args.get('source', ''),
                    'strictness': args.get('strictness', 'normal'), 'status': provenance,
                    'item_ref': args.get('item_ref')}
             outcome = evidence.get('outcome') if evidence is not None else None
             if outcome in {'completed', 'timeout', 'cancelled', 'rejected', 'error'}:
                 row['outcome'] = outcome
             rows.append(row)
+    return rows
+
+
+def _item_ref(call: dict) -> str | None:
+    try:
+        args = json.loads(call['function']['arguments'])
+    except (KeyError, TypeError, ValueError):
+        args = {}
+    ref = args.get('item_ref') if isinstance(args, dict) else None
+    if not isinstance(ref, str) or not ref.strip() or len(ref) > 64:
+        return None
+    return ref
+
+
+def retrieval_batch_receipts(record: dict, calls: list, results: list) -> list[str]:
+    """只扫描一次配对历史，整个批次采用同一快照。"""
+    messages = [*record.get('messages', []), *(
+        {'role': 'tool', 'tool_call_id': call['id'], 'content': str(result),
+         '_provenance': metrics['source'], '_event_id': metrics['event_id']}
+        for call, (result, metrics) in zip(calls, results))]
+    projected = {'messages': messages, 'last_run': {'tools': [
+        *record.get('last_run', {}).get('tools', []), *(metrics for _, metrics in results)]}}
+    rows = _retrieval_rows(projected)
+    events = Counter(row['event_id'] for row in rows)
+    batch_events = Counter(metrics['event_id'] for _, metrics in results)
+    paired = {(row['event_id'], row['call_id']) for row in rows}
+    def verified(call: dict, metrics: dict) -> bool:
+        event_id = metrics['event_id']
+        return (events[event_id] == 1 and batch_events[event_id] == 1
+                and (event_id, call.get('id')) in paired)
+    grouped = {}
+    for row in rows:
+        ref = row.get('item_ref')
+        if not isinstance(ref, str) or not ref.strip() or len(ref) > 64:
+            ref = None
+        counts = grouped.setdefault(ref, Counter())
+        counts['请求'] += 1
+        if row['status'] == 'executed' and row.get('outcome') == 'completed':
+            counts['成功返回'] += 1
+        elif row['status'] == 'result_unknown' or (row['status'] == 'executed' and row.get('outcome') in (None, 'timeout')):
+            counts['超时或结果未知'] += 1
+        else:
+            counts['其他未执行或失败'] += 1
+    unpaired = {_item_ref(call) for call, (_, metrics) in zip(calls, results)
+                if call.get('function', {}).get('name') == 'rag_search' and not verified(call, metrics)}
+    receipts = []
+    for call, (_, metrics) in zip(calls, results):
+        if call.get('function', {}).get('name') != 'rag_search':
+            receipts.append('')
+            continue
+        ref = _item_ref(call)
+        if not verified(call, metrics) or ref in unpaired:
+            receipts.append('\n[本轮检索配对回执] 调用配对不完整，事项次数无法核实。')
+            continue
+        counts = grouped[ref]
+        label = ('调用方提供的事项标识 ' + json.dumps(_safe_fragment(ref, 64), ensure_ascii=False)
+                 if ref is not None else '未关联事项')
+        receipts.append(f"\n[本轮检索配对回执] {label}：请求 {counts['请求']}，成功返回 {counts['成功返回']}，"
+            f"超时或结果未知 {counts['超时或结果未知']}，其他未执行或失败 {counts['其他未执行或失败']}。"
+            '标识由调用方提供，未经身份认证；成功返回不等于命中，次数上限不是实际次数。')
+    return receipts
+
+
+def _retrieval_attempts(record: dict) -> str:
+    """本轮真实配对检索的有界事实索引，不是执行限制或检索结论。"""
+    rows = _retrieval_rows(record)
     if not rows:
         return ''
     statuses = Counter(row['status'] if row['status'] in {'executed', 'result_unknown', 'not_executed', 'execution_error'}
