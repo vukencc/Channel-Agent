@@ -38,6 +38,15 @@ jobs:
           enable-cache: true
       - uses: ./.github/actions/setup-linux-system
       - run: uv sync --locked --extra web --extra desktop
+      - name: 验证安装包中的前端事件循环
+        run: |
+          uv build --wheel --package ai-agent-frontend --out-dir "$RUNNER_TEMP/frontend-wheel"
+          python -I - "$RUNNER_TEMP"/frontend-wheel/*.whl <<'PY'
+          import sys
+          sys.path.insert(0, sys.argv[1])
+          from agent_frontend.runtime_loop import new_runtime_loop
+          new_runtime_loop().close()
+          PY
       - name: 验证真实隔离能力，不静默跳过
         run: uv run python -m agent_test.scripts.ci_sandbox_probe
       - run: uv run pytest -m 'not integration' -q
@@ -81,6 +90,8 @@ jobs:
             'src/agent_test/tests/test_session_persistence_barrier.py',
             'src/agent_test/tests/test_tool_timeout_drain.py',
             'src/agent_test/tests/test_retrieval_attempt_ledger.py',
+            'src/agent_test/tests/test_flow_evidence_grounding.py',
+            'src/agent_test/tests/test_env_sync.py',
             'src/agent_test/tests/test_web_sse_terminal.py',
             'src/agent_test/tests/test_config.py',
             'src/agent_test/tests/test_unknown_model_input_override.py',
