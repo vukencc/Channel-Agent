@@ -9,7 +9,9 @@ runs:
         . /etc/os-release
         mirror=""
         probe=$(mktemp)
-        trap 'rm -f "$probe"' EXIT
+        sources=$(mktemp --suffix=.list)
+        sourceparts=$(mktemp -d)
+        trap 'rm -f "$probe" "$sources"; rmdir "$sourceparts"' EXIT
         for candidate in https://archive.ubuntu.com/ubuntu https://mirrors.edge.kernel.org/ubuntu https://is.archive.ubuntu.com/ubuntu; do
           if curl --fail --silent --show-error --location --connect-timeout 5 --max-time 15 -o "$probe" "$candidate/dists/$VERSION_CODENAME-security/InRelease"; then
             # 仅用日期排除过期镜像；此探测不代替 APT 的签名与有效期校验。
@@ -25,6 +27,7 @@ runs:
           echo "No Ubuntu archive mirror is reachable" >&2
           exit 1
         fi
+        # 保留同一运行器后续步骤使用已选 Ubuntu 镜像的行为。
         for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
           if test -f "$source"; then
             sudo sed -i \
@@ -32,5 +35,11 @@ runs:
               -e "s#https\?://\(azure\.archive\.\|security\.\|archive\.\)ubuntu\.com/ubuntu#$mirror#g" "$source"
           fi
         done
-        sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o APT::Update::Error-Mode=any update
-        sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y bubblewrap util-linux libegl1 libopengl0
+        # 四个依赖都来自 Ubuntu。只更新本步骤使用的源，不受运行器其他软件源的限流影响。
+        for suite in "$VERSION_CODENAME" "$VERSION_CODENAME-updates" "$VERSION_CODENAME-security"; do
+          echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror $suite main universe" >> "$sources"
+        done
+        options=(-o "Dir::Etc::sourcelist=$sources" -o "Dir::Etc::sourceparts=$sourceparts"
+                 -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+        sudo apt-get "${options[@]}" -o APT::Update::Error-Mode=any update
+        sudo apt-get "${options[@]}" install -y bubblewrap util-linux libegl1 libopengl0
