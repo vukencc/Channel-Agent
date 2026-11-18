@@ -41,7 +41,7 @@ def review_payload(history):
     except (TypeError, ValueError):
         return None
     return payload if (isinstance(payload, dict) and {"draft", "sources"} <= set(payload)
-                       and set(payload) <= {"draft", "sources", "workflow_task"}) else None
+                       and set(payload) <= {"draft", "sources", "workflow_task", "review_field_hints"}) else None
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ def runtime_store(tmp_path, monkeypatch, sandbox_env):
 async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
                    disputed=True, review_mode="revise", rounds=None, permission="full_access",
                    repair_tools=False, abandon=False, missing_source=False,
-                   recovery_write=False, recovery_repeat=False, item_ref=None):
+                   recovery_write=False, recovery_repeat=False, item_ref=None, two_writes=False, final_draft=DISPUTED):
     store, project = runtime_store
     seen, reviews, writes, scopes = [], [], [], []
     normal_index = 0
@@ -92,6 +92,17 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
                 raise asyncio.CancelledError
             if review_mode == "budget":
                 raise BudgetExceeded("受控复核预算耗尽")
+            if review_mode in {"timeout_cancel", "timeout_budget"}:
+                if len(reviews) == 1:
+                    raise TimeoutError("受控首次复核超时")
+                if review_mode == "timeout_cancel":
+                    session.cancelled.set()
+                    raise asyncio.CancelledError
+                raise BudgetExceeded("受控恢复预算耗尽")
+            if review_mode == "timeout_once" and len(reviews) == 1:
+                raise TimeoutError("受控首次复核超时")
+            if review_mode == "timeout_once":
+                return assistant('{"status":"pass"}')
             if review_mode == "timeout":
                 raise TimeoutError("受控复核超时")
             if review_mode == "http_error":
@@ -125,14 +136,17 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
         if normal_index == 1:
             return assistant(calls=[call("read-original", "read_file", path="source.txt")])
         if normal_index == 2:
-            return assistant(calls=[write_call("write-original", (
-                CORRECTED if final or not disputed else DISPUTED))])
+            calls = [write_call("write-original", (
+                CORRECTED if final or not disputed else DISPUTED))]
+            if two_writes:
+                calls.append(write_call("write-second", CORRECTED))
+            return assistant(calls=calls)
         if normal_index == 3 and not final and disputed and not classic and review_mode != "pass":
             if abandon:
                 return assistant("已完成记录，全部处理结束。")
             return assistant(calls=[write_call("write-corrected", CORRECTED)])
         if normal_index == 3 and final:
-            return assistant(DISPUTED)
+            return assistant(final_draft)
         if normal_index == 4 and final:
             assert selected_schemas(TOOL_SCHEMAS) == []
             if repair_tools:
@@ -437,3 +451,64 @@ def test_need_source_after_unrelated_read_preserves_readonly_policy(runtime_stor
     source = next(m for m in record["messages"] if m.get("tool_call_id") == "requested-source")
     assert source["_provenance"] == "executed" and SOURCE in source["content"]
     assert {event["name"] for event in record["last_run"]["tools"]} == {"read_file"}
+
+
+@pytest.mark.parametrize("large", [False, True])
+def test_final_review_timeout_recovers_without_repeating_write(runtime_store, monkeypatch, large):
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 1)
+    draft = json.dumps({"scope": DISPUTED, "background": "文" * 1100}, ensure_ascii=False) if large else DISPUTED
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="timeout_once", two_writes=True, final_draft=draft))
+    assert len(reviews) == 2 and reviews[0] == reviews[1]
+    assert writes == [{"reason": CORRECTED}, {"reason": CORRECTED}]
+    assert result["status"] == "completed"
+    assert result["nodes"]["a"]["output_handoff"].endswith(draft)
+    if large:
+        assert reviews[0]["review_field_hints"] == ["/scope"]
+        assert json.loads(reviews[0]["draft"]) == json.loads(draft)
+    assert record["last_run"]["recovery_attempts"] == 1
+    assert record["last_run"]["draft_reviews"][-1]["attempts"] == ["TimeoutError", "passed"]
+    assert record["last_run"]["model_rounds"] == len(scopes)
+
+
+def test_final_review_timeout_recovery_disabled(runtime_store, monkeypatch):
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 0)
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="timeout_once"))
+    assert len(reviews) == 1
+    assert writes == [{"reason": CORRECTED}]
+    assert result["status"] != "completed"
+    assert record["last_run"]["draft_reviews"][-1]["status"] == "TimeoutError"
+
+
+def test_final_review_repeated_timeout_remains_blocked(runtime_store, monkeypatch):
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 3)
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="timeout"))
+    assert len(reviews) == 2
+    assert writes == [{"reason": CORRECTED}]
+    assert result["status"] != "completed"
+    assert record["last_run"]["draft_reviews"][-1]["attempts"] == ["TimeoutError", "TimeoutError"]
+
+
+def test_final_review_timeout_without_round_budget_stays_blocked(runtime_store, monkeypatch):
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 1)
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="timeout_once", rounds=4))
+    assert len(reviews) == 1
+    assert writes == [{"reason": CORRECTED}]
+    assert result["status"] != "completed"
+    assert record["last_run"]["draft_reviews"][-1]["status"] == "TimeoutError"
+
+
+@pytest.mark.parametrize("mode,status", [("timeout_cancel", "cancelled"), ("timeout_budget", "BudgetExceeded")])
+def test_final_review_recovery_failure_stays_blocked(runtime_store, monkeypatch, mode, status):
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 1)
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode=mode))
+    assert len(reviews) == 2
+    assert writes == [{"reason": CORRECTED}]
+    assert result["status"] != "completed"
+    event = record["last_run"]["draft_reviews"][-1]
+    assert event["status"] == status
+    assert event["attempts"] == ["TimeoutError", status]

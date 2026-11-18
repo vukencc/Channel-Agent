@@ -114,11 +114,32 @@ class FlowDraftGate:
             if kind == 'metrics' and isinstance(data, dict):
                 self.manager.emit(self.session, kind, {**data, 'purpose': 'flow_draft_review'})
 
+        attempts = event['attempts'] = []
         try:
-            if self.session.cancelled.is_set():
-                raise asyncio.CancelledError
-            answer = await self.manager._call_model(history, disable_tools=True,
-                                                    session_id=self.session.id, emit=emit)
+            for attempt in range(2):
+                if self.session.cancelled.is_set():
+                    raise asyncio.CancelledError
+                if attempt:
+                    # 重试只给审查员一条定位提醒，沿用原始草稿、来源、协议和权限。
+                    notice = ('上一请求超时，请先核对各事项有争议的出处。已标明待核实的推测和流程路由，'
+                              '只需确认标注与原文一致；无须重新完成各事项的业务任务。')
+                    concise = [{**history[0], 'content': history[0]['content'] + notice}, history[1]]
+                    if history_size(concise) <= char_limit and request_tokens(concise) <= session_limit('MODEL_INPUT_TOKENS'):
+                        history = concise
+                    if not self.reserve_round():
+                        self.blocked = '独立复核超时且模型交互轮次已用完，草稿尚未批准。'
+                        event['status'] = 'TimeoutError'
+                        return self.blocked
+                    run['recovery_attempts'] = run.get('recovery_attempts', 0) + 1
+                attempts.append('pending')
+                try:
+                    answer = await self.manager._call_model(history, disable_tools=True,
+                                                            session_id=self.session.id, emit=emit)
+                    break
+                except TimeoutError:
+                    attempts[-1] = 'TimeoutError'
+                    if attempt or not session_limit('MODEL_RECOVERY_LIMIT'):
+                        raise
             if self.session.cancelled.is_set():
                 raise asyncio.CancelledError
             verdict = parse_review_reply(answer)
@@ -127,17 +148,23 @@ class FlowDraftGate:
                 self.needs_sources = True
             if feedback and self.needs_sources and pending_paths:
                 feedback += ' 可用已有只读工具核对本轮资料工具传入的路径：' + json.dumps(pending_paths[:3], ensure_ascii=False)
-            event['status'] = 'revise' if feedback else 'passed'
+            attempts[-1] = event['status'] = 'revise' if feedback else 'passed'
             return feedback
         except asyncio.CancelledError:
             event['status'] = 'cancelled'
+            if attempts and attempts[-1] == 'pending':
+                attempts[-1] = 'cancelled'
             raise
         except (BudgetExceeded, ModelConnectionError, ModelResponseError, RuntimeModelRequestError, TimeoutError) as exc:
             event['status'] = type(exc).__name__
+            if attempts and attempts[-1] == 'pending':
+                attempts[-1] = event['status']
             self.blocked = '独立复核因预算、连接或模型响应中止，草稿尚未批准。'
             return self.blocked
         except Exception as exc:
             event['status'] = type(exc).__name__
+            if attempts and attempts[-1] == 'pending':
+                attempts[-1] = event['status']
             self.blocked = '来源复核未能完成，草稿尚未提交。'
             return self.blocked
         finally:
