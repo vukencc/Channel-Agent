@@ -8,7 +8,12 @@ from collections.abc import Callable
 
 from agent_core.core.budgets import BudgetExceeded
 from agent_core.core.context import history_size, request_tokens
-from agent_core.core.flow_draft_review import needs_review, parse_review_reply, review_feedback, review_messages
+from agent_core.core.flow_draft_review import (
+    AmbiguousDraft, needs_review, normalised_draft, parse_review_reply, review_feedback, review_messages,
+)
+from agent_core.core.flow_review_claims import (
+    INVALID_REVIEW, claim_feedback, claim_messages, claim_targets, shared_targets,
+)
 from agent_core.core.flow_review_sources import review_sources
 from agent_core.core.instrumentation import tool_outcome
 from agent_core.tools import TOOL_REGISTRY
@@ -68,14 +73,19 @@ class FlowDraftGate:
         return result
 
     async def check(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None) -> str | None:
-        if stage != 'handoff' or self.blocked:
-            return await self._check_one(draft, stage=stage, force=force, call_id=call_id)
+        if self.blocked:
+            return self.blocked
         try:
-            value = json.loads(draft)
-        except (TypeError, ValueError, RecursionError):
-            value = draft
-        if not isinstance(value, str):
-            draft = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+            draft = normalised_draft(draft)
+        except AmbiguousDraft:
+            event = {'stage': stage, 'status': 'ambiguous_draft',
+                     'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest()}
+            if call_id:
+                event['tool_call_id'] = call_id
+            self.session.record['last_run'].setdefault('draft_reviews', []).append(event)
+            return '草稿中有重复的 JSON 字段。同一对象的每个字段只能有一个值，请消除歧义后重新提交。'
+        if stage != 'handoff':
+            return await self._check_one(draft, stage=stage, force=force, call_id=call_id)
         if not force and not self.pending_items and not needs_review(draft):
             return None
         from agent_core.core.flow_review_items import review_units
@@ -108,7 +118,8 @@ class FlowDraftGate:
         cancelled = False
         for unit in units:
             item_id = unit['item_id']
-            key = hashlib.sha256(json.dumps([unit['draft'], unit['sources'], self.session.flow_review_task],
+            kind = unit.get('kind', 'item')
+            key = hashlib.sha256(json.dumps([kind, item_id, unit['draft'], unit['sources'], self.session.flow_review_task],
                 ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             item_digest = hashlib.sha256(item_id.encode('utf-8', 'surrogatepass')).hexdigest()
             if key in self.passed_items and item_id not in self.pending_items:
@@ -117,11 +128,12 @@ class FlowDraftGate:
                 continue
             try:
                 feedback = await self._check_one(unit['draft'], stage=stage, force=True,
-                    sources_override=unit['sources'], recovery=recovery)
+                    sources_override=unit['sources'], unit_kind=kind, recovery=recovery)
             except asyncio.CancelledError:
                 cancelled = True
             child = events.pop()
-            summary.append({'item_sha256': item_digest, 'status': child['status'],
+            summary.append({'item_sha256': item_digest, 'kind': kind, 'status': child['status'],
+                            'target_count': child.get('target_count', 0),
                             'draft_sha256': child['draft_sha256'], 'attempts': child.get('attempts', [])})
             if cancelled:
                 break
@@ -140,15 +152,10 @@ class FlowDraftGate:
         return feedback
 
     async def _check_one(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
-                         sources_override: list[dict] | None = None, recovery: list[bool] | None = None) -> str | None:
+                         sources_override: list[dict] | None = None, unit_kind: str | None = None,
+                         recovery: list[bool] | None = None) -> str | None:
         if self.blocked:
             return self.blocked
-        try:
-            value = json.loads(draft)
-        except (TypeError, ValueError, RecursionError):
-            value = draft
-        if not isinstance(value, str):
-            draft = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
         if not force and not needs_review(draft):
             return None
         run = self.session.record['last_run']
@@ -160,6 +167,9 @@ class FlowDraftGate:
         char_limit = session_limit('MODEL_INPUT_CHARS')
         sources = (sources_override if sources_override is not None else
                    review_sources(self.session.record, char_limit=min(24000, char_limit // 2)))
+        if stage == 'tool':
+            from agent_core.core.flow_review_items import tool_review_sources
+            sources = tool_review_sources(draft, sources)
         read_paths = {row.get('path') for row in sources if row['kind'] == 'read_file'}
         reported_paths = {row['path'] for row in sources if row['kind'] == 'custom_result' and row.get('path')}
         pending_paths = sorted(reported_paths - read_paths)
@@ -172,7 +182,14 @@ class FlowDraftGate:
             return '尚无本轮可核对的原文。请先读取相关原始资料，或去掉无依据的事实断言，明确标注推断或待核实事项。'
         task = self.session.flow_review_task
         event['task_digest'] = hashlib.sha256(task.encode('utf-8', 'surrogatepass')).hexdigest()
-        history = review_messages(draft, sources, node_task=task, per_item=sources_override is not None)
+        shared = unit_kind == 'shared_claim'
+        targets = shared_targets(draft) if shared else claim_targets(draft)
+        event['target_count'] = len(targets)
+        if targets:
+            history = claim_messages(draft, sources, node_task=task, targets=targets,
+                                     per_item=unit_kind == 'item', shared=shared)
+        else:
+            history = review_messages(draft, sources, node_task=task, per_item=unit_kind == 'item')
         if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
             event['status'] = 'context_budget'
             return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
@@ -192,36 +209,47 @@ class FlowDraftGate:
 
         attempts = event['attempts'] = []
         try:
+            retry_status = None
             for attempt in range(2):
                 if self.session.cancelled.is_set():
                     raise asyncio.CancelledError
                 if attempt:
-                    if recovery is not None:
-                        recovery[0] = True
-                    # 重试只给审查员一条定位提醒，沿用原始草稿、来源、协议和权限。
-                    notice = ('上一请求超时，请先核对各事项有争议的出处。已标明待核实的推测和流程路由，'
-                              '只需确认标注与原文一致；无须重新完成各事项的业务任务。')
+                    notice = ('上一请求超时，请只核对有争议的出处，保留原文中的限定和否定。'
+                              if retry_status == 'TimeoutError' else
+                              '上次判定无法核验。请重新独立判断：若需修改，分别逐字引用目标句和所给来源；'
+                              '没有足够依据则请求具体来源。')
                     concise = [{**history[0], 'content': history[0]['content'] + notice}, history[1]]
                     if history_size(concise) <= char_limit and request_tokens(concise) <= session_limit('MODEL_INPUT_TOKENS'):
                         history = concise
                     if not self.reserve_round():
-                        self.blocked = '独立复核超时且模型交互轮次已用完，草稿尚未批准。'
-                        event['status'] = 'TimeoutError'
+                        self.blocked = '独立复核尚无有效判定且模型交互轮次已用完，草稿尚未批准。'
+                        event['status'] = retry_status
                         return self.blocked
+                    if recovery is not None:
+                        recovery[0] = True
                     run['recovery_attempts'] = run.get('recovery_attempts', 0) + 1
+                can_retry = not attempt and not (recovery and recovery[0]) and session_limit('MODEL_RECOVERY_LIMIT') > 0
                 attempts.append('pending')
                 try:
                     answer = await self.manager._call_model(history, disable_tools=True,
                                                             session_id=self.session.id, emit=emit)
-                    break
                 except TimeoutError:
-                    attempts[-1] = 'TimeoutError'
-                    if attempt or (recovery is not None and recovery[0]) or not session_limit('MODEL_RECOVERY_LIMIT'):
+                    retry_status = attempts[-1] = 'TimeoutError'
+                    if not can_retry:
                         raise
-            if self.session.cancelled.is_set():
-                raise asyncio.CancelledError
-            verdict = parse_review_reply(answer)
-            feedback = review_feedback(verdict, sources)
+                    continue
+                if self.session.cancelled.is_set():
+                    raise asyncio.CancelledError
+                verdict = parse_review_reply(answer)
+                feedback = claim_feedback(verdict, sources, targets) if targets else review_feedback(verdict, sources)
+                if targets and feedback == INVALID_REVIEW:
+                    retry_status = attempts[-1] = 'invalid_verdict'
+                    if can_retry:
+                        continue
+                    event['status'] = retry_status
+                    self.blocked = INVALID_REVIEW
+                    return self.blocked
+                break
             if feedback and verdict and verdict.get('status') == 'need_source':
                 self.needs_sources = True
             if feedback and self.needs_sources and pending_paths:

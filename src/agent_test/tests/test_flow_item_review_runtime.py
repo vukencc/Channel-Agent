@@ -193,3 +193,52 @@ def test_actual_projection_round_budget_does_not_publish_partial_handoff(runtime
     event = persisted["last_run"]["draft_reviews"][-1]
     assert event["status"] == "round_budget"
     assert [unit["status"] for unit in event["units"]] == ["passed", "round_budget"]
+
+
+def test_disputed_tool_uses_exact_sentence_and_checked_source(runtime_store, monkeypatch):
+    record, result, _, reviews, writes, _ = asyncio.run(scenario(
+        runtime_store, monkeypatch, item_ref="case-1"))
+    first = reviews[0]
+    assert [target["excerpt"] for target in first["targets"]] == [DISPUTED]
+    target = first["targets"][0]
+    assert target["field"] == "/reason"
+    receipt = next(m for m in record["messages"] if m.get("tool_call_id") == "write-original")
+    assert receipt["_provenance"] == "not_executed" and target["id"] in receipt["content"]
+    assert writes == [{"reason": CORRECTED, "item_ref": "case-1"}]
+    assert result["status"] == "completed"
+
+
+def test_unverifiable_review_is_corrected_before_any_business_rework(runtime_store, monkeypatch):
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 1)
+    original = SessionManager._call_model
+    reviews = []
+
+    async def wrong_quote(self, history, **kwargs):
+        payload = review_payload(history)
+        if payload:
+            reviews.append(payload)
+            return assistant(json.dumps({"status": "revise", "issues": [{
+                "target_id": "invented", "draft_quote": "虚构的表述", "source_id": "unknown",
+                "quote": "虚构的引文", "reason": "需要修改"}]}, ensure_ascii=False))
+        return await original(self, history, **kwargs)
+
+    monkeypatch.setattr(SessionManager, "_call_model", wrong_quote)
+    record, result, _, _, writes, _ = asyncio.run(scenario(runtime_store, monkeypatch))
+    assert len(reviews) == 2 and reviews[0] == reviews[1]
+    assert writes == [] and result["status"] != "completed"
+    event = record["last_run"]["draft_reviews"][-1]
+    assert event["status"] == "invalid_verdict"
+    assert event["attempts"] == ["invalid_verdict", "invalid_verdict"]
+    assert record["last_run"]["recovery_attempts"] == 1
+    attempts = [m.get("tool_call_id") for m in record["messages"] if m["role"] == "tool"]
+    assert "write-original" in attempts and "write-corrected" not in attempts
+
+
+def test_duplicate_handoff_fields_cannot_hide_a_source_claim(runtime_store, monkeypatch):
+    draft = '{"note":"客户明确要求转人工处理。","note":"等待排查"}'
+    record, result, _, reviews, writes, _ = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="pass", final_draft=draft))
+    assert result["nodes"]["a"]["output_handoff"].endswith(CORRECTED)
+    assert draft not in result["nodes"]["a"]["output_handoff"]
+    assert writes == [{"reason": CORRECTED}]
+    assert [e["status"] for e in record["last_run"]["draft_reviews"]] == ["ambiguous_draft", "passed"]

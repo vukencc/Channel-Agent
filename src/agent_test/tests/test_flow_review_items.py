@@ -1,6 +1,6 @@
 import json
 
-from agent_core.core.flow_review_items import review_units
+from agent_core.core.flow_review_items import review_units, tool_review_sources
 
 
 def dump(value):
@@ -147,3 +147,88 @@ def test_flexible_record_source_wrapper_and_unknown_global_context():
     value["qualification"] = "须经主管批准"
     row = source(value)
     assert review_units(dump(draft), [row]) is None
+
+
+def test_shared_claim_context_sources_and_recheck():
+    rows = [{"id": "A1"}, {"id": "A2"}]
+    text = "普通背景。我仅记录客户未提供的材料，不代表已经核实。政策要求先取得授权。尾注。"
+    draft = {"entries": rows, "context": text}
+    evidence = [source(rows), {"id": "S1", "kind": "rag_search", "scope": "observed_span", "text": "完整政策来源"}]
+    units = review_units(dump(draft), evidence)
+    assert len(units) == 1
+    unit = units[0]
+    assert unit["kind"] == "shared_claim"
+    assert json.loads(unit["draft"]) == {"field": "context", "claims": ["我仅记录客户未提供的材料，不代表已经核实。", "政策要求先取得授权。"], "context": text, "item_ids": ["A1", "A2"]}
+    assert unit["sources"] == evidence
+    revised = {**draft, "context": "普通背景。我记录了材料。"}
+    again = review_units(dump(revised), evidence, required_ids=frozenset({unit["item_id"]}))
+    assert len(again) == 1 and again[0]["item_id"] == unit["item_id"]
+    assert json.loads(again[0]["draft"])["claims"] == ["普通背景。我记录了材料。"]
+    collision = {"entries": [{"id": unit["item_id"]}, {"id": "A2"}], "context": text}
+    assert review_units(dump(collision), evidence) is None
+
+
+def test_shared_claim_ambiguity_and_context_changes():
+    base = {"entries": [{"id": "A1"}, {"id": "A2"}]}
+    assert review_units(dump({**base, "memo": "政策要求两者先取得授权。"}), []) is None
+    assert review_units(dump({**base, "memo": "A1和A2政策要求先取得授权。"}), []) is None
+    first = review_units(dump({**base, "memo": "政策要求先取得授权。"}), [source(base["entries"])])[0]
+    changed = review_units(dump({**base, "memo": "政策要求先取得授权。背景变化。"}), [source(base["entries"])])[0]
+    assert first["item_id"] == changed["item_id"] and first["draft"] != changed["draft"]
+    negative = review_units(dump({**base, "memo": "政策不要求先取得授权。"}), [source(base["entries"])])[0]
+    assert json.loads(negative["draft"])["claims"] == ["政策不要求先取得授权。"]
+    other_source = {**source(base["entries"]), "text": dump([{"id": "A1", "text": "变化"}, {"id": "A2"}])}
+    changed_source = review_units(dump({**base, "memo": "政策要求先取得授权。"}), [other_source])[0]
+    assert changed_source["sources"] != first["sources"]
+    other_field = review_units(dump({**base, "memo2": "政策要求先取得授权。"}), [other_source])[0]
+    assert other_field["item_id"] != first["item_id"]
+    assert review_units(dump({**base, "memo": "政策要求先取得授权。这是必要条件。"}), []) is None
+    assert review_units(dump(base), [], required_ids=frozenset({first["item_id"]})) is None
+
+
+def test_tool_source_selector_is_bounded_by_observed_unique_ids():
+    rows = [{"feedback_id": "F01", "text": "第一条"}, {"feedback_id": "F02", "text": "第二条"}]
+    report = {"id": "T1", "kind": "custom_result", "scope": "tool_report", "text": dump({"items": rows, "count": 2})}
+    rag = {"id": "R1", "kind": "rag_search", "scope": "observed_span", "text": dump(rows)}
+    unknown = {"id": "X1", "kind": "read_file", "scope": "observed_span", "text": "不可解析的完整来源"}
+    original = [report, rag, unknown]
+    selected = tool_review_sources("F01客户明确要求复核。", original)
+    assert json.loads(selected[0]["text"]) == rows[0]
+    assert selected[1:] == original[1:]
+    assert tool_review_sources("F01与F02客户明确要求复核。", original) == original
+    assert tool_review_sources("F01与其他事项比较。", original) == original
+    assert tool_review_sources("客户明确要求复核。", original) == original
+    duplicate = {**report, "text": dump([rows[0], rows[0]])}
+    assert tool_review_sources("F01客户明确要求复核。", [duplicate]) == [duplicate]
+    conflicting = {**report, "text": dump([{**rows[0], "item_ref": "F02"}, rows[1]])}
+    assert tool_review_sources("F01客户明确要求复核。", [conflicting]) == [conflicting]
+    conflicting_source = {**report, "id": "T2", "text": dump([{**rows[0], "text": "不同来源记录"}, rows[1]])}
+    assert tool_review_sources("F01客户明确要求复核。", [report, conflicting_source]) == [report, conflicting_source]
+
+
+def test_shared_claim_intra_sentence_reference_and_item_focus():
+    row = [{"id": "F01", "reason": "客户明确要求复核"}, {"id": "F02"}]
+    memo = "F01客户明确要求复核。我只记录客户未提供的资料，不将其作为已核实事实。"
+    units = review_units(dump({"items": row, "memo": memo}), [source(row)])
+    assert units is not None and len(units) == 2
+    item, shared = units
+    assert json.loads(item["draft"])["memo"] == "F01客户明确要求复核。"
+    assert json.loads(shared["draft"])["claims"] == ["我只记录客户未提供的资料，不将其作为已核实事实。"]
+    assert json.loads(shared["draft"])["context"] == memo
+    assert review_units(dump({"items": row, "memo": "客户未提供资料。我将其记录。"}), []) is None
+
+
+def test_unrelated_context_pronoun_does_not_block_independent_shared_claim():
+    draft = {"items": [{"id": "A1"}, {"id": "A2"}],
+             "memo": "登记内容按其分类保存。另有登记步骤。政策要求先取得授权。"}
+    units = review_units(dump(draft), [])
+    assert units is not None and len(units) == 1
+    assert json.loads(units[0]["draft"])["context"] == draft["memo"]
+
+
+def test_shared_claim_general_determiners_are_not_anaphora():
+    draft = {"items": [{"id": "A1"}, {"id": "A2"}],
+             "memo": "其他资料的政策要求先取得授权，但其他条件仍需核对。"}
+    units = review_units(dump(draft), [])
+    assert units is not None and len(units) == 1
+    assert json.loads(units[0]["draft"])["claims"] == [draft["memo"]]

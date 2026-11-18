@@ -41,7 +41,7 @@ def review_payload(history):
     except (TypeError, ValueError):
         return None
     return payload if (isinstance(payload, dict) and {"draft", "sources"} <= set(payload)
-                       and set(payload) <= {"draft", "sources", "workflow_task", "review_field_hints"}) else None
+                       and set(payload) <= {"draft", "sources", "workflow_task", "review_field_hints", "targets"}) else None
 
 
 @pytest.fixture
@@ -114,9 +114,13 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
             if review_mode != "reject_all" and CORRECTED in payload["draft"]:
                 return assistant('{"status":"pass"}')
             source = next(s for s in payload["sources"] if SOURCE in s["text"])
-            return assistant(json.dumps({"status": "revise", "issues": [{
-                "field": "reason", "reason": "客户未明确要求人工，应改为排查建议",
-                "source_id": source["id"], "quote": SOURCE}]}, ensure_ascii=False))
+            issue = {"reason": "客户未明确要求人工，应改为排查建议", "source_id": source["id"], "quote": SOURCE}
+            if payload.get("targets"):
+                target = payload["targets"][0]
+                issue.update(target_id=target["id"], draft_quote=target["excerpt"])
+            else:
+                issue["field"] = "reason"
+            return assistant(json.dumps({"status": "revise", "issues": [issue]}, ensure_ascii=False))
         seen.append(snapshot)
         normal_index += 1
         if missing_source:

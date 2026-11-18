@@ -9,6 +9,36 @@ _RULE = r"(?:政策|规则|资格|授权|权限|角色|条件|流程|步骤|所�
 _MANDATE = r"(?:必须|需要|需先|应先|须|不得|才能|方可|要求|仅.{0,20}可|先.{0,12}(?:授予|获取|申请|审批)|must|requires?|required|shall|only if|first|before)"
 
 
+class AmbiguousDraft(ValueError):
+    """交接含有重复字段，不同读取方可能观察到不同的值。"""
+
+
+def normalised_draft(draft: str) -> str:
+    """解析 JSON 转义以核对原句，规范化前先确认字段有唯一解释。"""
+    text = draft.strip()
+    if text.startswith("```"):
+        fence = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", text, re.I | re.S)
+        if not fence:
+            return draft
+        text = fence.group(1).strip()
+    if not text.startswith(("{", "[")):
+        return draft
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise AmbiguousDraft
+            result[key] = value
+        return result
+
+    try:
+        data = json.loads(text, object_pairs_hook=unique)
+    except (json.JSONDecodeError, RecursionError):
+        return draft
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
 def needs_review(draft: str) -> bool:
     """仅筛选可能涉及来源归属或规则约束的表述。"""
     if not isinstance(draft, str):

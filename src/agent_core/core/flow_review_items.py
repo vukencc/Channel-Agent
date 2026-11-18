@@ -1,4 +1,5 @@
 """将有明确归属的结构化事项投影为独立复核输入。"""
+import hashlib
 import json
 import re
 
@@ -155,13 +156,92 @@ def _id_pattern(ids: set[str]) -> re.Pattern:
     return re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(i) for i in sorted(ids, key=len, reverse=True)) + r")(?![A-Za-z0-9_])")
 
 
-def _shared(data: object, records: list[tuple[str | None, dict]]) -> tuple[dict, set[str]]:
+def tool_review_sources(draft: str, sources: list[dict]) -> list[dict]:
+    """仅凭来源数组中的唯一标识定位原文；无法确认时原样返回。"""
+    if not isinstance(draft, str) or len(draft) > _MAX_TEXT or not isinstance(sources, list) or _CROSS.search(draft):
+        return sources
+    try:
+        arrays = []
+        observed = set()
+        observed_rows = {}
+        keys = ("id", "feedback_id", "item_ref", "item_id", "record_id", "ticket_id")
+        for index, source in enumerate(sources):
+            if (not isinstance(source, dict) or not isinstance(source.get("text"), str)
+                    or (source.get("kind"), source.get("scope")) not in
+                    {("custom_result", "tool_report"), ("user_input", "user_report")}):
+                continue
+            text = source["text"]
+            try:
+                fragments = _source_array(text, _parse(text))
+            except (ValueError, TypeError, IndexError, RecursionError):
+                continue
+            if not fragments:
+                continue
+            mapping = {}
+            for row, fragment in fragments:
+                values = [row[key] for key in keys if key in row]
+                if (not values or any(not isinstance(v, str) or not v or len(v) > 128 for v in values)
+                        or len(set(values)) != 1 or values[0] in mapping
+                        or any(not _record_value(value) for value in row.values())):
+                    return sources
+                if values[0] in observed_rows and observed_rows[values[0]] != row:
+                    return sources
+                observed_rows[values[0]] = row
+                mapping[values[0]] = (row, fragment)
+            if len(mapping) > _MAX_ITEMS:
+                return sources
+            observed.update(mapping)
+            arrays.append((index, mapping))
+        if not observed:
+            return sources
+        pattern = _id_pattern(observed)
+        matches = set(pattern.findall(draft))
+        if len(matches) != 1:
+            return sources
+        selected = next(iter(matches))
+        for _, mapping in arrays:
+            for identifier, (row, _) in mapping.items():
+                for key, value in row.items():
+                    if key in keys:
+                        continue
+                    for text in value if isinstance(value, list) else [value]:
+                        if isinstance(text, str) and (_CROSS.search(text) or any(
+                                match.group() != identifier for match in pattern.finditer(text))):
+                            return sources
+        result = list(sources)
+        for index, mapping in arrays:
+            if selected in mapping:
+                result[index] = {**sources[index], "text": mapping[selected][1]}
+        return result
+    except (ValueError, TypeError, IndexError, RecursionError, OverflowError):
+        return sources
+
+
+def _dependent_shared_context(value: str, disputed: list[str]) -> bool:
+    """仅允许争议句内前半句已提供先行内容的指代。"""
+    pronoun = re.compile(r"这|那|此|其(?!他|它|余)|(?<!其)它|上述|以下|前述|该|\b(?:these|those|it|they|their)\b", re.I)
+    sentences = re.findall(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?", value)
+    for index, sentence in enumerate(sentences):
+        if sentence not in disputed:
+            continue
+        for match in pronoun.finditer(sentence):
+            before = sentence[:match.start()]
+            if not re.search(r"[,，]", before) or not needs_review(before):
+                return True
+        if (index + 1 < len(sentences) and
+                re.match(r"\s*(?:这|那|此|其|它|该|these\b|those\b|it\b|they\b|their\b)", sentences[index + 1], re.I)):
+            return True
+    return False
+
+
+def _shared(data: object, records: list[tuple[str | None, dict]], required: frozenset[str]) -> tuple[dict, set[str], list[dict]]:
     if not isinstance(data, dict):
-        return {}, set()
+        return {}, set(), []
     ids = [row["id"] for _, row in records]
     pattern = _id_pattern(set(ids))
     metadata = {}
     owners = set()
+    claims = []
     for key, value in data.items():
         if isinstance(value, list) and (not value or all(isinstance(item, dict) for item in value)):
             continue
@@ -171,16 +251,31 @@ def _shared(data: object, records: list[tuple[str | None, dict]]) -> tuple[dict,
         elif isinstance(value, str):
             if len(value) > 32_000 or _CROSS.search(value):
                 raise ValueError("ambiguous shared text")
-            for sentence in re.split(r"[。！？；\n.!?;]", value):
+            unit_id = "shared_claim:" + hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()
+            if unit_id in ids:
+                raise ValueError("shared identifier collision")
+            disputed = []
+            for sentence in re.findall(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?", value):
                 if needs_review(sentence):
                     matches = set(pattern.findall(sentence))
-                    if len(matches) != 1:
-                        raise ValueError("unowned shared assertion")
-                    owners.update(matches)
+                    if len(matches) == 1:
+                        owners.update(matches)
+                    elif len(matches) > 1:
+                        raise ValueError("multiple shared owners")
+                    elif (not (re.search(_RULE, sentence, re.I) and re.search(_MANDATE, sentence, re.I)
+                                  or re.match(r"\s*(?:我|我们|本人|本方|I\b|we\b)", sentence, re.I))):
+                        raise ValueError("ambiguous unowned assertion")
+                    else:
+                        disputed.append(sentence)
+            if disputed or unit_id in required:
+                if _dependent_shared_context(value, disputed):
+                    raise ValueError("shared context may depend on another statement")
+                claims.append({"item_id": unit_id, "kind": "shared_claim", "draft": json.dumps(
+                    {"field": key, "claims": disputed or [value], "context": value, "item_ids": ids}, ensure_ascii=False)})
         else:
             raise ValueError("unknown metadata")
         metadata[key] = value
-    return metadata, owners
+    return metadata, owners, claims
 
 
 def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str] = frozenset()) -> list[dict] | None:
@@ -191,11 +286,21 @@ def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str
         data = _parse(draft)
         records = _records(data)
         ids = {row["id"] for _, row in records}
-        if len(records) < 2 or not isinstance(required_ids, frozenset) or not required_ids <= ids:
+        if len(records) < 2 or not isinstance(required_ids, frozenset):
             return None
         if _references([row for _, row in records]) or len(sources) > 64:
             return None
-        metadata, owners = _shared(data, records)
+        metadata, owners, shared_claims = _shared(data, records, required_ids)
+        item_metadata = metadata.copy()
+        for shared in shared_claims:
+            payload = json.loads(shared["draft"])
+            # 单项草稿保留其他共享内容；无主争议只由共享单元裁决。
+            if needs_review("".join(payload["claims"])):
+                item_metadata[payload["field"]] = "".join(
+                    sentence for sentence in re.findall(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?", payload["context"])
+                    if sentence not in payload["claims"])
+        if not required_ids <= ids | {unit["item_id"] for unit in shared_claims}:
+            return None
         seen = set()
         total = 0
         indexed = []
@@ -269,13 +374,19 @@ def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str
             if group is None:
                 item = [row]
             else:
-                item = {key: ([row] if key == group else metadata[key])
+                item = {key: ([row] if key == group else item_metadata[key])
                         for key in data if key == group or key in metadata}
             unit_draft = json.dumps(item, ensure_ascii=False)
             output_chars += len(unit_draft) + sum(len(source["text"]) for source in projected)
             if len(units) >= _MAX_UNITS or output_chars > 2_000_000:
                 return None
             units.append({"item_id": identifier, "draft": unit_draft, "sources": projected})
+        for unit in shared_claims:
+            unit["sources"] = [source.copy() for source in sources]
+            output_chars += len(unit["draft"]) + sum(len(source["text"]) for source in sources)
+            if len(units) >= _MAX_UNITS or output_chars > 2_000_000:
+                return None
+            units.append(unit)
         return units
     except (ValueError, TypeError, IndexError, RecursionError, OverflowError):
         return None
