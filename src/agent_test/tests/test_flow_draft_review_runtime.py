@@ -345,7 +345,7 @@ def test_source_recovery_cannot_write_or_repeat_read_batch(runtime_store, monkey
     assert result["status"] != "completed"
 
 
-async def classification_scenario(runtime_store, *, need_source):
+async def classification_scenario(runtime_store, *, need_source, lookup_command_transport=None):
     """真实临时资料和动态读取命令；仅模型判定使用离线回调。"""
     store, project = runtime_store
     task = "将页面提交故障分类为技术问题，路由人工排查；分类不表示客户明确要求人工。"
@@ -358,6 +358,8 @@ async def classification_scenario(runtime_store, *, need_source):
                   "path": {"type": "string"}, "ids": {"type": "array", "items": {"type": "string"}}},
                   "required": ["path", "ids"]},
               "code": "def main(arguments):\n    import json\n    from pathlib import Path\n    rows = json.loads(Path(arguments['path']).read_text(encoding='utf-8'))\n    return [row for row in rows if row['id'] in arguments['ids']]\n"}
+    if lookup_command_transport is not None:
+        lookup_command_transport(lookup, project)
     reviews = []
     normal_index = 0
 
@@ -414,8 +416,9 @@ async def classification_scenario(runtime_store, *, need_source):
         await manager.shutdown()
 
 
-def test_selected_dynamic_report_and_node_task_reach_independent_review(runtime_store):
-    record, result, reviews, audit, draft = asyncio.run(classification_scenario(runtime_store, need_source=False))
+def test_selected_dynamic_report_and_node_task_reach_independent_review(runtime_store, lookup_command_transport):
+    record, result, reviews, audit, draft = asyncio.run(classification_scenario(
+        runtime_store, need_source=False, lookup_command_transport=lookup_command_transport))
     assert len(reviews) == 1
     assert result["status"] == "completed"
     assert result["nodes"]["triage"]["output_handoff"].endswith(draft)

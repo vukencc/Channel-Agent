@@ -207,7 +207,7 @@ def test_duplicate_file_path_is_deduplicated_but_other_path_is_retained():
     assert [(row["path"], row["text"]) for row in rows] == [("a.txt", "同一段"), ("b.txt", "同一段")]
 
 
-def test_real_custom_read_result_is_lower_trust(sandbox_env, monkeypatch):
+def test_real_custom_read_result_is_lower_trust(sandbox_env, monkeypatch, lookup_command_transport):
     from agent_core import config
     from agent_core.core.custom_tools import custom_registry, validate_custom_tools
 
@@ -215,6 +215,7 @@ def test_real_custom_read_result_is_lower_trust(sandbox_env, monkeypatch):
     spec = {"name": "lookup_feedback", "description": "读取", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False},
             "code": "import json\nfrom pathlib import Path\ndef main(arguments):\n    return json.loads(Path(arguments[\"path\"]).read_text(encoding=\"utf-8\"))\n"}
     (sandbox_env / "feedback.json").write_text("[{\"id\": \"A\", \"text\": \"反馈\"}]", encoding="utf-8")
+    lookup_command_transport(spec, sandbox_env)
     content = custom_registry([spec])["lookup_feedback"].run(json.dumps({"path": "feedback.json"}))
     assert content.startswith("[退出码] 0\n[stdout]\n")
     data = record()
