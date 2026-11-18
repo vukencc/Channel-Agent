@@ -1331,13 +1331,8 @@ class SessionManager:
                 else:
                     budget_text += '\n当前执行环境为隔离沙箱，工作区映射 /workspace；隔离失败时不能回退本机。'
                 if self.flow_workspace_scope(session):
-                    budget_text += ('\n[Flow 来源核验] 对每个事项的描述和转交理由分别核对原始来源；'
-                        '区分逐字原述、基于来源的推断和未知，引用原话须核对原文，不得将推断写成原话或加强原意。'
-                        '摘要和上游交接可能有误，来源不足时标明待核实，不补造细节。'
-                        '检索时可在 item_ref 沿用来源中的条目标识，作为关联线索而非身份认证；'
-                        '检索尝试按实际查询和状态核对与事项的对应依据；不同事项不得借用次数，'
-                        '总次数或相同查询次数不自动等于某事项次数，无法确认的归为未归属。'
-                        '只有上游摘要声称次数而看不到对应事项回执时，标为上游自述或省略非必要次数；不得将上限当实际调用数。')
+                    from agent_core.core.execution_guidance import flow_source_guidance
+                    budget_text += flow_source_guidance()
                 if self.task_plans is not None:
                     budget_text += ('\n复杂任务用 plan_create/revise 记录步骤与验收，开始前 plan_update，'
                         '外部执行用 plan_bind 等待，结果用 plan_get 提供的证据 ID 记录；'

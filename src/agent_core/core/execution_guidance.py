@@ -9,6 +9,20 @@ READ_TOOLS = {'read_file', 'list_files', 'stat_file', 'glob_files', 'history_sea
 WORK_TOOLS = {'create_file', 'append_file', 'edit_file', 'update_file', 'delete_file', 'move_file', 'copy_file', 'make_directory', 'run_command'}
 
 
+def flow_source_guidance() -> str:
+    """Flow 写入与交接共用的来源表达约束。"""
+    return ('\n[Flow 来源核验] 对每个事项的描述和转交理由分别核对原始来源；'
+        '区分逐字原述、基于来源的推断和未知，引用原话须核对原文，不得将推断写成原话或加强原意。'
+        '写操作参数与交接中的每个允许主体和条件须与同一来源条款的具体动作配对，不得跨条款借用；'
+        '重要主张附来源短原文，原文不可得则标明待核实。'
+        '缺字段区分原述未记录、资料未见和调查建议，不得把建议或未见改写成客户明确未记录。'
+        '摘要和上游交接可能有误，来源不足时标明待核实，不补造细节。'
+        '检索时可在 item_ref 沿用来源中的条目标识，作为关联线索而非身份认证；'
+        '检索尝试按实际查询和状态核对与事项的对应依据；不同事项不得借用次数，'
+        '总次数或相同查询次数不自动等于某事项次数，无法确认的归为未归属。'
+        '只有上游摘要声称次数而看不到对应事项回执时，标为上游自述或省略非必要次数；不得将上限当实际调用数。')
+
+
 def _safe_fragment(value: str, limit: int) -> str:
     """保留正常 Unicode，将非法代理字符显示为明确的转义文本。"""
     return value[:limit].encode('utf-8', errors='backslashreplace').decode('utf-8')
@@ -111,7 +125,7 @@ def retrieval_batch_receipts(record: dict, calls: list, results: list) -> list[s
     unpaired = {_item_ref(call) for call, (_, metrics) in zip(calls, results)
                 if call.get('function', {}).get('name') == 'rag_search' and not verified(call, metrics)}
     receipts = []
-    for call, (_, metrics) in zip(calls, results):
+    for call, (result, metrics) in zip(calls, results):
         if call.get('function', {}).get('name') != 'rag_search':
             receipts.append('')
             continue
@@ -125,6 +139,10 @@ def retrieval_batch_receipts(record: dict, calls: list, results: list) -> list[s
         receipts.append(f"\n[本轮检索配对回执] {label}：请求 {counts['请求']}，成功返回 {counts['成功返回']}，"
             f"超时或结果未知 {counts['超时或结果未知']}，其他未执行或失败 {counts['其他未执行或失败']}。"
             '标识由调用方提供，未经身份认证；成功返回不等于命中，次数上限不是实际次数。')
+        from agent_core.core.tool_observations import extract_observation
+        observation = extract_observation(result)
+        if observation is not None and len(observation['body_spans']) > 1:
+            receipts[-1] += ' 多片段须逐条核对动作、主体与条件，不可跨片段借用；重要主张附对应来源短原文。'
     return receipts
 
 
