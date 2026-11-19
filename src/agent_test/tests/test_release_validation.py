@@ -1,8 +1,22 @@
 """Release metadata must agree before a tag can be published."""
 
+from pathlib import Path
+import tomllib
+
 import pytest
 
 from agent_test.scripts.check_release import validate_release
+
+
+def test_workspace_and_core_runtime_report_the_same_version():
+    from agent_core import __version__
+
+    root = Path(__file__).resolve().parents[3]
+    version = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+    for module in ('agent_core', 'agent_frontend', 'agent_test'):
+        project = root / 'src' / module / 'pyproject.toml'
+        assert tomllib.loads(project.read_text(encoding='utf-8'))['project']['version'] == version
+    assert __version__ == version
 
 
 @pytest.fixture

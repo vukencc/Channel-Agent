@@ -63,6 +63,8 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
                 'nodes': [{'id': 'support', 'title': '客服', 'prompt': '处理合成反馈',
                            'tool_names': [tool['name'] for tool in tools], 'custom_tools': tools}], 'edges': []}
     budget_schemas, provider_schemas, actual_results = [], [], []
+    scheduled_calls, observed_results, business_rounds = [], [], []
+    runtime_sessions = []
     events = []
 
     class CaptureObserver(NullObserver):
@@ -71,12 +73,18 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
         def event(self, kind, *, session_id=None, **fields):
             events.append((kind, fields))
     original_prepare = sessions.prepare_model_history
+    original_confirmation = sessions.confirmation_history
 
     async def observed_prepare(*args, **kwargs):
         budget_schemas.append(copy.deepcopy(kwargs['schemas']))
         return await original_prepare(*args, **kwargs)
 
+    def observed_confirmation(offer, schemas, history_context, **kwargs):
+        budget_schemas.append(copy.deepcopy(schemas))
+        return original_confirmation(offer, schemas, history_context, **kwargs)
+
     monkeypatch.setattr(sessions, 'prepare_model_history', observed_prepare)
+    monkeypatch.setattr(sessions, 'confirmation_history', observed_confirmation)
     steps = [tool_call('read_feedback', {}, 'read'),
              tool_call('send_ai_reply', {'feedback_id': 'synthetic-1', 'message': '使用说明'}, 'reply'),
              tool_call('submit_human', {'feedback_id': 'synthetic-2', 'message': '待人工核对'}, 'human')]
@@ -87,16 +95,49 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
             return {'role': 'assistant', 'content': json.dumps({'reply': '生成未执行模板', 'template': template})}
         provider_schemas.append(copy.deepcopy(selected_schemas(TOOL_SCHEMAS)))
         assert provider_schemas[-1] == budget_schemas[-1]
-        previous = [row for row in history if row['role'] == 'tool']
+        request_index = len(provider_schemas) - 1
+        assert request_index <= 6, "三个预审、三个正式业务操作和最终回应必须精确为七轮"
+        previous = [row for row in runtime_sessions[0][session_id].record['messages'] if row['role'] == 'tool']
+        assert len(previous) == request_index
         if previous:
-            actual_results.append(previous[-1])
-            assert '[退出码] 0' in previous[-1]['content'], previous[-1]
-        if len(previous) < len(steps):
-            return {'role': 'assistant', 'content': None, 'tool_calls': [steps[len(previous)]]}
+            receipt = previous[-1]
+            assert receipt['tool_call_id'] == scheduled_calls[-1]['id']
+            observed_results.append(copy.deepcopy(receipt))
+            if request_index % 2:
+                assert '草稿已批准' in receipt['content'], receipt
+                assert receipt['_provenance'] == 'not_executed'
+            else:
+                actual_results.append(copy.deepcopy(receipt))
+                assert '[退出码] 0' in receipt['content'], receipt
+                assert receipt['_provenance'] == 'executed'
+                assert receipt in history, '每次正式业务执行后，普通轮模型必须实际读到该回执'
+        if request_index < 6:
+            step = copy.deepcopy(steps[request_index // 2])
+            original = step['function']['name']
+            schemas = {row['function']['name']: row for row in provider_schemas[-1]}
+            if request_index % 2 == 0:
+                previews = [row for row in provider_schemas[-1]
+                            if original in row['function'].get('description', '')]
+                assert len(previews) == 1
+                assert original not in schemas
+                step['function']['name'] = previews[0]['function']['name']
+                step['id'] = 'draft-' + step['id']
+            else:
+                assert list(schemas) == [original], '每个获批动作的下一次模型交互只确认当前这一笔'
+                assert step['function']['arguments'] == scheduled_calls[-1]['function']['arguments']
+                assert any(row.get('_context_reference') and original in row.get('content', '')
+                           and step['function']['arguments'] in row.get('content', '') for row in history)
+                business_rounds.append(original)
+            spec = tools[request_index // 2]
+            assert schemas[step['function']['name']]['function']['parameters'] == spec['parameters']
+            scheduled_calls.append(copy.deepcopy(step))
+            return {'role': 'assistant', 'content': None, 'tool_calls': [step]}
+        business_rounds.append('final')
         return {'role': 'assistant', 'content': '已写入本地 outbox 和人工队列，未发送外部消息。'}
 
     async def scenario():
         manager = SessionManager(store, model=controlled_model, observer=CaptureObserver())
+        runtime_sessions.append(manager.sessions)
         flows = FlowService(manager)
         projects = ProjectService(manager, flows)
         try:
@@ -117,13 +158,24 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
             assert json.loads((workspace / 'human-queue.json').read_text()) == {
                 'feedback_id': 'synthetic-2', 'message': '待人工核对'}
             assert 'synthetic-1' in actual_results[0]['content']
-            assert len(provider_schemas) == len(budget_schemas) == 4
+            assert len(provider_schemas) == len(budget_schemas) == 7
+            assert business_rounds == ['read_feedback', 'send_ai_reply', 'submit_human', 'final']
+            expected_names = [entry['function']['name'] for entry in scheduled_calls]
+            expected_ids = ['draft-read', 'read', 'draft-reply', 'reply', 'draft-human', 'human']
+            assert [entry['id'] for entry in scheduled_calls] == expected_ids
+            assert [row['tool_call_id'] for row in observed_results] == expected_ids
+            assert [row['tool_call_id'] for row in actual_results] == ['read', 'reply', 'human']
             for event in ('tool.started', 'tool.completed'):
-                assert [fields['tool_name'] for kind, fields in events if kind == event] == [
-                    'read_feedback', 'send_ai_reply', 'submit_human']
-            custom = {row['function']['name']: row for row in provider_schemas[0]}
-            for spec in tools:
-                assert custom[spec['name']]['function']['parameters'] == spec['parameters']
+                assert [fields['tool_name'] for kind, fields in events if kind == event] == expected_names
+                assert [fields['tool_call_id'] for kind, fields in events if kind == event] == expected_ids
+            assert [(kind, fields['tool_call_id']) for kind, fields in events
+                    if kind in {'tool.started', 'tool.completed'}] == [
+                        (kind, identifier) for identifier in expected_ids
+                        for kind in ('tool.started', 'tool.completed')]
+            session = manager.sessions[result['nodes']['support']['session_id']]
+            assert session.record['last_run']['model_rounds'] == 7
+            assert [entry for row in session.record['messages'] for entry in row.get('tool_calls', [])] == scheduled_calls
+            assert [row for row in session.record['messages'] if row['role'] == 'tool'] == observed_results
             monkeypatch.setattr(config, 'MODEL_TOOL_NAMES', ['read_file', 'list_files'])
             with pytest.raises(ValueError, match='run_command'):
                 flows.import_template(portable)

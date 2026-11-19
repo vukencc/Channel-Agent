@@ -10,7 +10,7 @@ Windows 和 Linux 桌面成品通过 [Releases](https://github.com/vukencc/Chann
 
 Windows 成品默认构建为免安装单 exe：放入本地可写 NTFS 目录后双击 `ChannelAgent.exe`，无需安装 Windows Python。首次使用在「模型管理」添加连接；配置和数据默认保存在 exe 所在目录。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
 
-0.6.1 增加模型连接短请求测试和设计失败后的模型设置入口，并改进 Windows 启动、结构化历史和长 Flow 的检索上下文。连接测试可能产生费用，仅验证短请求；完整实测、原检查 19/20 的规格差异及已知限制见[验证记录](docs/designer-windows-e2e-validation-2026-11-15.md)。
+0.6.2 中，Flow 遇到涉及客户明确意愿或办理权限的争议草稿，会在写入前使用同一节点模型独立复核。知识库按事项记录每次检索和结果状态，Windows 配置同步和前端安装包也已修正。客服流程的真实模型测试、双平台回归和成品核验见[0.6.2 验证报告](docs/flow-evidence-release-0.6.2.md)。
 
 ```bash
 uv sync --locked --extra desktop --extra web

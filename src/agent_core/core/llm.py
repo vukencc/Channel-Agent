@@ -23,7 +23,7 @@ from agent_core.core.context import estimate_tokens, request_tokens
 from agent_core.core.messages import PackMessage
 from agent_core.core.model_settings import (DEFAULT_MODEL_DEADLINE, active_endpoint, active_model_deadline,
                                             active_profile, active_reasoning_effort, active_thinking_mode,
-                                            active_total_output_chars)
+                                            active_total_output_chars, check_model_dispatch, ModelDispatchStopped)
 from agent_core.core.tool_settings import selected_schemas
 from agent_core.core.budgets import BudgetExceeded, active_budget, reserve_request, settle_request
 from agent_core.tools import all_schemas
@@ -340,7 +340,9 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
             client = None
             ticket = None
             stream = None
+            dispatched = False
             try:
+                check_model_dispatch()
                 client = await _runtime_client(endpoint) if runtime is not None else await asyncio.to_thread(endpoint_client, endpoint)
                 options = model_options()
                 options.setdefault('tool_choice', 'auto')
@@ -373,7 +375,11 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
                 # Private provenance and attachment references are not provider API fields.
                 request_history = [{key: value for key, value in message.items() if not key.startswith('_')}
                                    for message in request_history]
+                check_model_dispatch()
                 ticket = await reserve_request(reserved_cost(history, schemas, endpoint, options))
+                # 预留在后台写盘。期间已退回的复核不应再发出，也不占用模型费用。
+                check_model_dispatch()
+                dispatched = True
                 route['request_attempts'] = route.get('request_attempts', 0) + 1
                 stream = await client.with_options(timeout=config.SESSION_TIMEOUT).chat.completions.create(
                     model=endpoint['model'], **options, messages=request_history, stream=True,
@@ -393,7 +399,7 @@ async def _open_stream(history: list[dict], session_id: str | None = None):
                 finally:
                     if runtime is not None and client is not None:
                         await _close_runtime_client(client)
-                    await settle_request(ticket, None)
+                    await settle_request(ticket, None if dispatched else 0.0)
                 raise
         try:
             # 有备用时为每个连接阶段预留时间；流开始后不自动换模型。
@@ -526,6 +532,9 @@ async def call_model(history: list[dict], *, session_id: str | None = None, emit
             '模型服务连接失败或中断。请检查服务可用性、网络及代理配置；'
             '稍后可重试。未完成的工具调用不会执行。'
         ) from exc
+    except ModelDispatchStopped:
+        metrics['outcome'] = 'dispatch_stopped' if route['request_attempts'] else 'not_dispatched'
+        raise
     except BudgetExceeded:
         metrics['outcome'] = 'budget_exceeded'
         raise

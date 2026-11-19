@@ -69,3 +69,84 @@ def headless_cli_session():
 
     with create_app_session(output=DummyOutput()):
         yield
+
+
+@pytest.fixture
+def lookup_command_transport(monkeypatch, request):
+    """仅两个固定读取用例：Linux/显式 WSL 真实执行；离线 Windows 用真实子进程。
+
+    此测试传输不是 Windows 沙箱验证，不发布通用执行能力，也不伪造读取结果。
+    RUN_WINDOWS_WSL_TESTS=1 保留真实桥；不把离线传输记为 WSL 沙箱通过。
+    """
+    import base64
+    import json
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    allowed_tests = {
+        "test_real_custom_read_result_is_lower_trust",
+        "test_selected_dynamic_report_and_node_task_reach_independent_review",
+    }
+    assert request.node.originalname in allowed_tests
+    allowed_code = {
+        'import json\nfrom pathlib import Path\ndef main(arguments):\n    return json.loads(Path(arguments["path"]).read_text(encoding="utf-8"))\n',
+        "def main(arguments):\n    import json\n    from pathlib import Path\n    rows = json.loads(Path(arguments['path']).read_text(encoding='utf-8'))\n    return [row for row in rows if row['id'] in arguments['ids']]\n",
+    }
+    native_fixture = os.name == "nt" and os.environ.get("RUN_WINDOWS_WSL_TESTS") != "1"
+    label = ("test_native_python_subprocess" if native_fixture else
+             "real_windows_wsl" if os.name == "nt" else "real_linux_bubblewrap")
+    request.node.user_properties.append(("lookup_transport", label))
+
+    def install(definition, workspace):
+        assert definition["name"] == "lookup_feedback" and definition["code"] in allowed_code
+        root = Path(workspace).resolve(strict=True)
+        assert root.is_relative_to(request.getfixturevalue("tmp_path").resolve(strict=True))
+        if not native_fixture:
+            return label
+        from agent_core.core.command_review import bound_review
+        from agent_core.tools import wsl_command
+
+        def execute_lookup(operation, arguments):
+            assert operation == "run_command"
+            command = arguments["command"]
+            review = bound_review(command, arguments.get("network", False))
+            assert (review is not None and review.name == "lookup_feedback"
+                    and review.code == definition["code"] and not review.network)
+            assert arguments.get("runtime_profile", "system") == "system"
+            assert arguments.get("resource_profile", "standard") == "standard"
+            values = json.loads(review.arguments_json)
+            assert set(values) in ({"path"}, {"path", "ids"})
+            assert values["path"] == "feedback.json"
+            if "ids" in values:
+                assert values["ids"] == ["CF-01"]
+            assert sandbox.sandbox_root().resolve(strict=True) == root
+            assert (root / "feedback.json").resolve(strict=True).parent == root
+            assert not sandbox.cancellation_requested()
+            if not sandbox.ask_permission("run_command", command, arguments.get("reason", ""), command=command):
+                return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
+            # 固定子进程包装只接收经过上方逐字白名单绑定的两段只读源码。
+            script = ("import base64,json,sys; ns={}; "
+                      "exec(compile(base64.b64decode(sys.argv[1]),'<test-lookup>','exec'),ns); "
+                      "print(json.dumps(ns['main'](json.loads(sys.argv[2])),ensure_ascii=False,allow_nan=False))")
+            code = base64.b64encode(review.code.encode("utf-8")).decode("ascii")
+            env = {name: os.environ[name] for name in ("SystemRoot", "TEMP", "TMP") if name in os.environ}
+            with sandbox.execution_authority():
+                sandbox.audit("command_started", strict=True, test_transport=label)
+                process = subprocess.run([sys.executable, "-I", "-X", "utf8", "-c", script,
+                                          code, review.arguments_json], cwd=root, env=env,
+                                         stdin=subprocess.DEVNULL, capture_output=True,
+                                         encoding="utf-8", timeout=config.COMMAND_TIMEOUT,
+                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                sandbox.audit("command", strict=True, exit_code=process.returncode, test_transport=label)
+            # 与命令工具相同的协议封装，内容和退出码全部来自真实进程。
+            parts = [f"[退出码] {process.returncode}",
+                     f"[stdout]\n{sandbox.truncate(process.stdout)}" if process.stdout else "[stdout] （空）"]
+            if process.stderr:
+                parts.append(f"[stderr]\n{sandbox.truncate(process.stderr)}")
+            return "\n".join(parts)
+
+        monkeypatch.setattr(wsl_command, "execute_wsl_tool", execute_lookup)
+        return label
+
+    return install

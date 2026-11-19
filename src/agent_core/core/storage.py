@@ -269,16 +269,19 @@ class SessionStore:
             raise ValueError('消息日志不能是符号链接')
         descriptor = os.open(journal, os.O_RDWR | os.O_CREAT, 0o600)
         with os.fdopen(descriptor, 'r+b') as stream:
-            if stream.seek(0, os.SEEK_END) < offset:
+            end = stream.seek(0, os.SEEK_END)
+            if end < offset:
                 raise ValueError('消息日志短于已提交索引，拒绝覆盖')
-            stream.truncate(offset)  # 仅清理崩溃留下的未提交尾部。
-            stream.seek(offset)
+            if end > offset:
+                stream.truncate(offset)  # 仅清理崩溃留下的未提交尾部。
+                stream.seek(offset)
             for index in range(committed, count):
                 stream.write((json.dumps(record['messages'][index], ensure_ascii=False) + '\n').encode('utf-8'))
             stream.flush()
             os.fsync(stream.fileno())
             end = stream.tell()
-        metadata = {key: value for key, value in record.items() if key != 'messages' and not key.startswith('_')}
+        metadata = {key: value for key, value in record.items() if key != 'messages'
+                    and (not key.startswith('_') or key == '_flow_review_checkpoints')}
         metadata.update(version=2, updated_at=now(), message_count=count, message_bytes=end,
                         system_message=record.get('_system', record['messages'][0]))
         # 日志先 fsync，原子索引后提交；恢复只读取已提交字节。
@@ -403,6 +406,7 @@ class SessionStore:
                         raise ValueError('无效会话格式')
                     record['message_count'] = len(record['messages'])
                     record.pop('messages')
+                record.pop('_flow_review_checkpoints', None)
                 records.append(LazyRecord(record, lambda path=path: self.load_record(path)))
             except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
                 self.errors.append(f'{path.parent.name}: {exc}')
@@ -562,7 +566,7 @@ class SessionStore:
                         for chunk in encoder.iterencode(value):
                             stream.write(chunk.replace('\n', '\n' + ' ' * indent))
                     stream.write('{\n')
-                    keys = [key for key in record if key != 'memory']
+                    keys = [key for key in record if key not in {'memory', '_flow_review_checkpoints'}]
                     if 'messages' not in keys:
                         keys.append('messages')
                     keys.append('memory')
