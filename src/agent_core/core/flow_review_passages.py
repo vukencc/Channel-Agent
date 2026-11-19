@@ -2,12 +2,15 @@
 import json
 import re
 
+from agent_core.core.flow_review_records import parse_record_json, source_array_records
+
 MAX_PASSAGES = 64
 MAX_PASSAGE_CHARS = 8192
 MAX_QUOTE = 160
 _SCOPES = {("read_file", "observed_span"), ("rag_search", "observed_span"),
            ("user_input", "user_report"), ("custom_result", "tool_report")}
 _KEY_SEPARATOR = re.compile(r"\s*:")
+_ID_KEYS = {"id", "feedback_id", "item_ref", "item_id", "record_id", "ticket_id"}
 
 
 def _unique_pairs(pairs: list[tuple]) -> dict:
@@ -76,15 +79,123 @@ def review_passages(sources: list[dict]) -> list[dict]:
     return result
 
 
+def _terms(text: str) -> set[str]:
+    words = set(re.findall(r"[a-z0-9]+", text.lower()))
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        words.update(run[i:i + 2] for i in range(len(run) - 1))
+    return words
+
+
+def _draft_id(draft: str) -> str | None:
+    if not isinstance(draft, str) or len(draft) > 500_000:
+        return None
+    try:
+        data = json.loads(draft, object_pairs_hook=_unique_pairs,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        stack = [data]
+        ids = set()
+        count = 0
+        while stack:
+            value = stack.pop()
+            count += 1
+            if count > 2048:
+                return None
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in _ID_KEYS and isinstance(child, str) and child.strip() and len(child) <= 128:
+                        ids.add(child)
+                    elif isinstance(child, (dict, list)):
+                        stack.append(child)
+            elif isinstance(value, list):
+                stack.extend(value)
+        return next(iter(ids)) if len(ids) == 1 else None
+    except (ValueError, RecursionError):
+        return None
+
+
+def relevant_passages(sources: list[dict], targets: list[dict], draft: str) -> list[dict]:
+    """选择相关的有限提示；索引并非证据裁决，也不代表来源已覆盖。"""
+    passages = review_passages(sources)
+    if not passages or not isinstance(targets, list):
+        return []
+    query = _terms(" ".join(t.get("text", "") for t in targets
+                            if isinstance(t, dict) and isinstance(t.get("text"), str))[:256_000])
+    identifier = _draft_id(draft)
+    by_source = {source["id"]: source for source in sources}
+    ranges = {}
+    if identifier:
+        indexed_sources = {part["source_id"] for part in passages}
+        for source in sources:
+            if source["id"] not in indexed_sources:
+                continue
+            try:
+                data = parse_record_json(source["text"])
+                rows = data.get("items", data.get("records")) if isinstance(data, dict) else data
+                if not isinstance(rows, list) or len(rows) > MAX_PASSAGES:
+                    continue
+                fragments = source_array_records(source["text"], data)
+                if fragments is None:
+                    continue
+                spans = []
+                for row, raw in fragments:
+                    if source["text"].count(raw) != 1:
+                        continue
+                    start = source["text"].index(raw)
+                    matched = any(row.get(k) == identifier for k in _ID_KEYS)
+                    spans.append((start, start + len(raw), matched))
+                ranges[source["id"]] = spans
+            except (ValueError, TypeError, RecursionError, IndexError):
+                continue
+    ranked = []
+    for order, passage in enumerate(passages):
+        source = by_source[passage["source_id"]]
+        span_match = next((matched for start, end, matched in ranges.get(source["id"], [])
+                           if start <= passage["start"] and passage["end"] <= end), None)
+        if span_match is False:
+            continue
+        same_item = span_match is True or (identifier is not None and source.get("item_ref") == identifier)
+        score = len(query & _terms(passage["text"]))
+        if same_item or score:
+            ranked.append((passage, same_item, score, order))
+    # 唯一的原句即使没有词面重叠，也可用于核对同义转述或矛盾。
+    if not ranked and len(passages) == 1 and identifier is None:
+        return passages
+    ranked.sort(key=lambda row: (-int(row[1]), -row[2], row[3]))
+    # 各相关来源先各保留一条，避免单一来源挤掉冲突来源。
+    first = []
+    seen_sources = set()
+    for row in ranked:
+        if row[0]["source_id"] not in seen_sources:
+            first.append(row)
+            seen_sources.add(row[0]["source_id"])
+    ordered = first + [row for row in ranked if row not in first]
+    result = []
+    chars = 0
+    for passage, _, _, _ in ordered:
+        if len(result) >= 12:
+            break
+        if chars + len(passage["text"]) <= 1200:
+            result.append(passage)
+            chars += len(passage["text"])
+    return result
+
+
 def resolve_passage_issues(verdict: dict, sources: list[dict], targets: list[dict],
                            passages: list[dict]) -> dict | None:
-    """仅转换当前完整索引中的 revise；无效或不适用时返回 None。"""
+    """仅转换实际签发的索引子集中的 revise；无效或不适用时返回 None。"""
     if (not isinstance(verdict, dict) or set(verdict) != {"status", "issues"}
             or verdict.get("status") != "revise" or not isinstance(verdict.get("issues"), list)
             or not 1 <= len(verdict["issues"]) <= 5 or not isinstance(passages, list)
-            or not passages or passages != review_passages(sources)
+            or not passages
             or not isinstance(targets, list) or not targets):
         return None
+    full = {p["id"]: p for p in review_passages(sources)}
+    seen = set()
+    for passage in passages:
+        if (not isinstance(passage, dict) or not isinstance(passage.get("id"), str)
+                or passage["id"] in seen or full.get(passage["id"]) != passage):
+            return None
+        seen.add(passage["id"])
     target_index = {}
     for target in targets:
         if (not isinstance(target, dict) or not isinstance(target.get("id"), str)

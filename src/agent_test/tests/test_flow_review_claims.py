@@ -171,3 +171,24 @@ def test_budget_fallback_preserves_original_sources_without_offering_unissued_id
     history, passages = prepare_claim_request(draft, sources, targets=targets, char_limit=limit, token_limit=16000)
     assert history_size(history) <= limit and passages == []
     assert json.loads(history[1]["content"]) == payload
+
+
+def test_wire_catalog_bounds_preserve_sources_and_literal_fallback():
+    from agent_core.core.flow_review_claims import claim_assessment, prepare_claim_request
+    rows = [{"id": f"ticket-{i}", "message": f"客户报告页面显示第{i}条提示。"} for i in range(25)]
+    sources = [{"id": "S1", "kind": "read_file", "scope": "observed_span", "text": json.dumps(rows, ensure_ascii=False)}]
+    draft = json.dumps({"ticket_id": "ticket-14", "message": "客户报告页面显示第3条提示。"}, ensure_ascii=False)
+    targets = claim_targets(draft)
+    history, passages = prepare_claim_request(draft, sources, targets=targets, node_task="核查本条反馈",
+                                             char_limit=32000, token_limit=16000)
+    payload = json.loads(history[1]["content"])
+    assert 0 < len(passages) <= 12 and sum(len(p["text"]) for p in passages) <= 1200
+    assert payload["draft"] == draft and payload["sources"] == sources and payload["workflow_task"] == "核查本条反馈"
+    assert rows[14]["message"] in [p["text"] for p in passages]
+    assert [p["id"] for p in passages] == [p["id"] for p in payload["evidence_passages"]]
+    assert rows[3]["message"] not in [p["text"] for p in passages]
+    target = next(t for t in targets if "客户报告" in t["text"])
+    literal = {"status": "revise", "issues": [{"target_id": target["id"], "draft_quote": target["text"],
+               "source_id": "S1", "quote": rows[3]["message"], "reason": "草稿引用了另一个事项。"}]}
+    feedback, invalid = claim_assessment(literal, sources, targets, passages)
+    assert invalid is None and target["text"] in feedback

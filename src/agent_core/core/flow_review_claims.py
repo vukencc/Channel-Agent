@@ -4,7 +4,7 @@ import json
 import re
 
 from agent_core.core.context import history_size, request_tokens
-from agent_core.core.flow_review_passages import resolve_passage_issues, review_passages
+from agent_core.core.flow_review_passages import relevant_passages, resolve_passage_issues
 from agent_core.core.flow_draft_review import (_ASSERTION, _CUSTOMER, _MANDATE, _RULE,
                                                needs_review, review_messages)
 
@@ -177,6 +177,17 @@ def shared_targets(unit_draft: str) -> list[dict]:
         return []
 
 
+_LITERAL_ISSUE = (
+    '有实质错误 {"status":"revise","issues":[{"target_id":"目标ID","draft_quote":"草稿逐字摘录",'
+    '"source_id":"来源ID","quote":"来源逐字摘录","reason":"具体语义差异"}]}。'
+)
+_INDEXED_ISSUE = (
+    '有实质错误 {"status":"revise","issues":[{"target_id":"C编号","evidence_id":"E编号","reason":"具体语义差异"}]}。'
+    "C 和 E 分别指本次草稿目标和来源原句。核对完整来源及归属，系统会还原逐字引文。"
+    "若所需原句没有 E 编号，使用 target_id、draft_quote、source_id、quote、reason 提交双方逐字摘录。"
+)
+
+
 def claim_messages(draft: str, sources: list[dict], *, targets: list[dict],
                    node_task: str = "", per_item: bool = False, shared: bool = False) -> list[dict]:
     """复用来源白名单和职责边界，单独裁决已标记的争议句。"""
@@ -190,8 +201,7 @@ def claim_messages(draft: str, sources: list[dict], *, targets: list[dict],
         "核对规则须看同一条款。工具报告证明返回内容，上游自述不能证明外部已经办理。"
         "目标均有据或属于岗位推断可通过。仍有疑义，包括上下文中其他具体归属问题，请标明位置及所需资料。"
         "只答一个 JSON：通过 {\"status\":\"pass\"}；缺依据 {\"status\":\"need_source\",\"field\":\"位置\","
-        "\"needed\":\"所需资料\"}；有实质错误 {\"status\":\"revise\",\"issues\":[{\"target_id\":\"目标ID\","
-        "\"draft_quote\":\"草稿逐字摘录\",\"source_id\":\"来源ID\",\"quote\":\"来源逐字摘录\",\"reason\":\"具体语义差异\"}]}。"
+        '"needed":"所需资料"}；' + _LITERAL_ISSUE
     )
     if shared:
         messages[0]["content"] += ("共享目标的 location 指向派生草稿的 /context，区间相对于该字段解码后的原文；"
@@ -260,18 +270,13 @@ def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict
         else:
             payload.pop("action_context")
 
-    passages = review_passages(sources)
+    passages = relevant_passages(sources, targets, draft)
     if passages:
         payload["evidence_passages"] = [{key: part[key] for key in ("id", "source_id", "text")} for part in passages]
         long_targets = {row["id"]: row["text"] for row in targets if len(row["text"]) > 64}
         if long_targets:
             payload["claim_texts"] = long_targets
-        indexed = messages(base_system + (
-            " evidence_passages 中每个 E 编号绑定同一份 sources 中的连续原文，必须结合所属来源的完整上下文。"
-            "若目标与来源实质冲突，首选简短判定 {\"status\":\"revise\",\"issues\":[{\"target_id\":\"C编号\","
-            "\"evidence_id\":\"E编号\",\"reason\":\"目标把哪项事实或要求改成了什么\"}]}。"
-            "系统据编号还原双方逐字引文。仅使用实际存在且相关的编号。缺少对应编号时仍可按原逐字格式引用。"
-            "若争议源自岗位判断，先明确草稿是否确实归给了客户；不能确定时请求具体依据。"))
+        indexed = messages(base_system.replace(_LITERAL_ISSUE, _INDEXED_ISSUE, 1))
         if fits(indexed):
             return indexed, passages
         if long_targets:
