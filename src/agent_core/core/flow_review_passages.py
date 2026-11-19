@@ -4,7 +4,8 @@ import re
 from collections import deque
 from bisect import bisect_left
 
-from agent_core.core.flow_review_records import parse_record_json, source_array_records
+from agent_core.core.flow_review_records import (RECORD_ID_KEYS, record_identifier,
+                                                parse_record_json, source_array_records)
 
 MAX_PASSAGES = 64
 MAX_PASSAGE_CHARS = 8192
@@ -12,7 +13,7 @@ MAX_QUOTE = 160
 _SCOPES = {("read_file", "observed_span"), ("rag_search", "observed_span"),
            ("user_input", "user_report"), ("custom_result", "tool_report")}
 _KEY_SEPARATOR = re.compile(r"\s*:")
-_ID_KEYS = {"id", "feedback_id", "item_ref", "item_id", "record_id", "ticket_id"}
+_ID_KEYS = RECORD_ID_KEYS
 
 
 def _unique_pairs(pairs: list[tuple]) -> dict:
@@ -107,16 +108,29 @@ def _record_spans(text: str, start: int, end: int):
         yield start + a, start + b, value
 
 
+def _meaningful_record_spans(text: str, row: dict, start: int, end: int):
+    identifiers = {value for key, value in row.items()
+                   if key in _ID_KEYS and isinstance(value, str)}
+    delayed = []
+    for span in _record_spans(text, start, end):
+        if span[2] in identifiers:
+            if len(delayed) < MAX_PASSAGES:
+                delayed.append(span)
+        else:
+            yield span
+    yield from delayed
+
+
 def _fair_record_spans(text: str, records: list[tuple[dict, int, int]]):
     pending = deque()
     remaining = iter(records)
     while True:
         while len(pending) < MAX_PASSAGES:
             try:
-                _, start, end = next(remaining)
+                row, start, end = next(remaining)
             except StopIteration:
                 break
-            iterator = iter(_record_spans(text, start, end))
+            iterator = iter(_meaningful_record_spans(text, row, start, end))
             first = next(iterator, None)
             if first is not None:
                 pending.append((first, iterator))
@@ -127,6 +141,110 @@ def _fair_record_spans(text: str, records: list[tuple[dict, int, int]]):
         following = next(iterator, None)
         if following is not None:
             pending.append((following, iterator))
+
+
+def _literal_record_id(raw: str, identifier: str) -> bool:
+    """仅接受顶层未转义的标识键和值。"""
+    decoder = json.JSONDecoder()
+    pos = 1
+    found = False
+    while True:
+        while pos < len(raw) and raw[pos] in " \t\r\n":
+            pos += 1
+        if pos >= len(raw) or raw[pos] == "}":
+            return found
+        key_start = pos
+        key, pos = decoder.raw_decode(raw, pos)
+        key_raw = raw[key_start:pos]
+        while pos < len(raw) and raw[pos] in " \t\r\n":
+            pos += 1
+        if pos >= len(raw) or raw[pos] != ":":
+            return False
+        pos += 1
+        while pos < len(raw) and raw[pos] in " \t\r\n":
+            pos += 1
+        value_start = pos
+        value, pos = decoder.raw_decode(raw, pos)
+        if key in _ID_KEYS:
+            if key_raw != '"' + key + '"' or raw[value_start:pos] != '"' + identifier + '"' or value != identifier:
+                return False
+            found = True
+        while pos < len(raw) and raw[pos] in " \t\r\n":
+            pos += 1
+        if pos < len(raw) and raw[pos] == ",":
+            pos += 1
+        elif pos >= len(raw) or raw[pos] != "}":
+            return False
+
+
+def _source_records(source: dict) -> list[tuple[dict, int, int]] | None:
+    if (source.get("kind"), source.get("scope")) != ("read_file", "observed_span"):
+        return None
+    records = _line_records(source)
+    if records is not None:
+        return records
+    text = source["text"]
+    if not text.lstrip().startswith(("{", "[")):
+        return None
+    data = parse_record_json(text)
+    try:
+        fragments = source_array_records(text, data)
+    except (ValueError, TypeError, IndexError):
+        # 合法 JSON 若不是记录数组，仍可按普通 JSON 原文索引。
+        return None
+    if fragments is None:
+        return None
+    result = []
+    cursor = 0
+    for row, raw in fragments:
+        start = text.find(raw, cursor)
+        if start < 0:
+            raise ValueError("missing record")
+        result.append((row, start, start + len(raw)))
+        cursor = start + len(raw)
+    return result
+
+
+def source_record_ranges(sources: list[dict]) -> dict[str, list[tuple[int, int, str]]]:
+    """仅投影可信来源中可逐字核对且同源唯一的记录标识。"""
+    if not isinstance(sources, list) or len(sources) > 128:
+        return {}
+    if any(not isinstance(source, dict) or not isinstance(source.get("text"), str)
+           for source in sources):
+        return {}
+    if sum(len(source["text"]) for source in sources) > 1_000_000:
+        return {}
+    result, seen = {}, set()
+    for source in sources:
+        if not isinstance(source, dict):
+            return {}
+        sid, text = source.get("id"), source.get("text")
+        if (not isinstance(sid, str) or not sid.strip() or len(sid) > 120
+                or sid in seen or not isinstance(text, str) or not text):
+            return {}
+        seen.add(sid)
+        if (source.get("kind"), source.get("scope")) != ("read_file", "observed_span"):
+            continue
+        try:
+            records = _source_records(source)
+            if records is None:
+                continue
+            candidates, counts = [], {}
+            for row, start, end in records:
+                for value in {row[k] for k in _ID_KEYS if isinstance(row.get(k), str)
+                              and row[k].strip() and len(row[k]) <= 128}:
+                    counts[value] = counts.get(value, 0) + 1
+                identifier = record_identifier(row)
+                if identifier is None:
+                    continue
+                raw = text[start:end]
+                if not _literal_record_id(raw, identifier):
+                    continue
+                candidates.append((start, end, identifier))
+            result[sid] = [item for item in candidates if counts[item[2]] == 1]
+        except (ValueError, TypeError, RecursionError, IndexError):
+            continue
+    return result
 
 
 def review_passages(sources: list[dict]) -> list[dict]:
@@ -147,15 +265,22 @@ def review_passages(sources: list[dict]) -> list[dict]:
     result = []
     total = 0
     eligible = [row for row in sources if (row.get("kind"), row.get("scope")) in _SCOPES]
-    line_records = {row["id"]: _line_records(row) for row in eligible}
-    fair = len(eligible) > 1 and any(records for records in line_records.values())
+    source_records = {}
+    for row in eligible:
+        try:
+            source_records[row["id"]] = _source_records(row)
+        except (ValueError, TypeError, RecursionError, IndexError):
+            source_records[row["id"]] = []
+    fair = len(eligible) > 1 and any(records for records in source_records.values())
 
     def source_spans(row):
-        records = line_records[row["id"]]
+        records = source_records[row["id"]]
         if records is None:
             spans = _spans(row["text"])
         elif fair:
             spans = _fair_record_spans(row["text"], records)
+        elif _line_records(row) is None:
+            spans = _spans(row["text"])
         else:
             spans = (span for _, start, end in records
                      for span in _record_spans(row["text"], start, end))
@@ -207,11 +332,14 @@ def _draft_id(draft: str) -> str | None:
         return None
 
 
-def relevant_passages(sources: list[dict], targets: list[dict], draft: str) -> list[dict]:
+def relevant_passages(sources: list[dict], targets: list[dict], draft: str, *,
+                      target_refs: dict[str, tuple[str, ...]] | None = None) -> list[dict]:
     """选择相关的有限提示；索引并非证据裁决，也不代表来源已覆盖。"""
     passages = review_passages(sources)
     if not passages or not isinstance(targets, list):
         return []
+    if target_refs is not None:
+        return _target_relevant_passages(sources, targets, passages, target_refs)
     query = _terms(" ".join(t.get("text", "") for t in targets
                             if isinstance(t, dict) and isinstance(t.get("text"), str))[:256_000])
     identifier = _draft_id(draft)
@@ -283,6 +411,71 @@ def relevant_passages(sources: list[dict], targets: list[dict], draft: str) -> l
             break
         if chars + len(passage["text"]) <= 1200:
             result.append(passage)
+            chars += len(passage["text"])
+    return result
+
+
+def _target_relevant_passages(
+    sources: list[dict], targets: list[dict], passages: list[dict],
+    target_refs: dict[str, tuple[str, ...]],
+) -> list[dict]:
+    if not isinstance(target_refs, dict):
+        return []
+    ranges = source_record_ranges(sources)
+    target_rows = [t for t in targets if isinstance(t, dict) and isinstance(t.get("id"), str)
+                   and isinstance(t.get("text"), str)]
+    # 合并各目标，按每个已确认标识和来源单独轮询。
+    ref_terms: dict[str, set[str]] = {}
+    unbound_terms: set[str] = set()
+    for target in target_rows:
+        refs = target_refs.get(target["id"], ())
+        if not isinstance(refs, tuple) or not all(isinstance(ref, str) and ref for ref in refs):
+            refs = ()
+        if not refs:
+            unbound_terms.update(_terms(target["text"]))
+        for ref in refs:
+            ref_terms.setdefault(ref, set()).update(_terms(target["text"]))
+    groups: list[list[dict]] = []
+    for ref, terms in ref_terms.items():
+        for source in sources:
+            matched = [(a, b) for a, b, ident in ranges.get(source["id"], []) if ident == ref]
+            candidates = [p for p in passages if p["source_id"] == source["id"]
+                          and any(a <= p["start"] and p["end"] <= b for a, b in matched)
+                          and p["text"] != ref]
+            candidates.sort(key=lambda p: -len(terms & _terms(p["text"])))
+            if candidates:
+                groups.append(candidates)
+    if unbound_terms:
+        for source in sources:
+            candidates = [p for p in passages if p["source_id"] == source["id"]
+                          and len(unbound_terms & _terms(p["text"])) > 0]
+            candidates.sort(key=lambda p: -len(unbound_terms & _terms(p["text"])))
+            if candidates:
+                groups.append(candidates)
+    query = _terms(" ".join(t["text"] for t in target_rows)[:256_000])
+    extra = [p for p in passages if not any(
+        a <= p["start"] and p["end"] <= b for a, b, _ in ranges.get(p["source_id"], []))]
+    extra.sort(key=lambda p: -len(query & _terms(p["text"])))
+    first, seen_sources = [], set()
+    for passage in extra:
+        if passage["source_id"] not in seen_sources:
+            first.append(passage)
+            seen_sources.add(passage["source_id"])
+    # 各目标首条、各未绑定来源首条，再轮询目标余项，最后补充其他原句。
+    ordered = ([group[0] for group in groups] + first
+               + list(_round_robin(group[1:] for group in groups))
+               + [p for p in extra if p not in first])
+    result: list[dict] = []
+    seen: set[str] = set()
+    chars = 0
+    for passage in ordered:
+        if passage["id"] in seen:
+            continue
+        if len(result) >= 12:
+            break
+        if chars + len(passage["text"]) <= 1200:
+            result.append(passage)
+            seen.add(passage["id"])
             chars += len(passage["text"])
     return result
 

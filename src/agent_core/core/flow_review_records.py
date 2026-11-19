@@ -3,6 +3,19 @@ import json
 import re
 
 
+RECORD_ID_KEYS = {"id", "feedback_id", "item_ref", "item_id", "record_id", "ticket_id"}
+
+
+def record_identifier(row: dict) -> str | None:
+    """要求所有存在的标识字段一致且有效。"""
+    if not isinstance(row, dict):
+        return None
+    values = [row[k] for k in RECORD_ID_KEYS if k in row]
+    if not values or any(not isinstance(v, str) or not v.strip() or len(v) > 128 for v in values):
+        return None
+    return values[0] if all(v == values[0] for v in values) else None
+
+
 class DuplicateRecordKey(ValueError):
     pass
 

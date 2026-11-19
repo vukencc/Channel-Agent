@@ -4,7 +4,8 @@ import json
 import re
 
 from agent_core.core.context import history_size, request_tokens
-from agent_core.core.flow_review_passages import relevant_passages, resolve_passage_issues
+from agent_core.core.flow_review_navigation import target_record_references
+from agent_core.core.flow_review_passages import relevant_passages, resolve_passage_issues, source_record_ranges
 from agent_core.core.flow_draft_review import (ECHO_GUIDANCE, _ASSERTION, _CUSTOMER, _MANDATE, _RULE,
                                                needs_review, review_messages)
 
@@ -266,19 +267,38 @@ def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict
         scope = (" 本次裁决范围是本批 targets。使用完整草稿与全部来源核对主体、范围、条件、否定和指代。"
                  "若上下文与本批原句矛盾，引用本批目标并指出冲突。发现首个有据的问题即可退回。")
         receipt_guidance = RECEIPT_GUIDANCE if receipt_facts else ""
-        passages = relevant_passages(sources, targets, draft)
+        ranges = source_record_ranges(sources)
+        known = {ref for spans in ranges.values() for _, _, ref in spans}
+        links = target_record_references(draft, targets, known)[1] if len(known) > 1 else {}
+        passages = relevant_passages(sources, targets, draft, target_refs=links or None)
         evidence = [{key: part[key] for key in ("id", "source_id", "text")} for part in passages]
         focused = [{**{key: row[key] for key in ("id", "field", "start", "end")},
                     "excerpt": row["text"]} for row in targets]
+        labelled_targets = [{**row, "record_refs": links[row["id"]]} if row["id"] in links else row
+                            for row in focused]
+        labelled_evidence = []
+        for row, part in zip(evidence, passages):
+            ref = next((key for start, end, key in ranges.get(part["source_id"], ())
+                        if start <= part["start"] and part["end"] <= end), None)
+            labelled_evidence.append({**row, "record_ref": ref} if ref else row)
         remainder = {k: v for k, v in payload.items() if k not in ("targets", "claim_texts")}
-        for full_focus, indexed in ((True, True), (True, False), (False, False)):
-            if indexed and not passages:
+        # 标注只帮助查找。空间紧张时先去掉标注，再去掉 E 索引，保留原稿与来源。
+        for full_focus, indexed, labelled in ((True, True, True), (True, True, False),
+                                               (True, False, False), (False, False, False)):
+            if (labelled and not links) or (indexed and not passages):
                 continue
             system = claim_messages(draft, sources, targets=targets, node_task=node_task,
                                     per_item=per_item, shared=shared, whole_batch=True,
                                     full_focus=full_focus, indexed=indexed)[0]["content"] + scope + receipt_guidance
-            candidate_payload = ({"targets": focused, **({"evidence_passages": evidence} if indexed else {}),
-                                  **remainder} if full_focus else payload)
+            if labelled:
+                system += (" record_refs 表示原句所在或点名的事项，record_ref 表示引文所在记录。"
+                           "编号仅供定位。核对原始反馈、后续记录和共享资料各自实际说了什么。")
+            candidate_payload = payload
+            if full_focus:
+                candidate_payload = {"targets": labelled_targets if labelled else focused}
+                if indexed:
+                    candidate_payload["evidence_passages"] = labelled_evidence if labelled else evidence
+                candidate_payload.update(remainder)
             candidate = [{"role": "system", "content": system},
                          {"role": "user", "content": json.dumps(candidate_payload, ensure_ascii=False,
                                                                     separators=(",", ":"))}]
