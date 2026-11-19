@@ -410,3 +410,25 @@ def test_classic_agent_creation_default_policy_and_forbidden_controls(web_flow, 
     assert omitted.json()['permission_policy'] == explicit.json()['permission_policy'] == 'smart'
     assert client.post('/api/sessions', json={'permission_policy': 'standard'}).status_code == 422
     assert client.post('/api/sessions', json={'permission_policy': 'readonly', 'tool_names': ['create_file']}).status_code == 422
+
+
+def test_resume_endpoint_forwards_identity_and_rejects_stale(web_flow, monkeypatch):
+    client, project, _ = web_flow
+    flow = create_flow(client, project)
+    calls = []
+    service = client.app.state.flows
+
+    def resume(flow_id, *, run_id):
+        calls.append((flow_id, run_id))
+        if run_id == "stale":
+            raise ValueError("检查点已过期")
+        return service.get(flow_id)
+
+    monkeypatch.setattr(service, "resume", resume)
+    path = "/api/flows/" + flow["id"] + "/resume"
+    assert client.post(path, json={}).status_code == 422
+    assert client.post(path, json={"run_id": "stale"}).status_code == 409
+    response = client.post(path, json={"run_id": "run-1"})
+    assert response.status_code == 200
+    assert response.json()["id"] == flow["id"]
+    assert calls == [(flow["id"], "stale"), (flow["id"], "run-1")]

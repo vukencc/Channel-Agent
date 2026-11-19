@@ -165,7 +165,7 @@ if (typeof window !== "undefined") (() => {
   const running = (flow = current()) => ["queued", "running", "cancelling"].includes(flow?.run?.status);
   const locked = () => pending || running();
   const error = (message) => { lastError = message || ""; const target = $("flow-error"); if (target) { target.textContent = lastError; target.hidden = !lastError; } };
-  const mark = () => { dirty.add(active); renderList(); updateHeader(); };
+  const mark = () => { dirty.add(active); renderList(); updateHeader(); const resume = document.querySelector("[data-flow-resume]"); if (resume) { resume.disabled = true; resume.title = "请先保存 Flow 和项目的未保存修改。"; } };
   function updateHeader() {
     const f = current(); if (!f || !$("flow-title")) return;
     $("flow-title").textContent = flowDisplayTitle(f) + (dirty.has(active) ? " *" : "");
@@ -253,7 +253,8 @@ if (typeof window !== "undefined") (() => {
   function openCreated(f, { preserveDesigner = false } = {}) { drafts.set(f.id, f); summaries = [...summaries.filter((x) => x.id !== f.id), { id: f.id, title: f.title, project_id: f.project_id }]; open(f.id, { preserveDesigner }); refreshList(); }
   async function perform(kind) {
     const id = active, f = current(); if (!f || pending) return;
-    if ((kind === "run" || kind === "queue") && !f.project_id) return;
+    if ((kind === "run" || kind === "queue" || kind === "resume") && !f.project_id) return;
+    if (kind === "resume" && (f.run?.resume_available !== true || !f.run.id || dirty.has(id) || projectDirty.has(id))) return;
     if ((kind === "save" || kind === "run") && flowContractInvalid(f)) { error("结构化交接契约无效，请修正或清空后重试。"); return; }
     if ((kind === "save" || kind === "run") && flowCustomToolsInvalid(f)) { error("动态工具定义无效，请修正或清空后重试。"); return; }
     const inputText = runInputs.get(id) || "";
@@ -271,6 +272,7 @@ if (typeof window !== "undefined") (() => {
       }
       if (kind === "save") result = await bridge.api(path(id), { method: "PUT", body: flowDefinition(f) });
       if (kind === "run") result = await bridge.api(path(id, "/run"), { method: "POST", body: { definition: flowDefinition(f), input_text: inputText } });
+      if (kind === "resume") result = await bridge.api(path(id, "/resume"), { method: "POST", body: { run_id: f.run.id } });
       if (kind === "queue") result = await bridge.api(path(id, "/run"), { method: "POST", body: { input_text: inputText, queue_only: true } });
       if (kind === "cancel") result = await bridge.api(path(id, "/cancel"), { method: "POST", body: {} });
       if (kind === "retry-completion") result = await bridge.api(path(id, "/retry-completion"), { method: "POST", body: {} });
@@ -281,7 +283,7 @@ if (typeof window !== "undefined") (() => {
         if (active === id) { hide(); $("welcome").hidden = false; }
       } else {
         if (requestedEpoch !== epoch) throw new Error("服务已重启，请核对草稿后重试。");
-        if (kind === "queue" || kind === "retry-completion") { f.run = result.run; f.pending_runs = result.pending_runs; }
+        if (kind === "queue" || kind === "retry-completion" || kind === "resume") { f.run = result.run; f.pending_runs = result.pending_runs; }
         else drafts.set(id, result);
         if (kind === "run" || kind === "queue") runInputs.delete(id);
         if (kind === "save" || kind === "run") dirty.delete(id);
@@ -423,9 +425,11 @@ if (typeof window !== "undefined") (() => {
     const header = el("header", "flow-header"), title = el("h1"); title.id = "flow-title";
     const actions = el("div", "flow-actions");
     const retryCompletion = f.run?.status === "persistence_failed";
-    [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : retryCompletion ? "重试保存" : "运行", () => perform(running(f) ? "cancel" : retryCompletion ? "retry-completion" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = ["运行", "停止", "重试保存"].includes(label); const b = button(label, fn, isRun ? "button primary" : "button subtle"); b.disabled = pending || (running(f) && !isRun); actions.append(b); });
+    const canResume = f.run?.resume_available === true && Boolean(f.run?.id) && !running(f) && !retryCompletion;
+    [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : retryCompletion ? "重试保存" : canResume ? "从中断节点继续" : "运行", () => perform(running(f) ? "cancel" : retryCompletion ? "retry-completion" : canResume ? "resume" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = ["运行", "停止", "重试保存", "从中断节点继续"].includes(label); const b = button(label, fn, isRun ? "button primary" : "button subtle"); if (label === "从中断节点继续") { b.dataset.flowResume = ""; if (dirty.has(active) || projectDirty.has(active)) b.title = "请先保存 Flow 和项目的未保存修改。"; } b.disabled = pending || (running(f) && !isRun) || (label === "从中断节点继续" && (dirty.has(active) || projectDirty.has(active))); actions.append(b); });
     const more = document.createElement("details"), moreSummary = el("summary", "button subtle", "更多"), moreActions = el("div", "flow-more-actions");
     more.className = "flow-more"; more.append(moreSummary, moreActions);
+    if (canResume) { const restart = button("从头运行", () => perform("run")); restart.disabled = pending; moreActions.append(restart); }
     [...actions.children].filter((b) => ["导出", "删除"].includes(b.textContent)).forEach((b) => moreActions.append(b)); actions.append(more);
     more.addEventListener("toggle", () => {
       if (!more.open) return;
