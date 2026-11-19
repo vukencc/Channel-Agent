@@ -1400,6 +1400,7 @@ class SessionManager:
                     if not await staged_actions.flush_audit():
                         checkpoint('flow_action_audit', gate.blocked)
                         break
+                    budget_text += staged_actions.pending_guide()
                 tool_names = {schema['function']['name'] for schema in schemas}
                 file_guide = runtime_file_workflow_guide(tool_names)
                 if 'rag_search' in tool_names:
@@ -1543,6 +1544,16 @@ class SessionManager:
                     checkpoint('flow_source_review', '交接修订请求了工具，已保留此前结果。')
                     break
                 if not calls:
+                    if staged_actions and staged_actions.pending:
+                        # 先解决未提交业务，再进入只允许文本的交接格式修正或下游验收。
+                        reminder = staged_actions.completion_reminder()
+                        if reminder and (policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds):
+                            session.record['messages'].append({'role': 'user', '_context_reference': True,
+                                                               'content': reminder})
+                            await self.save(session)
+                            continue
+                        checkpoint('flow_source_review', gate.blocked or '待提交草稿尚无正式执行回执，请核对后继续。')
+                        break
                     if policy.automatic:
                         unfinished, waiting = execution_state(self, session)
                         if waiting:

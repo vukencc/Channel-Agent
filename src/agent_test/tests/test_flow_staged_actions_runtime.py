@@ -8,6 +8,7 @@ import pytest
 from agent_core import config
 from agent_core.core.flows import FlowService
 from agent_core.core.llm import TOOL_SCHEMAS
+from agent_core.core.messages import is_user_request
 from agent_core.core.projects import ProjectService
 from agent_core.core.sessions import SessionManager
 from agent_core.core.tool_settings import selected_schemas
@@ -111,6 +112,8 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
             return assistant(calls=[call("draft-revised", preview_name, **approved)])
         if normal_index == 4 and mode not in {"blind_batch", "timeout", "direct_unapproved"}:
             assert "record_case" in names, "获批后下一轮应开放原名提交"
+            if mode in {"early_handoff", "ignore_handoff"}:
+                return assistant("提前交接：草稿已批准，本节点处理结束。")
             arguments = dict(approved)
             if mode == "changed_arguments":
                 arguments["reason"] = "建议另行安排排查。"
@@ -122,6 +125,55 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
                 # 部署层撤销生效于返回前；活跃会话的用户策略本身不可修改。
                 manager.permission_override = "readonly"
             return assistant(calls=[call("formal", "record_case", **arguments)])
+        if normal_index >= 5 and mode in {"early_handoff", "ignore_handoff"}:
+            assert (manager.history_context is not None) == config.ENABLE_STRUCTURED_CONTEXT
+            early = next(index for index, row in enumerate(history)
+                         if row.get("content") == "提前交接：草稿已批准，本节点处理结束。")
+            references = [row for row in history[early + 1:] if row["role"] == "user" and row.get("content")]
+            assert references, "提前交接后须提供待提交上下文"
+            assert all(row.get("_context_reference") and not is_user_request(row) for row in references), "获批参数仍是引用数据，不能变为新用户授权"
+            if normal_index == 5 or mode == "ignore_handoff":
+                assert "record_case" in names, "补交上下文给出的原名也须在本次实际目录中"
+
+            def has_copyable_proposal(value):
+                if isinstance(value, list):
+                    return any(has_copyable_proposal(child) for child in value)
+                if not isinstance(value, dict):
+                    return False
+                if "record_case" in value.values():
+                    for child in value.values():
+                        if isinstance(child, dict) and child == approved:
+                            return True
+                        if isinstance(child, str):
+                            try:
+                                if json.loads(child) == approved:
+                                    return True
+                            except ValueError:
+                                pass
+                return any(has_copyable_proposal(child) for child in value.values())
+
+            decoder = json.JSONDecoder()
+            copyable = False
+            for row in references:
+                text = row["content"]
+                for index, char in enumerate(text):
+                    if char not in "[{":
+                        continue
+                    try:
+                        value, _ = decoder.raw_decode(text[index:])
+                    except ValueError:
+                        continue
+                    copyable |= has_copyable_proposal(value)
+            assert copyable, "补交轮输入须含可解析的原名与准确获批原参数，而非只有目录或数量"
+            if mode == "ignore_handoff":
+                return assistant("仍然提前交接，不提交正式工具。")
+            if normal_index == 5:
+                assert "record_case" in names
+                return assistant(calls=[call("formal", "record_case", **approved)])
+            receipt = next(row for row in history if row.get("tool_call_id") == "formal")
+            assert receipt["_provenance"] == "executed"
+            assert CORRECTED in receipt["content"]
+            return assistant("已读取正式执行回执，本节点完成。")
         if normal_index == 5 and mode == "duplicate":
             return assistant(calls=[call("formal-repeat", "record_case", **approved)])
         return assistant("已核对回执。")
@@ -382,3 +434,39 @@ def test_project_flow_descendant_requires_preview_before_original(runtime_store,
             await manager.shutdown()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
+def test_approved_action_early_handoff_gets_explicit_commit_opportunity(runtime_store, monkeypatch, structured):
+    monkeypatch.setattr(config, "ENABLE_STRUCTURED_CONTEXT", structured)
+    record, run, reviews, schemas, writes, *_ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "early_handoff"))
+    assert run["status"] == "completed", run
+    expected = {"reason": CORRECTED, "item_ref": "case-1"}
+    assert writes == [expected], "获批后提前交接须引导下一轮显式提交，不能由框架自动实写"
+    assert json.loads((runtime_store[1] / "staged-record.json").read_text(encoding="utf-8")) == [expected]
+    assert len(reviews) == 2, "正式提交不能重复语义审查"
+    assert_paired(record)
+    formal_calls = [entry for row in record["messages"] for entry in row.get("tool_calls", [])
+                    if entry["function"]["name"] == "record_case"]
+    assert len(formal_calls) == 1
+    assert json.loads(formal_calls[0]["function"]["arguments"]) == expected
+    formal_receipt = next(row for row in record["messages"] if row.get("tool_call_id") == formal_calls[0]["id"])
+    assert formal_receipt["_provenance"] == "executed" and CORRECTED in formal_receipt["content"]
+    assert record["last_run"]["model_rounds"] == len(schemas) + len(reviews) <= config.MAX_TOOL_ROUNDS
+    assert run["nodes"]["a"]["output_handoff"].endswith("已读取正式执行回执，本节点完成。")
+
+
+@pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
+def test_repeated_early_handoff_is_bounded_without_automatic_commit(runtime_store, monkeypatch, structured):
+    monkeypatch.setattr(config, "ENABLE_STRUCTURED_CONTEXT", structured)
+    record, run, reviews, schemas, writes, *_ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "ignore_handoff"))
+    assert len(schemas) >= 5, "首次提前交接应有下一轮补交机会"
+    assert record["status"] == "checkpoint" and run["status"] != "completed"
+    assert writes == [] and not (runtime_store[1] / "staged-record.json").exists()
+    assert len(reviews) == 2
+    assert record["last_run"]["model_rounds"] == len(schemas) + len(reviews) <= config.MAX_TOOL_ROUNDS
+    assert not any(entry["function"]["name"] == "record_case"
+                   for row in record["messages"] for entry in row.get("tool_calls", []))
+    assert_paired(record)

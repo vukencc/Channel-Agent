@@ -141,13 +141,16 @@ class FlowActionPreflight:
         result = []
         for name, definition in self._by_name.items():
             preview = self.preview_for_original(name)
+            approved = any(row[0] == name and row[4] == "approved" for row in self._records.values())
+            description = definition["description"]
+            if not preview or approved:
+                formal = "正式执行已批准的草稿，调用后返回业务结果。 " + description if approved else description
+                result.append({"type": "function", "function": {"name": name, "description": formal,
+                                                                   "parameters": copy.deepcopy(definition["parameters"])}})
             if preview:
                 result.append({"type": "function", "function": {"name": preview,
-                    "description": f"{definition['description']}\n提交 {name} 的草稿以供复核；此调用不执行业务。获批后须用原名 {name} 和相同参数正式提交。",
+                    "description": f"预审 {name} 的新草稿或修订，不执行业务。获批后用原名 {name} 和相同参数正式提交。 {description}",
                     "parameters": copy.deepcopy(definition["parameters"])}})
-            if not preview or any(row[0] == name and row[4] == "approved" for row in self._records.values()):
-                result.append({"type": "function", "function": {"name": name, "description": definition["description"],
-                                                                  "parameters": copy.deepcopy(definition["parameters"])}})
         return result
 
     def draft(self, preview_name: str, arguments_json: str, binding: object) -> str:
