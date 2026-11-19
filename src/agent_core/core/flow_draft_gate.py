@@ -35,6 +35,7 @@ class FlowDraftGate:
         self.pending_tools: set[tuple[str, str]] = set()
         self.pending_items: set[str] = set()
         self.passed_items: set[str] = set()
+        self._whole_pending = False
         # 仅本 Gate 实例保存有限的上次争议，不写入会话或审计记录。
         self._revisions: dict[object, tuple[str, str, list[dict]]] = {}
 
@@ -102,16 +103,16 @@ class FlowDraftGate:
             return await self._check_one(draft, stage=stage, force=force, call_id=call_id, recheck=force,
                                          action_context=action_context, revision_key=revision_key,
                                          revision_definition=revision_definition)
-        if not force and not self.pending_items and not needs_review(draft):
+        if not force and not self.pending_items and not self._whole_pending and not needs_review(draft):
             return None
         from agent_core.core.flow_review_items import review_units
         char_limit = session_limit('MODEL_INPUT_CHARS')
         sources = review_sources(self.session.record, char_limit=min(24000, char_limit // 2))
         units = review_units(draft, sources, required_ids=frozenset(self.pending_items)) if sources else None
         # 无法把先前整稿拒绝关联到事项时，保留整稿复审。
-        if units is None or (force and not self.pending_items):
-            return await self._check_one(draft, stage=stage, force=force or bool(self.pending_items), call_id=call_id,
-                                         recheck=force or bool(self.pending_items))
+        if units is None or self._whole_pending or (force and not self.pending_items):
+            return await self._check_whole(draft, sources, force=force or bool(self.pending_items)
+                                           or self._whole_pending, call_id=call_id)
         original_sources = {row.get('id'): row for row in sources}
 
         def observed(row):
@@ -124,7 +125,7 @@ class FlowDraftGate:
                 or not isinstance(unit.get('sources'), list)
                 or not all(observed(row) for row in unit.get('sources', [])) for unit in units)
                 or len(ids) != len(set(ids)) or not self.pending_items.issubset(ids)):
-            return await self._check_one(draft, stage=stage, force=True, call_id=call_id, recheck=True)
+            return await self._check_whole(draft, sources, force=True, call_id=call_id)
         if not units:
             return None
         events = self.session.record['last_run'].setdefault('draft_reviews', [])
@@ -174,11 +175,60 @@ class FlowDraftGate:
             raise asyncio.CancelledError
         return feedback
 
+    async def _check_whole(self, draft: str, sources: list[dict], *, force: bool,
+                           call_id: str | None) -> str | None:
+        """整稿回退可定位大范围时，逐批核对，但每批仍保留完整上下文。"""
+        self._whole_pending = True
+        targets = claim_targets(draft)
+        # 与原整稿审查使用相同的全局编号，在切成各批后不重新编号。
+        selected = targets if force else focal_targets(targets)
+        if not sources or not selected or len(selected) <= 4 or len(selected) > 64:
+            feedback = await self._check_one(draft, stage='handoff', force=force, call_id=call_id,
+                                             sources_override=sources, recheck=force)
+            if not feedback:
+                self._whole_pending = False
+                self.pending_items.clear()
+            return feedback
+        events = self.session.record['last_run'].setdefault('draft_reviews', [])
+        start = len(events)
+        recovery = [False]
+        summary = []
+        feedback = None
+        cancelled = False
+        for offset in range(0, len(selected), 4):
+            batch = selected[offset:offset + 4]
+            try:
+                feedback = await self._check_one(draft, stage='handoff', force=True, call_id=call_id,
+                    sources_override=sources, recovery=recovery, recheck=force,
+                    batch_targets=batch)
+            except asyncio.CancelledError:
+                cancelled = True
+            child = events.pop()
+            summary.append({'status': child['status'], 'target_count': child.get('target_count', 0),
+                            'invalid_reasons': child.get('invalid_reasons', []),
+                            'draft_sha256': child['draft_sha256'], 'source_digest': child.get('source_digest'),
+                            'task_digest': child.get('task_digest'), 'attempts': child.get('attempts', [])})
+            if cancelled or feedback:
+                break
+        event = {'stage': 'handoff', 'status': summary[-1]['status'] if feedback or cancelled else 'passed',
+                 'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
+                 'batch_count': (len(selected) + 3) // 4, 'target_count': len(selected), 'batches': summary,
+                 'attempts': [attempt for row in summary for attempt in row.get('attempts', [])]}
+        if call_id:
+            event['tool_call_id'] = call_id
+        events.insert(start, event)
+        if cancelled:
+            raise asyncio.CancelledError
+        if not feedback:
+            self._whole_pending = False
+            self.pending_items.clear()
+        return feedback
+
     async def _check_one(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
                          sources_override: list[dict] | None = None, unit_kind: str | None = None,
                          recovery: list[bool] | None = None, recheck: bool = False,
                          action_context: dict | None = None, revision_key: object = None,
-                         revision_definition: dict | None = None) -> str | None:
+                         revision_definition: dict | None = None, batch_targets: list[dict] | None = None) -> str | None:
         if self.blocked:
             return self.blocked
         if not force and not needs_review(draft):
@@ -227,14 +277,17 @@ class FlowDraftGate:
             receipt_revision, receipt_budget],
             ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         shared = unit_kind == 'shared_claim'
-        targets = shared_targets(draft) if shared else claim_targets(draft)
+        if batch_targets is not None:
+            targets = batch_targets
+        else:
+            targets = shared_targets(draft) if shared else claim_targets(draft)
         focused = None
         if recheck and previous is not None and previous[0] == fingerprint:
             from agent_core.core.flow_review_revision import revision_targets
             focused = revision_targets(previous[1], previous[2], draft)
         if focused is not None:
             targets = focused
-        elif not shared and not recheck:
+        elif batch_targets is None and not shared and not recheck:
             candidates = targets
             targets = focal_targets(candidates)
             event['background_count'] = len(candidates) - len(targets)
@@ -243,7 +296,8 @@ class FlowDraftGate:
         if targets:
             history, passages = prepare_claim_request(
                 draft, sources, targets=targets, node_task=task, per_item=unit_kind == 'item', shared=shared,
-                action_context=action_context, char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'))
+                action_context=action_context, char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'),
+                whole_batch=batch_targets is not None)
         else:
             history = review_messages(draft, sources, node_task=task, per_item=unit_kind == 'item')
         event['passage_count'] = len(passages)
@@ -264,6 +318,9 @@ class FlowDraftGate:
                 if (history_size(augmented) <= char_limit
                         and request_tokens(augmented) <= session_limit('MODEL_INPUT_TOKENS')):
                     history = augmented
+                elif batch_targets is not None:
+                    event['status'] = 'context_budget'
+                    return '草稿、来源与回执超过当前复核窗口，草稿尚未批准。'
         if not self.reserve_round():
             event['status'] = 'round_budget'
             self.blocked = '原模型交互轮次已用完，未获来源复核批准。'

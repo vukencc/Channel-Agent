@@ -245,11 +245,18 @@ def action_review_context(definition: dict) -> dict:
 
 def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict], node_task: str = "",
                           action_context: dict | None = None, per_item: bool = False, shared: bool = False,
-                          char_limit: int, token_limit: int) -> tuple[list[dict], list[dict]]:
+                          char_limit: int, token_limit: int, whole_batch: bool = False) -> tuple[list[dict], list[dict]]:
     """标签只属于实际发出的这次请求。预算紧张时保留全文及原逐字协议。"""
     history = claim_messages(draft, sources, targets=targets, node_task=node_task, per_item=per_item, shared=shared)
     base_system = history[0]["content"]
     payload = json.loads(history[1]["content"])
+    if whole_batch:
+        payload.pop("review_field_hints", None)
+        base_system += (" 本次裁决范围是本批 targets。使用完整草稿与全部来源核对主体、条件、否定和指代。"
+                        "若上下文与本批原句矛盾，引用本批目标并指出冲突。发现首个有据的问题即可退回。"
+                        "其余目标在各自批次核对。")
+        history = [{"role": "system", "content": base_system},
+                   {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
     def messages(system: str) -> list[dict]:
         return [{"role": "system", "content": system},
