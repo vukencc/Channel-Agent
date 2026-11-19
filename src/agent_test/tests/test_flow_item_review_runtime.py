@@ -229,6 +229,7 @@ def test_unverifiable_review_is_corrected_before_any_business_rework(runtime_sto
     event = record["last_run"]["draft_reviews"][-1]
     assert event["status"] == "invalid_verdict"
     assert event["attempts"] == ["invalid_verdict", "invalid_verdict"]
+    assert event["invalid_reasons"] == ["unknown_target_or_source", "unknown_target_or_source"]
     assert record["last_run"]["recovery_attempts"] == 1
     attempts = [m.get("tool_call_id") for m in record["messages"] if m["role"] == "tool"]
     assert "write-original" in attempts and "write-corrected" not in attempts
@@ -256,3 +257,28 @@ def test_full_flow_review_receives_complete_focal_sentence_and_context(runtime_s
     event = record["last_run"]["draft_reviews"][-1]
     assert event["target_count"] == 1 and event["background_count"] == 1
     assert len(writes) == 1 and result["status"] == "completed"
+
+
+def test_selected_reference_requires_exact_current_source_before_dispatch(runtime_store, monkeypatch):
+    from agent_test.tests.test_flow_draft_review_runtime import SOURCE
+    original = SessionManager._call_model
+    seen = []
+
+    async def cited(self, history, **kwargs):
+        payload = review_payload(history)
+        if payload and not seen:
+            target = payload["targets"][0]
+            reference = next(r for r in payload["evidence_passages"] if r["text"] == SOURCE)
+            assert payload["action_context"]["name"] == "record_case"
+            seen.append(reference)
+            return assistant(json.dumps({"status": "revise", "issues": [{
+                "target_id": target["id"], "evidence_id": reference["id"], "reason": "客户仅描述了故障。"
+            }]}, ensure_ascii=False))
+        return await original(self, history, **kwargs)
+
+    monkeypatch.setattr(SessionManager, "_call_model", cited)
+    record, result, _, _, writes, _ = asyncio.run(scenario(runtime_store, monkeypatch))
+    rejected = next(m for m in record["messages"] if m.get("tool_call_id") == "write-original")
+    assert rejected["_provenance"] == "not_executed" and SOURCE in rejected["content"]
+    assert DISPUTED in rejected["content"] and "客户仅描述了故障" in rejected["content"]
+    assert writes == [{"reason": CORRECTED}] and result["status"] == "completed"

@@ -132,3 +132,42 @@ def test_long_focal_sentence_reaches_reviewer_without_offset_reconstruction():
     payload = json.loads(claim_messages(draft, [{"id": "S", "text": "反馈原文"}], targets=targets)[1]["content"])
     assert payload["claim_texts"] == {targets[0]["id"]: claim}
     assert payload["targets"][0]["excerpt"] == claim[:64]
+
+
+def test_referenced_verdict_resolves_both_sides_and_preserves_roles():
+    from agent_core.core.flow_review_claims import action_review_context, claim_assessment, prepare_claim_request
+    draft = '{"reason":"客户要求停止服务。"}'
+    sources = [{"id": "S1", "kind": "read_file", "scope": "observed_span", "text": "用户表示页面缓慢。"}]
+    targets = claim_targets(draft)
+    action = action_review_context({"name": "record_case", "description": "记录初步判断",
+              "code": "private_code", "parameters": {"type": "object", "properties": {
+                  "reason": {"type":"string","description":"节点给出的评估","default":"private_default"}}}})
+    history, passages = prepare_claim_request(draft, sources, targets=targets, node_task="排查问题",
+                                            action_context=action, char_limit=24000, token_limit=16000)
+    payload = json.loads(history[1]["content"])
+    assert "private_" not in history[1]["content"] and payload["action_context"]["name"] == "record_case"
+    assert payload["sources"] == sources and payload["draft"] == draft
+    assert payload["evidence_passages"][0]["id"] == "E1" and len(passages) == 1
+    verdict = {"status": "revise", "issues": [{"target_id": "C1", "evidence_id": "E1", "reason": "原文未提出停服。"}]}
+    feedback, invalid = claim_assessment(verdict, sources, targets, passages)
+    assert invalid is None and "客户要求停止服务。" in feedback and "用户表示页面缓慢。" in feedback
+    verdict["issues"][0]["evidence_id"] = "E9999"
+    feedback, invalid = claim_assessment(verdict, sources, targets, passages)
+    assert feedback == INVALID_REVIEW and invalid == "unverified_reference"
+    assert claim_assessment({"status": "pass"}, sources, targets, passages) == (None, None)
+
+
+def test_budget_fallback_preserves_original_sources_without_offering_unissued_ids():
+    from agent_core.core.context import history_size
+    from agent_core.core.flow_review_claims import prepare_claim_request
+    draft = "客户明确要求" + "我们核对记录，" * 20 + "然后继续。"
+    sources = [{"id": "S1", "kind": "read_file", "scope": "observed_span", "text": "用户说明页面缓慢。"}]
+    targets = claim_targets(draft)
+    original = claim_messages(draft, sources, targets=targets)
+    payload = json.loads(original[1]["content"])
+    del payload["claim_texts"]
+    original[1]["content"] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    limit = history_size(original)
+    history, passages = prepare_claim_request(draft, sources, targets=targets, char_limit=limit, token_limit=16000)
+    assert history_size(history) <= limit and passages == []
+    assert json.loads(history[1]["content"]) == payload

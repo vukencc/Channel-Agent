@@ -12,7 +12,8 @@ from agent_core.core.flow_draft_review import (
     AmbiguousDraft, needs_review, normalised_draft, parse_review_reply, review_feedback, review_messages,
 )
 from agent_core.core.flow_review_claims import (
-    INVALID_REVIEW, claim_feedback, claim_messages, claim_targets, focal_targets, shared_targets,
+    INVALID_REVIEW, action_review_context, claim_assessment, claim_targets, focal_targets,
+    prepare_claim_request, shared_targets,
 )
 from agent_core.core.flow_review_sources import review_sources
 from agent_core.core.instrumentation import tool_outcome
@@ -60,7 +61,8 @@ class FlowDraftGate:
         arguments = call['function']['arguments']
         key = self.tool_key(name, arguments)
         definition = copy.deepcopy(custom.definition)
-        feedback = await self.check(arguments, stage='tool', force=key in self.pending_tools, call_id=call['id'])
+        feedback = await self.check(arguments, stage='tool', force=key in self.pending_tools, call_id=call['id'],
+                                    action_context=action_review_context(definition))
         current = self.manager._session_custom_registry(self.session).get(name)
         if current is None or current.definition != definition:
             feedback = '工具定义已改变，请重新确认本次调用。'
@@ -72,7 +74,8 @@ class FlowDraftGate:
             self.pending_tools.discard(key)
         return result
 
-    async def check(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None) -> str | None:
+    async def check(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
+                    action_context: dict | None = None) -> str | None:
         if self.blocked:
             return self.blocked
         try:
@@ -85,7 +88,8 @@ class FlowDraftGate:
             self.session.record['last_run'].setdefault('draft_reviews', []).append(event)
             return '草稿中有重复的 JSON 字段。同一对象的每个字段只能有一个值，请消除歧义后重新提交。'
         if stage != 'handoff':
-            return await self._check_one(draft, stage=stage, force=force, call_id=call_id, recheck=force)
+            return await self._check_one(draft, stage=stage, force=force, call_id=call_id, recheck=force,
+                                         action_context=action_context)
         if not force and not self.pending_items and not needs_review(draft):
             return None
         from agent_core.core.flow_review_items import review_units
@@ -136,6 +140,7 @@ class FlowDraftGate:
             child = events.pop()
             summary.append({'item_sha256': item_digest, 'kind': kind, 'status': child['status'],
                             'target_count': child.get('target_count', 0),
+                            'invalid_reasons': child.get('invalid_reasons', []),
                             'draft_sha256': child['draft_sha256'], 'attempts': child.get('attempts', [])})
             if cancelled:
                 break
@@ -155,7 +160,8 @@ class FlowDraftGate:
 
     async def _check_one(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
                          sources_override: list[dict] | None = None, unit_kind: str | None = None,
-                         recovery: list[bool] | None = None, recheck: bool = False) -> str | None:
+                         recovery: list[bool] | None = None, recheck: bool = False,
+                         action_context: dict | None = None) -> str | None:
         if self.blocked:
             return self.blocked
         if not force and not needs_review(draft):
@@ -191,16 +197,14 @@ class FlowDraftGate:
             targets = focal_targets(candidates)
             event['background_count'] = len(candidates) - len(targets)
         event['target_count'] = len(targets)
+        passages = []
         if targets:
-            history = claim_messages(draft, sources, node_task=task, targets=targets,
-                                     per_item=unit_kind == 'item', shared=shared)
+            history, passages = prepare_claim_request(
+                draft, sources, targets=targets, node_task=task, per_item=unit_kind == 'item', shared=shared,
+                action_context=action_context, char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'))
         else:
             history = review_messages(draft, sources, node_task=task, per_item=unit_kind == 'item')
-        if (targets and len(targets) == 1 and len(targets[0]['text']) > 64
-                and (history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'))):
-            payload = json.loads(history[1]['content'])
-            payload.pop('claim_texts', None)
-            history[1]['content'] = json.dumps(payload, ensure_ascii=False)
+        event['passage_count'] = len(passages)
         if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
             event['status'] = 'context_budget'
             return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
@@ -227,8 +231,8 @@ class FlowDraftGate:
                 if attempt:
                     notice = ('上一请求超时，请只核对有争议的出处，保留原文中的限定和否定。'
                               if retry_status == 'TimeoutError' else
-                              '上次判定无法核验。请重新独立判断：若需修改，分别逐字引用目标句和所给来源；'
-                              '没有足够依据则请求具体来源。')
+                              '上次判定无法核验。请重新独立判断。优先从本次所给编号选择精确目标和证据，'
+                              '没有对应编号时逐字引用；资料不足则请求具体来源。')
                     concise = [{**history[0], 'content': history[0]['content'] + notice}, history[1]]
                     if history_size(concise) <= char_limit and request_tokens(concise) <= session_limit('MODEL_INPUT_TOKENS'):
                         history = concise
@@ -252,8 +256,12 @@ class FlowDraftGate:
                 if self.session.cancelled.is_set():
                     raise asyncio.CancelledError
                 verdict = parse_review_reply(answer)
-                feedback = claim_feedback(verdict, sources, targets) if targets else review_feedback(verdict, sources)
-                if targets and feedback == INVALID_REVIEW:
+                if targets:
+                    feedback, invalid = claim_assessment(verdict, sources, targets, passages)
+                else:
+                    feedback, invalid = review_feedback(verdict, sources), None
+                if invalid:
+                    event.setdefault('invalid_reasons', []).append(invalid)
                     retry_status = attempts[-1] = 'invalid_verdict'
                     if can_retry:
                         continue

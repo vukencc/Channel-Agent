@@ -97,6 +97,7 @@ jobs:
             'src/agent_test/tests/test_flow_draft_review_runtime.py',
             'src/agent_test/tests/test_flow_review_items.py',
             'src/agent_test/tests/test_flow_review_claims.py',
+            'src/agent_test/tests/test_flow_review_passages.py',
             'src/agent_test/tests/test_flow_item_review_runtime.py',
             'src/agent_test/tests/test_flow_project_io_dedup.py',
             'src/agent_test/tests/test_env_sync.py',
