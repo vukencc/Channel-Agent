@@ -166,6 +166,7 @@ class FlowService:
         self.directory.mkdir(mode=0o700, exist_ok=True)
         self.records = {}
         self.file_identities = {}
+        self._verified_link_identities = {}
         self.load_errors = []
         for path in self.directory.glob("*.json"):
             if path.is_symlink() or not re.fullmatch(r"[a-f0-9]{32}", path.stem):
@@ -254,16 +255,27 @@ class FlowService:
             info = os.fstat(descriptor)
             with os.fdopen(os.dup(descriptor), encoding="utf-8") as stream:
                 raw = stream.read()
-        stored = Definition.model_validate(json.loads(raw))
         identity = (info.st_dev, info.st_ino, hashlib.sha256(raw.encode("utf-8")).digest())
-        if stored.id != identifier or self.file_identities.get(identifier) != identity:
+        # 每次都核对真实文件，只复用相同字节已经通过的结构校验。
+        expected = self.file_identities.get(identifier)
+        if identity == expected and self._verified_link_identities.get(identifier) == identity:
+            return
+        stored = Definition.model_validate(json.loads(raw))
+        if stored.id != identifier or identity != expected:
             raise PermissionError("Flow 文件已在外部变化")
+        self._verified_link_identities[identifier] = identity
 
     @_pinned_get
     def get(self, flow_id):
-        self._path(flow_id)
-        value = self.records[flow_id]
-        self._check_project_link(value)
+        value = self.records.get(flow_id) if isinstance(flow_id, str) else None
+        if value is not None and value["project_id"]:
+            if value["id"] != flow_id:
+                raise PermissionError("Flow 文件身份不匹配")
+            # 关联校验会安全打开同一个 Flow 文件，并检查真实内容。
+            self._check_project_link(value)
+        else:
+            self._path(flow_id)
+            value = self.records[flow_id]
         return copy.deepcopy(value)
 
     def working_runs(self, *, redact: Callable[[list[dict]], list[dict]] | None = None) -> list[dict]:
@@ -547,6 +559,7 @@ class FlowService:
         fsync_directory(self.directory)
         del self.records[flow_id]
         self.file_identities.pop(flow_id, None)
+        self._verified_link_identities.pop(flow_id, None)
         self.on_change()
 
     async def shutdown(self):

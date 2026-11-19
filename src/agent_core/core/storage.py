@@ -269,10 +269,12 @@ class SessionStore:
             raise ValueError('消息日志不能是符号链接')
         descriptor = os.open(journal, os.O_RDWR | os.O_CREAT, 0o600)
         with os.fdopen(descriptor, 'r+b') as stream:
-            if stream.seek(0, os.SEEK_END) < offset:
+            end = stream.seek(0, os.SEEK_END)
+            if end < offset:
                 raise ValueError('消息日志短于已提交索引，拒绝覆盖')
-            stream.truncate(offset)  # 仅清理崩溃留下的未提交尾部。
-            stream.seek(offset)
+            if end > offset:
+                stream.truncate(offset)  # 仅清理崩溃留下的未提交尾部。
+                stream.seek(offset)
             for index in range(committed, count):
                 stream.write((json.dumps(record['messages'][index], ensure_ascii=False) + '\n').encode('utf-8'))
             stream.flush()

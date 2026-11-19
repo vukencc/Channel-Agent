@@ -95,6 +95,7 @@ class ProjectService:
             self.flows._verify_link_file(flow_id)
         except FileNotFoundError:
             raise ValueError("项目与 Flow 的关联无效") from None
+        return stored
 
     def _path(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
@@ -144,14 +145,10 @@ class ProjectService:
                 continue
         return values
 
-    @_pinned_read
     def get(self, project_id):
-        self.records[project_id]  # 只允许已加载的项目身份
-        value = self._read(project_id)
-        if value["flow_id"] != self.records[project_id]["flow_id"]:
-            raise PermissionError("项目流程身份已变化")
-        self._check_link(project_id, value["flow_id"])
-        return copy.deepcopy(value)
+        project = self.records[project_id]
+        stored = self._check_link(project_id, project["flow_id"])
+        return copy.deepcopy(stored)
 
     def _workspace(self, value):
         if not value["workspace_path"]:
