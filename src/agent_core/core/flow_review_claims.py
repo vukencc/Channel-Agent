@@ -320,11 +320,16 @@ def claim_assessment(verdict: dict | None, sources: list[dict], targets: list[di
     issues = verdict["issues"]
     if not isinstance(issues, list) or not 1 <= len(issues) <= 5:
         return INVALID_REVIEW, "issue_count"
-    if any(isinstance(issue, dict) and "evidence_id" in issue for issue in issues):
-        resolved = resolve_passage_issues(verdict, sources, targets, passages)
+    references = {i: issue for i, issue in enumerate(issues) if isinstance(issue, dict) and "evidence_id" in issue}
+    if references:
+        indexed_verdict = {"status": "revise", "issues": list(references.values())}
+        resolved = resolve_passage_issues(indexed_verdict, sources, targets, passages)
         if resolved is None:
             return INVALID_REVIEW, "unverified_reference"
-        issues = resolved["issues"]
+        # 原文引用和编号引用可并列；每一项都要经过下方同一套双向引文校验。
+        issues = issues.copy()
+        for position, issue in zip(references, resolved["issues"], strict=True):
+            issues[position] = issue
     feedback = []
     for issue in issues:
         if not isinstance(issue, dict) or set(issue) != {"target_id", "draft_quote", "source_id", "quote", "reason"}:

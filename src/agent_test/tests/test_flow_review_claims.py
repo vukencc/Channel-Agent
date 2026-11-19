@@ -192,3 +192,24 @@ def test_wire_catalog_bounds_preserve_sources_and_literal_fallback():
                "source_id": "S1", "quote": rows[3]["message"], "reason": "草稿引用了另一个事项。"}]}
     feedback, invalid = claim_assessment(literal, sources, targets, passages)
     assert invalid is None and target["text"] in feedback
+
+
+def test_multiple_issues_can_mix_issued_ids_and_exact_quotes():
+    from agent_core.core.flow_review_claims import claim_assessment
+    from agent_core.core.flow_review_passages import review_passages
+    sources = [{"id": "S1", "kind": "user_input", "scope": "user_report", "text": "用户报告页面卡顿。"},
+               {"id": "S2", "kind": "rag_search", "scope": "observed_span", "text": "提交申请后等待审核。"}]
+    targets = [{"id": "C1", "text": "用户要求转人工。"}, {"id": "C2", "text": "必须由所有者申请。"}]
+    offered = review_passages(sources)[:1]
+    indexed = {"target_id": "C1", "evidence_id": offered[0]["id"], "reason": "客户只报告卡顿。"}
+    literal = {"target_id": "C2", "draft_quote": "必须由所有者申请。", "source_id": "S2",
+               "quote": "提交申请后等待审核。", "reason": "条款未限定申请人。"}
+    for issues in ([indexed, literal], [literal, indexed]):
+        feedback, invalid = claim_assessment({"status": "revise", "issues": issues}, sources, targets, offered)
+        assert invalid is None and feedback.index(issues[0]["reason"]) < feedback.index(issues[1]["reason"])
+    for bad, expected in (({**indexed, "evidence_id": "E2"}, "unverified_reference"),
+                          ({**literal, "quote": "申请自动批准。"}, "source_quote_not_found"),
+                          ({**indexed, "quote": "混用字段"}, "unverified_reference")):
+        other = literal if "evidence_id" in bad else indexed
+        assert claim_assessment({"status": "revise", "issues": [other, bad]}, sources, targets, offered) == (
+            INVALID_REVIEW, expected)
