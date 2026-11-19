@@ -15,7 +15,7 @@ from agent_core.core.flow_draft_review import (
 )
 from agent_core.core.flow_review_claims import (
     INVALID_REVIEW, RECEIPT_GUIDANCE, action_review_context, claim_assessment, claim_targets, focal_targets,
-    prepare_claim_request, shared_targets,
+    prepare_claim_request, shared_targets, with_revision_navigation,
 )
 from agent_core.core.flow_review_sources import review_sources
 from agent_core.core.instrumentation import tool_outcome
@@ -51,21 +51,23 @@ class FlowDraftGate:
                 'draft_sha256': child['draft_sha256'], 'source_digest': child.get('source_digest'),
                 'task_digest': child.get('task_digest'), 'attempts': child.get('attempts', [])}
 
-    def _whole_binding(self) -> tuple:
+    def _review_authority(self) -> tuple:
         record = self.session.record
         run = record['last_run']
-        limit = session_limit('MODEL_INPUT_CHARS')
-        sources = review_sources(record, char_limit=min(24000, limit // 2))
-        receipt = getattr(self, 'receipt_index', None)
         environment = getattr(self.manager, 'execution_environment', None)
         allowed = getattr(self.manager, '_effective_session_tools', None)
-        return (id(run), self.session.id, run.get('turn_id'), record.get('flow_node_id'),
-                self.session.flow_review_task, record.get('model_profile'),
+        return (id(run), self.session.id, run.get('turn_id'), record.get('flow_id'), record.get('flow_node_id'),
+                record.get('workspace_path'), self.session.flow_review_task, record.get('model_profile'),
                 record.get('thinking_mode'), record.get('reasoning_effort'),
                 getattr(self.manager, 'permission_override', None) or record.get('permission_policy'),
                 environment(self.session) if environment else None,
-                copy.deepcopy(allowed(self.session)) if allowed else None,
-                copy.deepcopy(sources), getattr(receipt, 'revision', 0),
+                copy.deepcopy(allowed(self.session)) if allowed else None)
+
+    def _whole_binding(self) -> tuple:
+        limit = session_limit('MODEL_INPUT_CHARS')
+        sources = review_sources(self.session.record, char_limit=min(24000, limit // 2))
+        receipt = getattr(self, 'receipt_index', None)
+        return (*self._review_authority(), copy.deepcopy(sources), getattr(receipt, 'revision', 0),
                 copy.deepcopy(receipt.review_facts()) if receipt else None,
                 limit, session_limit('MODEL_INPUT_TOKENS'))
 
@@ -483,8 +485,9 @@ class FlowDraftGate:
         receipt_revision = (getattr(receipt_index, 'revision', 0)
                             if stage == 'handoff' and unit_kind != 'item' else 0)
         receipt_budget = (char_limit, session_limit('MODEL_INPUT_TOKENS')) if receipt_revision else None
+        authority = self._review_authority() if state_key is not None else None
         fingerprint = hashlib.sha256(json.dumps([sources, task, action_context, unit_kind, revision_definition,
-            receipt_revision, receipt_budget],
+            authority, receipt_revision, receipt_budget],
             ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         shared = unit_kind == 'shared_claim'
         if batch_targets is not None:
@@ -534,6 +537,11 @@ class FlowDraftGate:
                 if (history_size(augmented) <= char_limit
                         and request_tokens(augmented) <= session_limit('MODEL_INPUT_TOKENS')):
                     history = augmented
+        if focused and previous is not None:
+            from agent_core.core.flow_review_revision import revision_navigation
+            navigation = revision_navigation(previous[1], previous[2], draft, targets, sources)
+            history = with_revision_navigation(
+                history, targets, navigation, char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'))
         if dispatch_allowed is not None and not dispatch_allowed():
             event['status'] = 'review_stopped'
             return '交接复核已停止，草稿尚未批准。'
@@ -595,7 +603,8 @@ class FlowDraftGate:
                     raise asyncio.CancelledError
                 verdict = parse_review_reply(answer)
                 if targets:
-                    feedback, invalid = claim_assessment(verdict, sources, targets, passages)
+                    citations = {} if state_key is not None else None
+                    feedback, invalid = claim_assessment(verdict, sources, targets, passages, citations)
                 else:
                     feedback, invalid = review_feedback(verdict, sources), None
                 if invalid:
@@ -619,7 +628,8 @@ class FlowDraftGate:
             if (feedback and verdict and verdict.get('status') == 'revise' and targets
                     and state_key is not None and len(draft) <= 32_000):
                 selected_ids = {issue.get('target_id') for issue in verdict['issues']}
-                selected = [target for target in targets if target['id'] in selected_ids]
+                selected = [{**target, '_cited_spans': (citations or {}).get(target['id'], [])}
+                            for target in targets if target['id'] in selected_ids]
                 if selected and len(self._revisions) < 16:
                     self._revisions[state_key] = (fingerprint, draft, copy.deepcopy(selected))
             if feedback and self.needs_sources and pending_paths:

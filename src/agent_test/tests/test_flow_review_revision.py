@@ -74,7 +74,8 @@ def test_sentence_deletion_and_condition_use_full_field():
 
 
 @pytest.mark.parametrize("stage,change", [("tool", "none"), ("preview", "none"),
-                                          ("tool", "source"), ("tool", "definition")])
+                                          ("tool", "source"), ("tool", "definition"),
+                                          ("preview", "model"), ("preview", "turn"), ("preview", "policy")])
 def test_gate_focused_recheck_after_verified_revise(monkeypatch, stage, change):
     import asyncio
     from types import SimpleNamespace
@@ -107,6 +108,12 @@ def test_gate_focused_recheck_after_verified_revise(monkeypatch, stage, change):
         assert await gate.check(old, stage=stage, force=True, revision_key=(stage, "T1"), revision_definition={"name": "tool"})
         if change == "source":
             sources[0]["text"] = "客户表示新的来源情况。"
+        if change == "model":
+            session.record["model_profile"] = "new-profile"
+        if change == "turn":
+            session.record["last_run"]["turn_id"] = "another-turn"
+        if change == "policy":
+            session.record["permission_policy"] = "read_only"
         definition = {"name": "changed"} if change == "definition" else {"name": "tool"}
         assert await gate.check(new, stage=stage, force=True, revision_key=(stage, "T1"), revision_definition=definition) is None
     asyncio.run(run())
@@ -114,3 +121,15 @@ def test_gate_focused_recheck_after_verified_revise(monkeypatch, stage, change):
     assert [row["excerpt"] for row in histories[1]["targets"]] == expected
     assert json.loads(histories[1]["draft"]) == json.loads(new)
     assert histories[1]["sources"] == sources
+
+    if change == "none":
+        current = histories[1]
+        assert list(current)[:2] == ["targets", "revision_context"]
+        assert current["revision_context"]["source_locations"] == [{
+            "field": "/text", "source_id": "S1", "start": 0, "end": len("客户表示原始情况。"),
+            "quote": "客户表示原始情况。"}]
+        assert current["revision_context"]["edits"][0]["field"] == "/text"
+        assert current["targets"][0]["excerpt"] == "客户表示新情况。"
+        assert "claim_texts" not in current
+    else:
+        assert "revision_context" not in histories[1]

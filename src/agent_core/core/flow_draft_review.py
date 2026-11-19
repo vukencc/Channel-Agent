@@ -12,6 +12,10 @@ ECHO_GUIDANCE = (" submitted_echoes 的 record_start 和 record_end 是来源 te
                  "fields 标出本节点正式调用时提供并得到回显的字段；只证明文字被提交，"
                  "可核对记载，但不能据此证明独立事实、政策或授权。")
 
+MEMORY_GUIDANCE = (" workspace_memory_path 表示本轮通过当前工作区的记忆路径读取；"
+                   "它只证明该路径读取的文件有此记载，不证明作者、客户事实或政策授权。"
+                   "业务原句、政策和客户意愿应核对原始资料。")
+
 
 class AmbiguousDraft(ValueError):
     """交接含有重复字段，不同读取方可能观察到不同的值。"""
@@ -106,6 +110,9 @@ def review_messages(draft: str, sources: list[dict], *, node_task: str = "", per
     rows = [{key: row[key] for key in ("id", "kind", "text", "scope", "path", "item_ref", "tool") if key in row}
             for row in sources if isinstance(row, dict)]
     for row, source in zip(rows, (row for row in sources if isinstance(row, dict)), strict=True):
+        if (source.get("workspace_memory_path") is True
+                and (row.get("kind"), row.get("scope")) == ("read_file", "observed_span")):
+            row["workspace_memory_path"] = True
         markers, text = source.get('_submitted_echoes'), row.get('text')
         if isinstance(markers, list) and isinstance(text, str):
             lines = []
@@ -145,6 +152,8 @@ def review_messages(draft: str, sources: list[dict], *, node_task: str = "", per
     )
     if any(row.get('submitted_echoes') for row in rows):
         system += ECHO_GUIDANCE
+    if any(row.get("workspace_memory_path") is True for row in rows):
+        system += MEMORY_GUIDANCE
     if per_item:
         system += ("本次只复核当前事项的完整记录和共享备注里归属于它的来源断言。"
                    "各事项分别核对，整份交接待框架汇总。不要要求当前片段再次提供整个项目的所有记录。")

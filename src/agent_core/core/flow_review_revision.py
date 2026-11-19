@@ -3,7 +3,7 @@ import re
 from difflib import SequenceMatcher
 
 from agent_core.core.flow_review_claims import _number_targets, _target
-from agent_core.core.flow_review_records import parse_record_json
+from agent_core.core.flow_review_records import parse_record_json, pointer_chain
 
 _CROSS = re.compile(r"上述|下述|前述|如下|同上|其余|其他(?:字段|事项)|其它(?:字段|事项)|"
                     r"\b(?:above|below|previous|following|other items?)\b", re.I)
@@ -147,3 +147,102 @@ def revision_targets(previous_draft: str, old_issues: list[dict], current_draft:
         return _number_targets(result) if 1 <= len(result) <= 64 else None
     except (ValueError, TypeError, RecursionError):
         return None
+
+
+def _navigation_field(document: object, path: object) -> object:
+    """严格解析 JSON Pointer，拒绝非规范数组下标。"""
+    return pointer_chain(document, path)[-1]
+
+
+def _navigation_target(document: object, target: object) -> tuple[str, str]:
+    if not isinstance(target, dict):
+        raise ValueError("invalid target")
+    field = target.get("field")
+    value = _navigation_field(document, field)
+    start, end, text = target.get("start"), target.get("end"), target.get("text")
+    if (not isinstance(value, str) or type(start) is not int or type(end) is not int
+            or not isinstance(text, str) or not text.strip() or start < 0 or end <= start
+            or end > len(value) or value[start:end] != text):
+        raise ValueError("invalid target span")
+    return field, value
+
+
+def revision_navigation(previous_draft: str, previous_targets: list[dict], current_draft: str,
+                        current_targets: list[dict], sources: list[dict]) -> dict:
+    """投影本次字段的已核验来源位置及有界差异，不携带旧审查理由。"""
+    if (not isinstance(previous_draft, str) or not isinstance(current_draft, str)
+            or len(previous_draft) > 500_000 or len(current_draft) > 500_000
+            or not isinstance(previous_targets, list) or not isinstance(current_targets, list)
+            or not isinstance(sources, list) or len(previous_targets) > 64 or len(current_targets) > 64):
+        return {}
+    try:
+        old, new = parse_record_json(previous_draft), parse_record_json(current_draft)
+        if type(old) is not type(new) or not isinstance(old, (dict, list)):
+            return {}
+        indexed = {}
+        for source in sources:
+            if (not isinstance(source, dict) or not isinstance(source.get("id"), str)
+                    or not source["id"] or source["id"] in indexed
+                    or not isinstance(source.get("text"), str)):
+                return {}
+            indexed[source["id"]] = source["text"]
+        fields = {}
+        for target in current_targets:
+            field, value = _navigation_target(new, target)
+            fields[field] = value
+        locations = []
+        seen = set()
+        verified_targets = {}
+        for target in previous_targets:
+            if not isinstance(target, dict) or target.get("field") not in fields:
+                continue
+            field, old_value = _navigation_target(old, target)
+            if not isinstance(fields[field], str) or not isinstance(old_value, str):
+                return {}
+            spans = target.get("_cited_spans", [])
+            if not isinstance(spans, list):
+                continue
+            for span in spans:
+                if not isinstance(span, dict):
+                    continue
+                source_id, start, end, quote = (span.get(k) for k in ("source_id", "start", "end", "quote"))
+                if (not isinstance(source_id, str) or source_id not in indexed
+                        or type(start) is not int or type(end) is not int or not isinstance(quote, str)
+                        or not quote.strip() or len(quote) > 160 or start < 0 or end <= start
+                        or end > len(indexed[source_id]) or indexed[source_id][start:end] != quote):
+                    continue
+                key = (field, source_id, start, end, quote)
+                if key not in seen and len(locations) < 5:
+                    seen.add(key)
+                    locations.append(dict(zip(("field", "source_id", "start", "end", "quote"), key)))
+                verified_targets.setdefault(field, []).append((target["start"], target["end"]))
+        if not locations:
+            return {}
+        edits = []
+        for field, after in fields.items():
+            try:
+                before = _navigation_field(old, field)
+            except KeyError:
+                before = ""
+            if not isinstance(before, str):
+                return {}
+            if before == after:
+                continue
+            prefix = 0
+            while prefix < min(len(before), len(after)) and before[prefix] == after[prefix]:
+                prefix += 1
+            suffix = 0
+            while (suffix < min(len(before) - prefix, len(after) - prefix)
+                   and before[-suffix - 1] == after[-suffix - 1]):
+                suffix += 1
+            old_end, new_end = len(before) - suffix, len(after) - suffix
+            edit = {"field": field, "start": prefix, "end": new_end}
+            if new_end - prefix <= 160:
+                edit["new_text"] = after[prefix:new_end]
+            if (old_end - prefix <= 160 and any(
+                    left <= prefix <= old_end <= right for left, right in verified_targets.get(field, []))):
+                edit["old_text"] = before[prefix:old_end]
+            edits.append(edit)
+        return {"source_locations": locations, "edits": edits}
+    except (ValueError, TypeError, KeyError, IndexError, RecursionError):
+        return {}

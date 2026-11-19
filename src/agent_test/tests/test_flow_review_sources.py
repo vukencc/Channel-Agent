@@ -417,3 +417,88 @@ def test_echo_request_does_not_repeat_source_record():
     marker = json.loads(history[1]["content"])["sources"][0]["submitted_echoes"][0]
     assert set(marker) == {"record_start", "record_end", "fields"}
     assert text[marker["record_start"]:marker["record_end"]] == text.splitlines()[0]
+
+
+def memory_read_record(path):
+    data = record()
+    text = "项目上下文中的记载。"
+    observation = observe_text(text, reader_tool="read_file", body_spans=((0, len(text)),),
+                               recovery_notice="重读")
+    data["messages"][1]["tool_calls"][0]["function"] = {
+        "name": "read_file", "arguments": json.dumps({"path": path})
+    }
+    data["messages"][2].update(content=text, _context_observation=extract_observation(observation))
+    data["last_run"]["tools"][0]["name"] = "read_file"
+    return data
+
+
+@pytest.mark.parametrize("path", [".channelagent/memory.json", "./.channelagent/memory.json"])
+def test_workspace_memory_entry_is_labeled_and_serialized(path):
+    from agent_core.core.flow_draft_review import MEMORY_GUIDANCE, review_messages
+    from agent_core.core.flow_review_passages import review_passages
+
+    rows = review_sources(memory_read_record(path), char_limit=100)
+    assert rows[0]["workspace_memory_path"] is True
+    assert rows[0]["text"] == "项目上下文中的记载。"
+    messages = review_messages("草稿", rows)
+    payload = json.loads(messages[1]["content"])
+    assert payload["sources"][0]["workspace_memory_path"] is True
+    assert MEMORY_GUIDANCE in messages[0]["content"]
+    assert review_passages(rows)[0]["text"] == rows[0]["text"]
+
+
+@pytest.mark.parametrize("path", [
+    "other/.channelagent/memory.json", "memory.json", ".channelagent/memory.json.bak",
+    "@other/.channelagent/memory.json", "../.channelagent/memory.json",
+    "/workspace/.channelagent/memory.json", "C:\\workspace\\.channelagent\\memory.json",
+])
+def test_unrelated_or_unverified_paths_do_not_get_memory_label(path):
+    rows = review_sources(memory_read_record(path), char_limit=100)
+    assert rows and "workspace_memory_path" not in rows[0]
+
+
+def test_unpaired_memory_read_cannot_produce_label():
+    data = memory_read_record(".channelagent/memory.json")
+    data["messages"][2]["_provenance"] = "result_unknown"
+    assert review_sources(data, char_limit=100) == []
+
+
+def test_real_memory_path_read_retains_exact_observation(sandbox_env):
+    from agent_core.core.flow_draft_review import MEMORY_GUIDANCE, review_messages
+    from agent_core.core.workspace_memory import DIR_NAME, FILE_NAME
+    from agent_core.tools.file_crud import read_file
+
+    directory = sandbox_env / DIR_NAME
+    directory.mkdir()
+    body = "实际读取的工作区记载。"
+    (directory / FILE_NAME).write_text(body, encoding="utf-8")
+    observed = read_file(f"{DIR_NAME}/{FILE_NAME}")
+    data = memory_read_record(f"{DIR_NAME}/{FILE_NAME}")
+    data["messages"][2].update(content=str(observed),
+                                _context_observation=extract_observation(observed))
+    rows = review_sources(data, char_limit=100)
+    assert rows[0]["text"] == body and rows[0]["workspace_memory_path"] is True
+    assert MEMORY_GUIDANCE in review_messages("草稿", rows)[0]["content"]
+
+
+def test_untrusted_marker_is_not_serialized():
+    from agent_core.core.flow_draft_review import MEMORY_GUIDANCE, review_messages
+
+    source = {"id": "S", "kind": "rag_search", "scope": "observed_span",
+              "text": "原文。", "workspace_memory_path": True}
+    messages = review_messages("草稿", [source])
+    assert "workspace_memory_path" not in json.loads(messages[1]["content"])["sources"][0]
+    assert MEMORY_GUIDANCE not in messages[0]["content"]
+
+
+def test_managed_memory_entry_uses_host_path_spelling(monkeypatch):
+    from pathlib import PurePosixPath, PureWindowsPath
+    from agent_core.core import flow_review_sources
+
+    path = r".CHANNELAGENT\MEMORY.JSON"
+    monkeypatch.setattr(flow_review_sources, "PurePath", PureWindowsPath)
+    assert flow_review_sources._workspace_memory_entry(path)
+    assert not flow_review_sources._workspace_memory_entry(r"@other\.CHANNELAGENT\MEMORY.JSON")
+    monkeypatch.setattr(flow_review_sources, "PurePath", PurePosixPath)
+    assert not flow_review_sources._workspace_memory_entry(path)
+    assert not flow_review_sources._workspace_memory_entry(".CHANNELAGENT/MEMORY.JSON")

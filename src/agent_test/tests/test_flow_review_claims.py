@@ -1,4 +1,7 @@
 import json
+
+import pytest
+
 from agent_core.core.flow_review_claims import (INVALID_REVIEW, claim_feedback, claim_messages,
                                                claim_targets, shared_targets)
 
@@ -213,3 +216,77 @@ def test_multiple_issues_can_mix_issued_ids_and_exact_quotes():
         other = literal if "evidence_id" in bad else indexed
         assert claim_assessment({"status": "revise", "issues": [other, bad]}, sources, targets, offered) == (
             INVALID_REVIEW, expected)
+
+
+def test_verified_citation_locations_are_collected_only_after_a_complete_revise():
+    from agent_core.core.flow_review_claims import claim_assessment
+    from agent_core.core.flow_review_passages import review_passages
+
+    text = "资料甲。核对原始条款。资料丙。核对原始条款。"
+    src = [{"id": "s", "kind": "read_file", "scope": "observed_span", "text": text}]
+    ts = [{"id": "C4", "field": "/note", "text": "用户要求直接处理。"}]
+    parts = review_passages(src)
+    part = parts[-1]
+    issue = {"target_id": "C4", "evidence_id": part["id"], "reason": "要求范围有差异"}
+    records = {}
+    verdict = {"status": "revise", "issues": [issue]}
+    message, invalid = claim_assessment(verdict, src, ts, [part], cited_spans=records)
+    assert message and invalid is None
+    assert records == {"C4": [{"source_id": "s", "start": part["start"], "end": part["end"],
+                               "quote": part["text"]}]}
+    records.clear()
+    broken = {"status": "revise", "issues": [issue, {**issue, "evidence_id": "not-issued"}]}
+    assert claim_assessment(broken, src, ts, [part], cited_spans=records)[1] == "unverified_reference"
+    assert records == {}
+    literal = {"target_id": "C4", "source_id": "s", "draft_quote": "要求直接处理",
+               "quote": part["text"], "reason": "应核对原件"}
+    verdict = {"status": "revise", "issues": [literal]}
+    assert claim_assessment(verdict, src, ts, [part], cited_spans=records)[1] is None
+    assert records == {}
+    literal["quote"] = "资料丙。"
+    assert claim_assessment(verdict, src, ts, [], cited_spans=records)[1] is None
+    start = text.index("资料丙。")
+    assert records == {"C4": [{"source_id": "s", "start": start, "end": start + 4, "quote": "资料丙。"}]}
+
+
+@pytest.mark.parametrize("kind,expected", [("read_file", True), ("rag_search", False)])
+def test_claim_reviewer_reads_the_provenance_of_the_workspace_memory_entry(kind, expected):
+    from agent_core.core.flow_draft_review import MEMORY_GUIDANCE
+    from agent_core.core.flow_review_claims import claim_targets, prepare_claim_request
+
+    draft = "客户明确要求重新核实。"
+    source = {"id": "S", "kind": kind, "scope": "observed_span", "text": "客户原来报告过问题。",
+              "path": ".channelagent/memory.json", "workspace_memory_path": True}
+    for whole in (False, True):
+        history, _ = prepare_claim_request(draft, [source], targets=claim_targets(draft),
+                                           whole_batch=whole, char_limit=100_000, token_limit=32_000)
+        payload = json.loads(history[1]["content"])
+        assert (MEMORY_GUIDANCE in history[0]["content"]) is expected
+        assert (payload["sources"][0].get("workspace_memory_path") is True) is expected
+        assert payload["sources"][0]["text"] == source["text"]
+
+
+@pytest.mark.parametrize("meter", ["history_size", "request_tokens"])
+def test_tight_recheck_budgets_drop_edits_then_navigation_without_losing_the_previous_payload(monkeypatch, meter):
+    from agent_core.core import flow_review_claims as claims
+
+    draft = "客户明确要求重新核实。"
+    src = [{"id": "s", "kind": "read_file", "scope": "observed_span", "text": "客户曾报告过故障。"}]
+    target = claims.claim_targets(draft)
+    base, current_e = claims.prepare_claim_request(draft, src, targets=target, char_limit=100000, token_limit=32000)
+    navigation = {"source_locations": [{"field": "/", "source_id": "s", "start": 0, "end": len(src[0]["text"]),
+                                        "quote": src[0]["text"]}],
+                  "edits": [{"field": "/", "start": 0, "end": 2}]}
+    limit = 32000
+    actual = getattr(claims, meter)
+    def size(history):
+        detail = json.loads(history[1]["content"]).get("revision_context") or {}
+        return limit + 1 if detail.get("edits") else actual(history)
+    monkeypatch.setattr(claims, meter, size)
+    packed = claims.with_revision_navigation(base, target, navigation, char_limit=limit, token_limit=limit)
+    summary = json.loads(packed[1]["content"])
+    assert summary["revision_context"] == {"source_locations": navigation["source_locations"]}
+    assert summary["draft"] == draft and summary["sources"] == src
+    assert [e["id"] for e in summary.get("evidence_passages", [])] == [e["id"] for e in current_e]
+    monkeypatch.setattr(claims, meter, lambda hist: limit + 1 if "revision_context" in json.loads(hist[1]["content"]) else actual(hist))
+    assert claims.with_revision_navigation(base, target, navigation, char_limit=limit, token_limit=limit) == base

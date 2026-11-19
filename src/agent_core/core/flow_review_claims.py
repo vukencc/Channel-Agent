@@ -6,7 +6,7 @@ import re
 from agent_core.core.context import history_size, request_tokens
 from agent_core.core.flow_review_navigation import target_record_references
 from agent_core.core.flow_review_passages import relevant_passages, resolve_passage_issues, source_record_ranges
-from agent_core.core.flow_draft_review import (ECHO_GUIDANCE, _ASSERTION, _CUSTOMER, _MANDATE, _RULE,
+from agent_core.core.flow_draft_review import (ECHO_GUIDANCE, MEMORY_GUIDANCE, _ASSERTION, _CUSTOMER, _MANDATE, _RULE,
                                                needs_review, review_messages)
 
 INVALID_REVIEW = "审查结果无效或来源不足：请重新确认具体位置和来源，必要时按原权限补读。"
@@ -219,6 +219,8 @@ def claim_messages(draft: str, sources: list[dict], *, targets: list[dict],
     payload = json.loads(messages[1]["content"])
     if any(row.get('submitted_echoes') for row in payload['sources']):
         messages[0]['content'] += ECHO_GUIDANCE
+    if any(row.get('workspace_memory_path') is True for row in payload['sources']):
+        messages[0]['content'] += MEMORY_GUIDANCE
     payload["targets"] = [{**{key: target[key] for key in ("id", "field", "start", "end")},
                            "excerpt": target["text"][:64],
                            **({"location": "/context"} if shared else {})} for target in targets]
@@ -348,9 +350,40 @@ def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict
     return history, []
 
 
+def with_revision_navigation(history: list[dict], targets: list[dict], navigation: dict, *,
+                             char_limit: int, token_limit: int) -> list[dict]:
+    """把当前原句和已核验的上次引文放在一起；保留原稿、全部来源和实际签发的 E。"""
+    locations = navigation.get("source_locations")
+    if not locations:
+        return history
+    payload = json.loads(history[1]["content"])
+    rows = payload.get("targets", [])
+    if len(rows) != len(targets):
+        return history
+    focused = []
+    for row, target in zip(rows, targets, strict=True):
+        if any(row.get(k) != target[k] for k in ("id", "field", "start", "end")):
+            return history
+        focused.append({**row, "excerpt": target["text"]})
+    system = (history[0]["content"] + " revision_context 标出上一稿在相应字段援引的来源原句和本次修改位置。"
+              "逐项阅读 targets 中的当前原句，结合完整草稿和全部来源独立判断主体、范围和条件。")
+    rest = {k: v for k, v in payload.items() if k not in {"targets", "claim_texts"}}
+    alternatives = [navigation]
+    if navigation.get("edits"):
+        alternatives.append({"source_locations": locations})
+    for detail in alternatives:
+        data = {"targets": focused, "revision_context": detail, **rest}
+        candidate = [{"role": "system", "content": system},
+                     {"role": "user", "content": json.dumps(data, ensure_ascii=False, separators=(",", ":"))}]
+        if history_size(candidate) <= char_limit and request_tokens(candidate) <= token_limit:
+            return candidate
+    return history
+
+
 def claim_assessment(verdict: dict | None, sources: list[dict], targets: list[dict],
-                     passages: list[dict]) -> tuple[str | None, str | None]:
-    """第二个返回值仅标记无效判定的原因，不包含原文、模型回复或推理。"""
+                     passages: list[dict], cited_spans: dict[str, list[dict]] | None = None,
+                     ) -> tuple[str | None, str | None]:
+    """有效退回可携带原文定位供本轮复审；诊断原因码始终不含原文。"""
     if not isinstance(targets, list) or not targets or not isinstance(sources, list) or not sources:
         return INVALID_REVIEW, "empty_scope"
     indexed, target_index = {}, {}
@@ -386,7 +419,9 @@ def claim_assessment(verdict: dict | None, sources: list[dict], targets: list[di
         for position, issue in zip(references, resolved["issues"], strict=True):
             issues[position] = issue
     feedback = []
-    for issue in issues:
+    verified: dict[str, list[dict]] = {}
+    offered = {part["id"]: part for part in passages} if cited_spans is not None and references else {}
+    for position, issue in enumerate(issues):
         if not isinstance(issue, dict) or set(issue) != {"target_id", "draft_quote", "source_id", "quote", "reason"}:
             return INVALID_REVIEW, "issue_shape"
         target_id, draft_quote, source_id, quote, reason = (issue[k] for k in
@@ -401,7 +436,24 @@ def claim_assessment(verdict: dict | None, sources: list[dict], targets: list[di
             return INVALID_REVIEW, "draft_quote_not_found"
         if quote not in indexed[source_id]:
             return INVALID_REVIEW, "source_quote_not_found"
+        if cited_spans is not None:
+            original = indexed[source_id]
+            reference = references.get(position)
+            if reference is not None:
+                # 前面已验证该编号是本次实际签发的逐字切片，即便原句在全文中重复也可定位。
+                start = offered[reference["evidence_id"]]["start"]
+            else:
+                start = original.find(quote)
+                if original.find(quote, start + 1) != -1:
+                    start = -1
+            if start >= 0:
+                location = {"source_id": source_id, "start": start, "end": start + len(quote), "quote": quote}
+                locations = verified.setdefault(target_id, [])
+                if location not in locations:
+                    locations.append(location)
         feedback.append(f"目标 {target_id}（草稿：{draft_quote}）：{reason}（来源 {source_id}，原文：{quote}）")
+    if cited_spans is not None:
+        cited_spans.update(verified)
     return "请修改草稿：" + "；".join(feedback), None
 
 

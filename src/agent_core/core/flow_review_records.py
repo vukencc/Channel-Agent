@@ -44,6 +44,25 @@ def parse_record_json(text: str) -> object:
                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError("constant")))
 
 
+def pointer_chain(document: object, path: object) -> list[object]:
+    """解析规范 JSON Pointer，返回根及各级值供调用方判定归属。"""
+    if not isinstance(path, str) or not path.startswith("/") or len(path) > 1024:
+        raise ValueError("invalid path")
+    chain = [document]
+    for token in path[1:].split("/"):
+        if re.search(r"~(?![01])", token):
+            raise ValueError("invalid escape")
+        key = token.replace("~1", "/").replace("~0", "~")
+        value = chain[-1]
+        if isinstance(value, dict):
+            chain.append(value[key])
+        elif isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]{0,5}", key):
+            chain.append(value[int(key)])
+        else:
+            raise ValueError("invalid parent or index")
+    return chain
+
+
 def source_array_records(text: str, data: object) -> list[tuple[dict, str]] | None:
     """只接受简单来源包装；切片必须经原解码器重新核对。"""
     if isinstance(data, dict):

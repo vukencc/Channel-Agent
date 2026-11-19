@@ -2,12 +2,13 @@
 from collections import Counter
 import hashlib
 import json
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
 import re
 
 from agent_core.core.instrumentation import tool_outcome
 from agent_core.core.messages import is_user_request
 from agent_core.core.tool_observations import validate_observation
+from agent_core.core.workspace_memory import DIR_NAME, FILE_NAME
 
 
 
@@ -193,6 +194,15 @@ def _echo_markers(text: str, echoes: dict[str, list[tuple[int, list[str]]]], bef
         return []
 
 
+def _workspace_memory_entry(path: object) -> bool:
+    """只识别本平台相对工作区的记忆入口，不推断文件实际作者或链接目标。"""
+    if not isinstance(path, str) or not path or "\x00" in path:
+        return False
+    value = PurePath(path)
+    return (not value.is_absolute() and not value.drive and not value.root
+            and value == PurePath(DIR_NAME, FILE_NAME))
+
+
 def review_sources(record: dict, *, char_limit: int) -> list[dict]:
     """返回完整观察区间；预算按正文字符计，不表示整个文件完整。"""
     if type(char_limit) is not int or char_limit <= 0 or not isinstance(record, dict):
@@ -308,6 +318,8 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
                        "scope": "observed_span"}
                 if isinstance(value, str) and value and len(value) <= 1024:
                     row[key] = value
+                if name == "read_file" and _workspace_memory_entry(value):
+                    row["workspace_memory_path"] = True
                 if name == 'read_file' and echoes:
                     pending_echoes.append((row, len(echoes)))
                 rows.append(row)

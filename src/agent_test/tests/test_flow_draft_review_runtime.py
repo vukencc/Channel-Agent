@@ -40,8 +40,24 @@ def review_payload(history):
         payload = json.loads(history[1]["content"])
     except (TypeError, ValueError):
         return None
-    return payload if (isinstance(payload, dict) and {"draft", "sources"} <= set(payload)
-                       and set(payload) <= {"draft", "sources", "workflow_task", "review_field_hints", "targets", "claim_texts", "action_context", "evidence_passages"}) else None
+    allowed = {"draft", "sources", "workflow_task", "review_field_hints", "targets", "claim_texts",
+               "action_context", "evidence_passages", "revision_context"}
+    if not isinstance(payload, dict) or not {"draft", "sources"} <= set(payload) <= allowed:
+        return None
+    if "revision_context" in payload:
+        # 受控模型只把来源逐字、位置对得上的新请求识别为修订复核。
+        nav = payload["revision_context"]
+        assert isinstance(nav, dict) and {"source_locations"} <= set(nav) <= {"source_locations", "edits"}
+        fields = {row["field"] for row in payload["targets"]}
+        sources = {row["id"]: row["text"] for row in payload["sources"]}
+        assert 1 <= len(nav["source_locations"]) <= 5
+        for loc in nav["source_locations"]:
+            assert set(loc) == {"field", "source_id", "start", "end", "quote"}
+            assert loc["field"] in fields and type(loc["start"]) is type(loc["end"]) is int
+            raw = sources[loc["source_id"]]
+            assert 0 <= loc["start"] < loc["end"] <= len(raw)
+            assert raw[loc["start"]:loc["end"]] == loc["quote"]
+    return payload
 
 
 @pytest.fixture

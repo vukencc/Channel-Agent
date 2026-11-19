@@ -2,7 +2,7 @@
 import re
 from collections import Counter
 
-from agent_core.core.flow_review_records import RECORD_ID_KEYS, parse_record_json, record_identifier
+from agent_core.core.flow_review_records import RECORD_ID_KEYS, parse_record_json, pointer_chain, record_identifier
 
 
 def _draft_records(document: object) -> tuple[Counter, set[int]] | None:
@@ -37,25 +37,17 @@ def _draft_records(document: object) -> tuple[Counter, set[int]] | None:
 
 
 def _locate_target(document: object, target: dict, records: set[int]) -> tuple[str | None, str] | None:
-    path = target.get("field")
-    if not isinstance(path, str) or not path.startswith("/") or len(path) > 1024:
+    try:
+        chain = pointer_chain(document, target.get("field"))
+    except (ValueError, KeyError, IndexError):
         return None
-    value = document
     owner = None
-    for token in path[1:].split("/"):
-        if re.search(r"~(?![01])", token):
-            return None
-        key = token.replace("~1", "/").replace("~0", "~")
-        if isinstance(value, dict) and key in value:
-            if RECORD_ID_KEYS.intersection(value):
-                owner = record_identifier(value) if id(value) in records else None
-            value = value[key]
-        elif isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]{0,5}", key) and int(key) < len(value):
-            value = value[int(key)]
-            if isinstance(value, dict):
-                owner = None
-        else:
-            return None
+    for parent, child in zip(chain, chain[1:]):
+        if isinstance(parent, dict) and RECORD_ID_KEYS.intersection(parent):
+            owner = record_identifier(parent) if id(parent) in records else None
+        elif isinstance(parent, list) and isinstance(child, dict):
+            owner = None
+    value = chain[-1]
     start, end, text = (target.get(k) for k in ("start", "end", "text"))
     if (not isinstance(value, str) or type(start) is not int or type(end) is not int
             or not isinstance(text, str) or not 0 < len(text) <= 4000 or not 0 <= start < end <= len(value)
