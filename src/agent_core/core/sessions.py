@@ -1258,7 +1258,6 @@ class SessionManager:
         await self.save(session)
 
     async def _run(self, session, handoff_contract=None):
-        history_context = self.context_for_session(session)
         contexts = []
         # 仅在此运行中产生并完整交付的观察可用于后续工作窗口。
         trusted_observations = {}
@@ -1318,6 +1317,8 @@ class SessionManager:
                 self._observe_phase(session, 'model_wait')
                 session.last_model_event_at = time.monotonic()
                 self.notify()
+                # 同一轮由同一实例组装并确认交付；服务重建后须重新验证交付。
+                history_context = self.context_for_session(session)
                 history = [dict(message) for message in session.record['messages']]
                 with operation_span('memory.load'):
                     memory = await asyncio.to_thread(self.store.memory_for_model, session.id,
