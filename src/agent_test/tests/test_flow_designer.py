@@ -20,7 +20,8 @@ def test_designer_instructs_nodes_to_preserve_evidence_scope(tmp_path):
         prompt = seen[0][0]['content']
         for instruction in ('按事项引用对应规则', '不跨文档迁移角色、期限或条件',
                             '对外动作前逐项核验适用条件和证据', '区分已知事实、假设和待核实',
-                            '不得扩大影响范围', '证据不足时如实标记待核实，不得增造'):
+                            '不得扩大影响范围', '证据不足时如实标记待核实，不得增造',
+                            '按拓扑顺序串行运行', '满足交付条件就结束本节点'):
             assert instruction in prompt
         assert result['template'] is None
     finally:
