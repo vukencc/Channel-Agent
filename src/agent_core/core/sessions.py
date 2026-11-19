@@ -256,8 +256,7 @@ class SessionManager:
         """按会话选择归档，自动 Flow 不改变全局工具集。"""
         if self.history_context is not None:
             return self.history_context
-        if (config.STRUCTURED_CONTEXT_EXPLICIT or config.FLOW_STRUCTURED_CONTEXT is False
-                or not session.record.get('flow_id')):
+        if not config.FLOW_AUTO_ARCHIVE or not session.record.get('flow_id'):
             return None
         if self._flow_history_context is None:
             from agent_core.core.history_context import HistoryContext

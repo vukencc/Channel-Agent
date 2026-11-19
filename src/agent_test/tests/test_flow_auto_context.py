@@ -1,5 +1,10 @@
 """Flow 默认私有历史策略的离线回归。"""
 import asyncio
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,15 +16,33 @@ from agent_core.core.storage import SessionStore
 from agent_frontend.web.context_status import context_status
 
 
-@pytest.mark.parametrize("global_enabled,explicit,flow_setting,expected", [
-    (False, False, None, True), (False, True, None, False),
-    (False, False, False, False), (False, True, True, False),
-    (True, True, False, True), (False, False, True, True),
+@pytest.mark.parametrize('setting,all_sessions,automatic', [
+    (None, False, True), ('', False, True), ('auto', False, True),
+    (' TRUE ', True, False), ('false', False, False),
 ])
-def test_flow_context_selection(tmp_path, monkeypatch, sandbox_env, global_enabled, explicit, flow_setting, expected):
-    monkeypatch.setattr(config, "ENABLE_STRUCTURED_CONTEXT", global_enabled)
-    monkeypatch.setattr(config, "STRUCTURED_CONTEXT_EXPLICIT", explicit, raising=False)
-    monkeypatch.setattr(config, "FLOW_STRUCTURED_CONTEXT", flow_setting, raising=False)
+def test_runtime_archive_policy(setting, all_sessions, automatic):
+    env = dict(os.environ, PYTHON_DOTENV_DISABLED='1')
+    if setting is None:
+        env.pop('ENABLE_STRUCTURED_CONTEXT', None)
+    else:
+        env['ENABLE_STRUCTURED_CONTEXT'] = setting
+    code = ('import json; from agent_core import config; '
+            'print(json.dumps([config.ENABLE_STRUCTURED_CONTEXT, config.FLOW_AUTO_ARCHIVE]))')
+    output = subprocess.check_output([sys.executable, '-c', code], text=True, env=env)
+    assert json.loads(output) == [all_sessions, automatic]
+
+
+def test_full_example_selects_automatic_archive():
+    from dotenv import dotenv_values
+    assert dotenv_values(Path('.env.example'))['ENABLE_STRUCTURED_CONTEXT'] == 'auto'
+
+
+@pytest.mark.parametrize('global_enabled,automatic,expected', [
+    (False, True, True), (False, False, False), (True, False, True),
+])
+def test_flow_context_selection(tmp_path, monkeypatch, sandbox_env, global_enabled, automatic, expected):
+    monkeypatch.setattr(config, 'ENABLE_STRUCTURED_CONTEXT', global_enabled)
+    monkeypatch.setattr(config, 'FLOW_AUTO_ARCHIVE', automatic)
     monkeypatch.setattr(config, "CONTEXT_SUPERVISOR_ENV_FILE", tmp_path / "absent")
     store = SessionStore(tmp_path / "state", sandbox_env)
     async def run():
@@ -42,8 +65,7 @@ def test_flow_context_selection(tmp_path, monkeypatch, sandbox_env, global_enabl
 
 def test_automatic_archive_uses_local_summaries_with_dormant_supervisor(tmp_path, monkeypatch, sandbox_env):
     monkeypatch.setattr(config, 'ENABLE_STRUCTURED_CONTEXT', False)
-    monkeypatch.setattr(config, 'STRUCTURED_CONTEXT_EXPLICIT', False)
-    monkeypatch.setattr(config, 'FLOW_STRUCTURED_CONTEXT', None)
+    monkeypatch.setattr(config, 'FLOW_AUTO_ARCHIVE', True)
     supervisor = tmp_path / 'old-supervisor.env'
     supervisor.write_text('SUPERVISOR_ENABLED=true\n', encoding='utf-8')
     monkeypatch.setattr(config, 'CONTEXT_SUPERVISOR_ENV_FILE', supervisor)
@@ -66,8 +88,7 @@ def test_automatic_archive_uses_local_summaries_with_dormant_supervisor(tmp_path
 
 def test_auto_flow_preserves_unread_batch_and_archives_delivered(tmp_path, monkeypatch, sandbox_env):
     for name, value in {
-        'ENABLE_STRUCTURED_CONTEXT': False, 'STRUCTURED_CONTEXT_EXPLICIT': False,
-        'FLOW_STRUCTURED_CONTEXT': None, 'CONTEXT_SUPERVISOR_ENV_FILE': tmp_path / 'absent',
+        'ENABLE_STRUCTURED_CONTEXT': False, 'FLOW_AUTO_ARCHIVE': True, 'CONTEXT_SUPERVISOR_ENV_FILE': tmp_path / 'absent',
         'MODEL_INPUT_CHARS': 12000, 'MODEL_INPUT_TOKENS': 16000,
         'CONTEXT_HISTORY_KEEP_GROUPS': 0, 'CONTEXT_HISTORY_CHUNK_CHARS': 1000,
         'CONTEXT_RESERVE_USER_CHARS': 0, 'CONTEXT_RESERVE_SEARCH_CHARS': 0,
@@ -113,8 +134,7 @@ def test_auto_flow_preserves_unread_batch_and_archives_delivered(tmp_path, monke
 
 def test_actual_flow_uses_auto_context_from_first_request(tmp_path, monkeypatch, sandbox_env):
     monkeypatch.setattr(config, 'ENABLE_STRUCTURED_CONTEXT', False)
-    monkeypatch.setattr(config, 'STRUCTURED_CONTEXT_EXPLICIT', False)
-    monkeypatch.setattr(config, 'FLOW_STRUCTURED_CONTEXT', None)
+    monkeypatch.setattr(config, 'FLOW_AUTO_ARCHIVE', True)
     monkeypatch.setattr(config, 'CONTEXT_SUPERVISOR_ENV_FILE', tmp_path / 'absent')
     monkeypatch.setattr(config, 'RAG_ASSESS', False)
     project = tmp_path / 'project'

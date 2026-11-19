@@ -2,7 +2,7 @@
 
 > 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
 
-结构化上下文把较早的对话整理成摘要与原文分块，减少每轮发送给模型的历史长度。归档按会话隔离，写入会话私有状态目录；它不改写原始会话消息，也不重放历史工具调用。未显式配置时 Flow 节点从首轮自动启用，普通对话沿用原有路径；自动模式在本地提取摘要，沿用节点原有工具授权。需要使用已配置的外部监督器时，请显式启用全局模式。`ENABLE_STRUCTURED_CONTEXT=true` 全局启用，显式 `false` 全局关闭；`FLOW_STRUCTURED_CONTEXT=false` 关闭 Flow 自动模式。
+结构化上下文把较早的对话整理成摘要与原文分块，减少每轮发送给模型的历史长度。归档按会话隔离，写入会话私有状态目录；它不改写原始会话消息，也不重放历史工具调用。使用默认 `auto` 时 Flow 节点从首轮自动启用，普通对话沿用原有路径；自动模式在本地提取摘要，沿用节点原有工具授权。需要使用已配置的外部监督器时，请显式启用全局模式。`ENABLE_STRUCTURED_CONTEXT=true` 全局启用，显式 `false` 全局关闭。
 
 工作区共享记忆与会话私有归档独立：它默认启用，按实际工作区复用摘要，并计入输入预算；详见[工作区共享记忆](workspace-memory.md)。关闭结构化历史不关闭共享记忆。
 
@@ -188,8 +188,7 @@ UI 上的估算输入预算、声明容量、含回复预留的工作预算和�
 
 | 主配置 | 默认值 | 作用 |
 | --- | --- | --- |
-| `ENABLE_STRUCTURED_CONTEXT` | 未设置 | `true` 全局启用；显式 `false` 全局关闭。未设置时仅 Flow 自动启用，历史工具不自动注册。 |
-| `FLOW_STRUCTURED_CONTEXT` | 未设置 | 设为 `false` 关闭 Flow 自动模式；显式全局配置优先。 |
+| `ENABLE_STRUCTURED_CONTEXT` | `auto` | `auto`、未设置或空值仅为 Flow 节点启用本地归档。`true` 对所有会话启用结构化历史。`false` 对所有会话关闭。 |
 | `CONTEXT_HISTORY_CHUNK_CHARS` | `8000` | 新归档块的目标字符上限。 |
 | `CONTEXT_HISTORY_KEEP_GROUPS` | `2` | 优先保留的近期完整消息组数。 |
 | `CONTEXT_SUMMARY_CHARS` | `2000` | Session 摘要字符上限。 |
@@ -222,7 +221,7 @@ UI 上的估算输入预算、声明容量、含回复预留的工作预算和�
 
 对于使用小额度输出预算、要求严格 JSON 的监督器模型，如果 `auto` 模式把额度消耗在 reasoning 上，可在 `.env.supervisor` 将 `SUPERVISOR_THINKING_MODE=disabled` 显式关闭。仓库样例保留 `auto`，不改变默认行为；应先对目标端点做同一输入的 A/B 确认。
 
-主模板默认不设置 `ENABLE_STRUCTURED_CONTEXT`；监督运行时默认关闭，样例显式设置启用。此前本机初始化已启用主功能与独立监督器；历史测试使用隔离目录和进程变量，未改已有配置。运行代码不会从主环境继承监督器凭据。其他环境可从 `.env.supervisor.example` 复制后单独填写。配置变更后重启。
+主模板使用 `ENABLE_STRUCTURED_CONTEXT=auto`；监督运行时默认关闭，样例显式设置启用。此前本机初始化已启用主功能与独立监督器；历史测试使用隔离目录和进程变量，未改已有配置。运行代码不会从主环境继承监督器凭据。其他环境可从 `.env.supervisor.example` 复制后单独填写。配置变更后重启。
 
 ## 安全与限制
 

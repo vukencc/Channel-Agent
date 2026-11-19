@@ -35,7 +35,7 @@ $env:MODEL_INPUT_CHARS = "0"
 `FLOW_DESIGNER_TOTAL_OUTPUT_CHARS=192000` 为设计助手的独立总生成量上限，统计推理、正文及工具参数，合法范围 1..1048576，禁止 0 或无限值。设计正文和参数仍共同遵守 `MODEL_OUTPUT_CHARS=48000`；普通 Agent 继续以该项限制全部输出。未显式设置模型 `max_tokens` 时，费用预留按有效总字符上限作为保守输出 token 估算，因此增大设计额度可能被已有费用预算拒绝；有 provider usage 时照原规则结算，没有则保留预留。该配置不会修改发给模型的采样参数、推理强度或输出 token 参数。
 设计助手在收到一份边界完整、但 JSON 语法有误的草稿时可再请求一次，仅用于修正格式。`MODEL_RECOVERY_LIMIT=0` 关闭此行为，正值也只修正一次。修正请求沿用选定模型、推理强度、输入和费用上限。完整围栏内的有效模板直接在本机解析。
 
-未设置 `ENABLE_STRUCTURED_CONTEXT` 时，Flow 节点从首轮开始在本地归档已读工具批次，保留当前输入和未读回执。自动模式沿用原输入预算及节点的工具选择。显式 `ENABLE_STRUCTURED_CONTEXT=true` 为所有会话开启结构化历史，可按配置启用外部监督器。显式 `false` 保留旧行为。如果旧版 `.env` 来自完整示例，其中可能已有此行；希望单独启用 Flow 自动归档时，请将该行注释后重启。也可通过 `FLOW_STRUCTURED_CONTEXT=false` 关闭自动归档。[上下文管理](context-management.md)
+在默认 `ENABLE_STRUCTURED_CONTEXT=auto` 下，Flow 节点从首轮开始在本地归档已读工具批次，保留当前输入和未读回执。自动模式沿用原输入预算及节点的工具选择。显式 `ENABLE_STRUCTURED_CONTEXT=true` 为所有会话开启结构化历史，可按配置启用外部监督器。显式 `false` 保留旧行为。如果旧版 `.env` 来自完整示例，其中可能已有此行；希望单独启用 Flow 自动归档时，请将该值改为 `auto` 并重启。[上下文管理](context-management.md)
 
 
 ## 功能索引
