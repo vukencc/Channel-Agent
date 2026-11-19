@@ -242,3 +242,17 @@ def test_duplicate_handoff_fields_cannot_hide_a_source_claim(runtime_store, monk
     assert draft not in result["nodes"]["a"]["output_handoff"]
     assert writes == [{"reason": CORRECTED}]
     assert [e["status"] for e in record["last_run"]["draft_reviews"]] == ["ambiguous_draft", "passed"]
+
+
+def test_full_flow_review_receives_complete_focal_sentence_and_context(runtime_store, monkeypatch):
+    claim = "客户明确表示" + "同意继续核对之前登记的信息，" * 5 + "并希望继续排查。"
+    draft = json.dumps({"summary": "用户反馈页面延迟。", "reason": claim}, ensure_ascii=False)
+    record, result, _, reviews, writes, _ = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="pass", final_draft=draft))
+    assert len(reviews) == 1
+    payload = reviews[0]
+    assert json.loads(payload["draft"]) == json.loads(draft)
+    assert payload["claim_texts"] == {"C1": claim} and payload["targets"][0]["field"] == "/reason"
+    event = record["last_run"]["draft_reviews"][-1]
+    assert event["target_count"] == 1 and event["background_count"] == 1
+    assert len(writes) == 1 and result["status"] == "completed"

@@ -12,7 +12,7 @@ from agent_core.core.flow_draft_review import (
     AmbiguousDraft, needs_review, normalised_draft, parse_review_reply, review_feedback, review_messages,
 )
 from agent_core.core.flow_review_claims import (
-    INVALID_REVIEW, claim_feedback, claim_messages, claim_targets, shared_targets,
+    INVALID_REVIEW, claim_feedback, claim_messages, claim_targets, focal_targets, shared_targets,
 )
 from agent_core.core.flow_review_sources import review_sources
 from agent_core.core.instrumentation import tool_outcome
@@ -85,7 +85,7 @@ class FlowDraftGate:
             self.session.record['last_run'].setdefault('draft_reviews', []).append(event)
             return '草稿中有重复的 JSON 字段。同一对象的每个字段只能有一个值，请消除歧义后重新提交。'
         if stage != 'handoff':
-            return await self._check_one(draft, stage=stage, force=force, call_id=call_id)
+            return await self._check_one(draft, stage=stage, force=force, call_id=call_id, recheck=force)
         if not force and not self.pending_items and not needs_review(draft):
             return None
         from agent_core.core.flow_review_items import review_units
@@ -94,7 +94,8 @@ class FlowDraftGate:
         units = review_units(draft, sources, required_ids=frozenset(self.pending_items)) if sources else None
         # 无法把先前整稿拒绝关联到事项时，保留整稿复审。
         if units is None or (force and not self.pending_items):
-            return await self._check_one(draft, stage=stage, force=force or bool(self.pending_items), call_id=call_id)
+            return await self._check_one(draft, stage=stage, force=force or bool(self.pending_items), call_id=call_id,
+                                         recheck=force or bool(self.pending_items))
         original_sources = {row.get('id'): row for row in sources}
 
         def observed(row):
@@ -107,7 +108,7 @@ class FlowDraftGate:
                 or not isinstance(unit.get('sources'), list)
                 or not all(observed(row) for row in unit.get('sources', [])) for unit in units)
                 or len(ids) != len(set(ids)) or not self.pending_items.issubset(ids)):
-            return await self._check_one(draft, stage=stage, force=True, call_id=call_id)
+            return await self._check_one(draft, stage=stage, force=True, call_id=call_id, recheck=True)
         if not units:
             return None
         events = self.session.record['last_run'].setdefault('draft_reviews', [])
@@ -128,7 +129,8 @@ class FlowDraftGate:
                 continue
             try:
                 feedback = await self._check_one(unit['draft'], stage=stage, force=True,
-                    sources_override=unit['sources'], unit_kind=kind, recovery=recovery)
+                    sources_override=unit['sources'], unit_kind=kind, recovery=recovery,
+                    recheck=item_id in self.pending_items)
             except asyncio.CancelledError:
                 cancelled = True
             child = events.pop()
@@ -153,7 +155,7 @@ class FlowDraftGate:
 
     async def _check_one(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
                          sources_override: list[dict] | None = None, unit_kind: str | None = None,
-                         recovery: list[bool] | None = None) -> str | None:
+                         recovery: list[bool] | None = None, recheck: bool = False) -> str | None:
         if self.blocked:
             return self.blocked
         if not force and not needs_review(draft):
@@ -184,12 +186,21 @@ class FlowDraftGate:
         event['task_digest'] = hashlib.sha256(task.encode('utf-8', 'surrogatepass')).hexdigest()
         shared = unit_kind == 'shared_claim'
         targets = shared_targets(draft) if shared else claim_targets(draft)
+        if not shared and not recheck:
+            candidates = targets
+            targets = focal_targets(candidates)
+            event['background_count'] = len(candidates) - len(targets)
         event['target_count'] = len(targets)
         if targets:
             history = claim_messages(draft, sources, node_task=task, targets=targets,
                                      per_item=unit_kind == 'item', shared=shared)
         else:
             history = review_messages(draft, sources, node_task=task, per_item=unit_kind == 'item')
+        if (targets and len(targets) == 1 and len(targets[0]['text']) > 64
+                and (history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'))):
+            payload = json.loads(history[1]['content'])
+            payload.pop('claim_texts', None)
+            history[1]['content'] = json.dumps(payload, ensure_ascii=False)
         if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
             event['status'] = 'context_budget'
             return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'

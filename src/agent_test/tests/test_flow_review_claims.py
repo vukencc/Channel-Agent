@@ -99,3 +99,36 @@ def test_compact_wire_positions_and_repeated_long_sentences():
     shared = shared_targets(shared_draft)
     wire = json.loads(claim_messages(shared_draft, sources, targets=shared, shared=True)[1]["content"])["targets"][0]
     assert wire["location"] == "/context" and unit["context"][wire["start"]:wire["end"]] == shared[0]["text"]
+
+
+def test_focus_separates_referenced_subjects_from_actual_claims():
+    from agent_core.core.flow_review_claims import focal_targets
+    draft = json.dumps({"summary": "客户反馈页面有延迟。", "assessment":
+                        "本次给用户提供了排查方向。客户没有说明延迟从何时开始；客户要求先查服务日志。",
+                        "reference": "具体授权条件见附件。"}, ensure_ascii=False)
+    targets = claim_targets(draft)
+    focal = focal_targets(targets)
+    assert len(focal) == 1 and "客户没有说明" in focal[0]["text"] and "客户要求" in focal[0]["text"]
+    assert any("客户反馈" in t["text"] for t in targets)
+    # 保留所有原始字段，审查员可依据上下文指出未覆盖的实质疑义。
+    payload = json.loads(claim_messages(draft, [{"id": "S", "text": "用户原文"}], targets=focal)[1]["content"])
+    assert payload["draft"] == draft
+
+
+def test_cross_field_or_conditional_uncertainty_remains_in_scope():
+    from agent_core.core.flow_review_claims import focal_targets
+    for record in ({"who": "客户", "action": "明确希望转接", "other": "政策要求核验地址。"},
+                   {"policy": "资料核验。", "other": "客户要求延后处理。"},
+                   {"remark": "除非客户另行确认。", "other": "政策要求提交申请。"},
+                   {"summary": "客户从未付款。", "other": "政策要求提交申请。"}):
+        raw = claim_targets(json.dumps(record, ensure_ascii=False))
+        assert len(raw) > 1 and focal_targets(raw) == raw
+
+
+def test_long_focal_sentence_reaches_reviewer_without_offset_reconstruction():
+    claim = "客户表示" + "描述出现的现象、" * 14 + "并要求查明原因。"
+    draft = json.dumps({"observed": claim, "next": "准备排查。"}, ensure_ascii=False)
+    targets = claim_targets(draft)
+    payload = json.loads(claim_messages(draft, [{"id": "S", "text": "反馈原文"}], targets=targets)[1]["content"])
+    assert payload["claim_texts"] == {targets[0]["id"]: claim}
+    assert payload["targets"][0]["excerpt"] == claim[:64]

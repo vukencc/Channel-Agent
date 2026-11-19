@@ -41,7 +41,7 @@ def review_payload(history):
     except (TypeError, ValueError):
         return None
     return payload if (isinstance(payload, dict) and {"draft", "sources"} <= set(payload)
-                       and set(payload) <= {"draft", "sources", "workflow_task", "review_field_hints", "targets"}) else None
+                       and set(payload) <= {"draft", "sources", "workflow_task", "review_field_hints", "targets", "claim_texts"}) else None
 
 
 @pytest.fixture

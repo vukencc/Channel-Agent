@@ -156,10 +156,105 @@ def _id_pattern(ids: set[str]) -> re.Pattern:
     return re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(i) for i in sorted(ids, key=len, reverse=True)) + r")(?![A-Za-z0-9_])")
 
 
+def _read_array(text: str) -> list[tuple[dict, str]] | None:
+    """只识别数组或无额外元数据的单键来源包装。"""
+    data = _parse(text)
+    if isinstance(data, dict) and (len(data) != 1 or not set(data) <= {"items", "records"}):
+        return None
+    return _source_array(text, data)
+
+
+def _read_review_sources(draft: str, sources: list[dict]) -> list[dict] | None:
+    """结构化单一事项与实际读取记录双向核对，无法证明时不裁剪。"""
+    keys = ("id", "feedback_id", "item_ref", "item_id", "record_id", "ticket_id")
+    try:
+        candidate = _parse(draft)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    try:
+        if not isinstance(candidate, dict):
+            return None
+        identifiers = [candidate[k] for k in keys if k in candidate]
+        if (not identifiers or any(not isinstance(v, str) or not v or len(v) > 128 for v in identifiers)
+                or len(set(identifiers)) != 1):
+            return None
+        selected = identifiers[0]
+        arrays = []
+        observed = {}
+        for index, source in enumerate(sources):
+            if not isinstance(source, dict) or (source.get("kind"), source.get("scope")) != ("read_file", "observed_span"):
+                continue
+            text = source.get("text")
+            if not isinstance(text, str):
+                return sources
+            try:
+                parsed = _read_array(text)
+            except _DuplicateKey:
+                return sources
+            except (ValueError, TypeError, IndexError, RecursionError):
+                continue
+            if parsed is None:
+                return sources
+            fragments = parsed
+            mapping = {}
+            for row, fragment in fragments:
+                values = [row[k] for k in keys if k in row]
+                if (not values or any(not isinstance(v, str) or not v or len(v) > 128 for v in values)
+                        or len(set(values)) != 1 or values[0] in mapping
+                        or any(not _record_value(v) for v in row.values())):
+                    return sources
+                identifier = values[0]
+                if identifier in observed and observed[identifier] != row:
+                    return sources
+                observed[identifier] = row
+                mapping[identifier] = fragment
+            if len(mapping) > _MAX_ITEMS:
+                return sources
+            arrays.append((index, mapping))
+        if not arrays:
+            # 没有可裁剪的文件数组时，照常检查本轮的直接输入和动态读取回执。
+            return None
+        if selected not in observed:
+            return sources
+        pattern = _id_pattern(set(observed))
+        if set(pattern.findall(draft)) != {selected}:
+            return sources
+        array_indexes = {index for index, _ in arrays}
+        for index, source in enumerate(sources):
+            if index in array_indexes or not isinstance(source, dict):
+                continue
+            text = source.get("text")
+            if not isinstance(text, str):
+                return sources
+            if pattern.search(text):
+                # 其他来源可能是政策、不同用户或冲突证据，不能据字段名推断归属。
+                return sources
+        for identifier, row in observed.items():
+            for key, value in row.items():
+                if key in keys:
+                    continue
+                for part in value if isinstance(value, list) else [value]:
+                    if isinstance(part, str) and (_CROSS.search(part) or any(
+                            m.group() != identifier for m in pattern.finditer(part))):
+                        return sources
+        result = list(sources)
+        for index, mapping in arrays:
+            if selected in mapping:
+                result[index] = {**sources[index], "text": mapping[selected]}
+        return result
+    except (ValueError, TypeError, IndexError, RecursionError, OverflowError):
+        return sources
+
+
 def tool_review_sources(draft: str, sources: list[dict]) -> list[dict]:
     """仅凭来源数组中的唯一标识定位原文；无法确认时原样返回。"""
     if not isinstance(draft, str) or len(draft) > _MAX_TEXT or not isinstance(sources, list) or _CROSS.search(draft):
         return sources
+    if any(isinstance(source, dict) and (source.get("kind"), source.get("scope")) ==
+           ("read_file", "observed_span") for source in sources):
+        projected = _read_review_sources(draft, sources)
+        if projected is not None:
+            return projected
     try:
         arrays = []
         observed = set()

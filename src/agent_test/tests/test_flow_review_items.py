@@ -206,6 +206,56 @@ def test_tool_source_selector_is_bounded_by_observed_unique_ids():
     assert tool_review_sources("F01客户明确要求复核。", [report, conflicting_source]) == [report, conflicting_source]
 
 
+def test_tool_read_file_projection_requires_structured_unique_matching_id():
+    rows = [{"id": "CF007", "text": "原始记录"}, {"id": "CF008", "text": "另一记录"}]
+    raw = '{"items": [\n  {"id": "CF007", "text": "原始记录"},\n  {"id": "CF008", "text": "另一记录"}\n]}'
+    read = {"id": "S1", "kind": "read_file", "scope": "observed_span", "path": "feedback.json", "text": raw}
+    policy = {"id": "S2", "kind": "rag_search", "scope": "observed_span", "text": "完整政策"}
+    user = {"id": "U1", "kind": "user_input", "scope": "user_report", "text": "完整用户输入"}
+    candidate = dump({"item_ref": "CF007", "reason": "客户要求复核"})
+    result = tool_review_sources(candidate, [read, policy, user])
+    assert json.loads(result[0]["text"]) == rows[0]
+    assert result[0]["text"] in raw
+    assert result[0]["text"] == '{"id": "CF007", "text": "原始记录"}'
+    fabricated = '{"items": [' + result[0]["text"] + ']}'
+    assert fabricated not in raw
+    assert fabricated not in result[0]["text"]
+    assert {k: v for k, v in result[0].items() if k != "text"} == {k: v for k, v in read.items() if k != "text"}
+    assert result[1:] == [policy, user]
+    nested = {**read, "text": '{"data": {"records": ' + raw[raw.index("["):raw.rindex("]") + 1] + '}}'}
+    nested_result = tool_review_sources(candidate, [nested, user])
+    assert nested_result[0] == nested
+    assert nested_result[1] == user
+    for draft in ("CF007客户要求复核", dump({"reason": "CF007客户要求复核"}),
+                  dump({"item_ref": "CF007", "id": "CF008"}), dump({"item_ref": "missing"})):
+        assert tool_review_sources(draft, [read, policy, user]) == [read, policy, user]
+
+
+def test_tool_read_file_projection_rejects_ambiguous_sources():
+    draft = dump({"item_ref": "CF007", "reason": "客户要求复核"})
+    def read(text):
+        return {"id": "S1", "kind": "read_file", "scope": "observed_span", "text": text}
+    for data in (
+        {"items": [{"id": "CF007", "text": "参见CF008"}, {"id": "CF008", "text": "其他"}]},
+        {"items": [{"id": "CF007"}, {"id": "CF007"}]},
+        {"items": [{"id": "CF007", "feedback_id": "CF008"}, {"id": "CF008"}]},
+        {"unknown": [{"id": "CF007"}, {"id": "CF008"}]},
+        {"items": [{"id": "CF007"}, {"id": "CF008"}], "policy": "完整政策"},
+    ):
+        sources = [read(dump(data))]
+        assert tool_review_sources(draft, sources) == sources
+    first = read(dump([{"id": "CF007", "text": "甲"}, {"id": "CF008"}]))
+    conflict = {**first, "id": "S2", "text": dump([{"id": "CF007", "text": "乙"}])}
+    assert tool_review_sources(draft, [first, conflict]) == [first, conflict]
+    for other in (
+        {"id": "T1", "kind": "custom_result", "scope": "tool_report", "text": dump([{"id": "CF007", "text": "乙"}])},
+        {"id": "U1", "kind": "user_input", "scope": "user_report", "text": "另一个用户的 CF007"},
+        {"id": "R1", "kind": "rag_search", "scope": "observed_span", "text": "政策适用于 CF007"},
+        {"id": "S3", "kind": "read_file", "scope": "observed_span", "text": "未知格式 CF007"},
+    ):
+        assert tool_review_sources(draft, [first, other]) == [first, other]
+
+
 def test_shared_claim_intra_sentence_reference_and_item_focus():
     row = [{"id": "F01", "reason": "客户明确要求复核"}, {"id": "F02"}]
     memo = "F01客户明确要求复核。我只记录客户未提供的资料，不将其作为已核实事实。"
