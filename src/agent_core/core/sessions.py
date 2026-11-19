@@ -829,7 +829,7 @@ class SessionManager:
         session.summary_task.add_done_callback(self.summary_tasks.discard)
 
     @traced('model.total')
-    async def _call_model(self, history, *, disable_tools=False, source_reads=False, **kwargs):
+    async def _call_model(self, history, *, disable_tools=False, source_reads=False, staged_actions=None, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
             session = self.sessions.get(kwargs.get('session_id'))
@@ -855,6 +855,14 @@ class SessionManager:
                 schemas = [] if disable_tools else (self._session_schemas(session) if session else None)
                 if source_reads:
                     schemas = filter_schemas(schemas or [], names)
+                elif staged_actions is not None and not disable_tools:
+                    schemas = staged_actions.model_schemas(bounded_schemas(schemas or [], names))
+                    if not await staged_actions.flush_audit():
+                        raise RuntimeError(staged_actions.gate.blocked)
+                    names = [row['function']['name'] for row in schemas]
+                    staged_actions.begin_request()
+                if session is not None and session.cancelled.is_set():
+                    raise asyncio.CancelledError
                 with model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
                     with operation_span('model.request'):
                         return await self.model(history, **kwargs)
@@ -1208,7 +1216,8 @@ class SessionManager:
                 raise asyncio.CancelledError
             await self._run_with_budget(session, handoff_contract)
         except asyncio.CancelledError:
-            session.record.update(status='cancelled', error='任务已停止；已执行的文件操作不会自动回滚。')
+            if session.record['last_run'].get('stop_reason') != 'flow_action_audit':
+                session.record.update(status='cancelled', error='任务已停止；已执行的文件操作不会自动回滚。')
         except Exception as exc:
             if input_committed:
                 error = f'{type(exc).__name__}: 模型或会话预算初始化失败，请检查设置。'
@@ -1273,9 +1282,12 @@ class SessionManager:
             return True
 
         gate = None
+        staged_actions = None
         if self.flow_workspace_scope(session):
             from agent_core.core.flow_draft_gate import FlowDraftGate
+            from agent_core.core.flow_staged_actions import FlowStagedActions
             gate = FlowDraftGate(self, session, reserve_review_round)
+            staged_actions = FlowStagedActions(gate)
 
         def checkpoint(reason, message):
             session.record['status'] = 'checkpoint'
@@ -1298,7 +1310,8 @@ class SessionManager:
                     if waiting:
                         checkpoint('plan_waiting', '计划受阻或等待必要信息，请解除阻塞后继续。')
                         break
-                    if not progressed:
+                    approved = any(item.get('approval_progress') for item in tools[policy.stage_tool_start:])
+                    if not progressed and not (approved and staged_actions and staged_actions.pending):
                         checkpoint('no_execution_progress', '连续执行未取得工具进展，已保存当前状态，请检查失败原因。')
                         break
                     policy.stage_tool_start = len(tools)
@@ -1382,6 +1395,11 @@ class SessionManager:
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
                 schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
+                if staged_actions is not None and not handoff_revisions:
+                    schemas = staged_actions.model_schemas(schemas)
+                    if not await staged_actions.flush_audit():
+                        checkpoint('flow_action_audit', gate.blocked)
+                        break
                 tool_names = {schema['function']['name'] for schema in schemas}
                 file_guide = runtime_file_workflow_guide(tool_names)
                 if 'rag_search' in tool_names:
@@ -1445,7 +1463,7 @@ class SessionManager:
                 recovered = 0
                 while True:
                     try:
-                        model_options = {}
+                        model_options = {'staged_actions': staged_actions} if staged_actions else {}
                         if handoff_revisions:
                             model_options = {'source_reads': True} if recover_sources else {'disable_tools': True}
                         reply = await self._call_model(history, session_id=session.id, **model_options,
@@ -1624,7 +1642,7 @@ class SessionManager:
                                 state=session.record['last_run']['handoff_finalization']['status'])
                     if failure:
                         session.record['last_run']['handoff_validation_failed'] = True
-                    if gate and gate.pending_tools:
+                    if gate and (gate.pending_tools or staged_actions.pending):
                         checkpoint('flow_source_review', '有被拒绝的草稿尚未成功提交，请核对已保存的工具回执。')
                         break
                     if gate and not failure:
@@ -1663,6 +1681,8 @@ class SessionManager:
                     name = call['function']['name']
                     started = time.monotonic()
                     observed_name = name if name in TOOL_REGISTRY or name in self._session_custom_registry(session) else 'unknown_tool'
+                    if staged_actions and staged_actions.is_preview(name):
+                        observed_name = name
                     if self.observer.enabled:
                         self.observer.event('tool.started', session_id=session.id, batch_id=batch_id,
                             turn_id=session.record['last_run']['turn_id'], tool_call_id=call['id'],
@@ -1675,8 +1695,8 @@ class SessionManager:
                     else:
                         try:
                             with observation_context(batch_id=batch_id, tool_call_id=call['id']):
-                                if gate:
-                                    result = await gate.execute_tool(call, evidence)
+                                if staged_actions:
+                                    result = await staged_actions.execute(call, evidence)
                                 else:
                                     result = await self._tool(session, call, evidence=evidence)
                         except Exception as exc:
@@ -1689,6 +1709,9 @@ class SessionManager:
                     return result, {'name': name, 'tool_call_id': call['id'], 'source': evidence['source'], 'event_id': uuid.uuid4().hex, 'turn_id': session.record['last_run']['turn_id'], 'wall_s_including_confirmation': round(time.monotonic() - started, 3),
                                     'output_chars': len(result),
                                     'outcome': tool_outcome(result),
+                                    **({'action_stage': evidence['action_stage'],
+                                        'approval_progress': evidence.get('approval_progress', False)}
+                                       if 'action_stage' in evidence else {}),
                                     'execution_progress': evidence['source'] == 'executed' and tool_outcome(result) == 'completed'}
 
                 index = 0
@@ -1809,6 +1832,11 @@ class SessionManager:
         except Exception as exc:
             session.record['status'] = 'error'
             session.record['error'] = f'{type(exc).__name__}: {exc}'
+        finally:
+            if staged_actions is not None and not await staged_actions.flush_audit():
+                if session.record['last_run'].get('stop_reason') != 'flow_action_audit':
+                    finish_pending_tools(session.record['messages'])
+                    checkpoint('flow_action_audit', gate.blocked)
 
     async def _finish_turn(self, session: Session, *, workspace_memory_allowed: bool = False) -> None:
         record = session.record
@@ -1834,7 +1862,7 @@ class SessionManager:
         record['run_history'] = record['run_history'][-config.RUN_HISTORY_LIMIT:]
         persisted = await self._save_terminal_state(session, run, history_entry)
         if persisted and workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED:
-            if session.cancelled.is_set():
+            if session.cancelled.is_set() and run.get('stop_reason') != 'flow_action_audit':
                 record['status'] = 'cancelled'
             if workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED:
                 await self.workspace_memory.finish(session)
@@ -1854,7 +1882,7 @@ class SessionManager:
         record = session.record
         try:
             await wait_for_io_completion(self.save(session))
-            if session.cancelled.is_set() and record['status'] != 'cancelled':
+            if session.cancelled.is_set() and record['status'] != 'cancelled' and run.get('stop_reason') != 'flow_action_audit':
                 # 停止可能发生在任一终态写盘期间，排空后再发布一致的取消终态。
                 record['status'] = 'cancelled'
                 run['status'] = history_entry['status'] = 'cancelled'

@@ -34,6 +34,8 @@ class FlowDraftGate:
         self.pending_tools: set[tuple[str, str]] = set()
         self.pending_items: set[str] = set()
         self.passed_items: set[str] = set()
+        # 仅本 Gate 实例保存有限的上次争议，不写入会话或审计记录。
+        self._revisions: dict[object, tuple[str, str, list[dict]]] = {}
 
     @staticmethod
     def tool_key(name: str, arguments: str) -> tuple[str, str]:
@@ -62,7 +64,8 @@ class FlowDraftGate:
         key = self.tool_key(name, arguments)
         definition = copy.deepcopy(custom.definition)
         feedback = await self.check(arguments, stage='tool', force=key in self.pending_tools, call_id=call['id'],
-                                    action_context=action_review_context(definition))
+                                    action_context=action_review_context(definition), revision_key=key,
+                                    revision_definition=definition)
         current = self.manager._session_custom_registry(self.session).get(name)
         if current is None or current.definition != definition:
             feedback = '工具定义已改变，请重新确认本次调用。'
@@ -75,12 +78,14 @@ class FlowDraftGate:
         return result
 
     async def check(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
-                    action_context: dict | None = None) -> str | None:
+                    action_context: dict | None = None, revision_key: object = None,
+                    revision_definition: dict | None = None) -> str | None:
         if self.blocked:
             return self.blocked
         try:
             draft = normalised_draft(draft)
         except AmbiguousDraft:
+            self._revisions.clear()
             event = {'stage': stage, 'status': 'ambiguous_draft',
                      'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest()}
             if call_id:
@@ -88,8 +93,14 @@ class FlowDraftGate:
             self.session.record['last_run'].setdefault('draft_reviews', []).append(event)
             return '草稿中有重复的 JSON 字段。同一对象的每个字段只能有一个值，请消除歧义后重新提交。'
         if stage != 'handoff':
+            try:
+                if revision_key is not None and (stage, revision_key) in self._revisions:
+                    force = True
+            except TypeError:
+                pass
             return await self._check_one(draft, stage=stage, force=force, call_id=call_id, recheck=force,
-                                         action_context=action_context)
+                                         action_context=action_context, revision_key=revision_key,
+                                         revision_definition=revision_definition)
         if not force and not self.pending_items and not needs_review(draft):
             return None
         from agent_core.core.flow_review_items import review_units
@@ -134,7 +145,7 @@ class FlowDraftGate:
             try:
                 feedback = await self._check_one(unit['draft'], stage=stage, force=True,
                     sources_override=unit['sources'], unit_kind=kind, recovery=recovery,
-                    recheck=item_id in self.pending_items)
+                    recheck=item_id in self.pending_items, revision_key=(kind, item_id))
             except asyncio.CancelledError:
                 cancelled = True
             child = events.pop()
@@ -161,7 +172,8 @@ class FlowDraftGate:
     async def _check_one(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
                          sources_override: list[dict] | None = None, unit_kind: str | None = None,
                          recovery: list[bool] | None = None, recheck: bool = False,
-                         action_context: dict | None = None) -> str | None:
+                         action_context: dict | None = None, revision_key: object = None,
+                         revision_definition: dict | None = None) -> str | None:
         if self.blocked:
             return self.blocked
         if not force and not needs_review(draft):
@@ -175,7 +187,7 @@ class FlowDraftGate:
         char_limit = session_limit('MODEL_INPUT_CHARS')
         sources = (sources_override if sources_override is not None else
                    review_sources(self.session.record, char_limit=min(24000, char_limit // 2)))
-        if stage == 'tool':
+        if stage in {'tool', 'preview'}:
             from agent_core.core.flow_review_items import tool_review_sources
             sources = tool_review_sources(draft, sources)
         read_paths = {row.get('path') for row in sources if row['kind'] == 'read_file'}
@@ -185,14 +197,34 @@ class FlowDraftGate:
         event['source_count'] = len(sources)
         event['source_digest'] = hashlib.sha256(json.dumps(sources, ensure_ascii=True,
             separators=(',', ':'), sort_keys=True).encode()).hexdigest()
+        state_key = None
+        if revision_key is not None:
+            try:
+                state_key = (stage, revision_key)
+                hash(state_key)
+            except TypeError:
+                state_key = None
+        if stage in {'tool', 'preview'} and not isinstance(revision_definition, dict):
+            if state_key is not None:
+                self._revisions.pop(state_key, None)
+            state_key = None
+        previous = self._revisions.pop(state_key, None) if state_key is not None else None
         if not sources:
             event['status'] = 'missing_source'
             return '尚无本轮可核对的原文。请先读取相关原始资料，或去掉无依据的事实断言，明确标注推断或待核实事项。'
         task = self.session.flow_review_task
         event['task_digest'] = hashlib.sha256(task.encode('utf-8', 'surrogatepass')).hexdigest()
+        fingerprint = hashlib.sha256(json.dumps([sources, task, action_context, unit_kind, revision_definition],
+            ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         shared = unit_kind == 'shared_claim'
         targets = shared_targets(draft) if shared else claim_targets(draft)
-        if not shared and not recheck:
+        focused = None
+        if recheck and previous is not None and previous[0] == fingerprint:
+            from agent_core.core.flow_review_revision import revision_targets
+            focused = revision_targets(previous[1], previous[2], draft)
+        if focused is not None:
+            targets = focused
+        elif not shared and not recheck:
             candidates = targets
             targets = focal_targets(candidates)
             event['background_count'] = len(candidates) - len(targets)
@@ -271,6 +303,12 @@ class FlowDraftGate:
                 break
             if feedback and verdict and verdict.get('status') == 'need_source':
                 self.needs_sources = True
+            if (feedback and verdict and verdict.get('status') == 'revise' and targets
+                    and state_key is not None and len(draft) <= 32_000):
+                selected_ids = {issue.get('target_id') for issue in verdict['issues']}
+                selected = [target for target in targets if target['id'] in selected_ids]
+                if selected and len(self._revisions) < 16:
+                    self._revisions[state_key] = (fingerprint, draft, copy.deepcopy(selected))
             if feedback and self.needs_sources and pending_paths:
                 feedback += ' 可用已有只读工具核对本轮资料工具传入的路径：' + json.dumps(pending_paths[:3], ensure_ascii=False)
             attempts[-1] = event['status'] = 'revise' if feedback else 'passed'

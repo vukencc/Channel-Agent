@@ -10,9 +10,11 @@ import pytest
 from agent_core import config
 from agent_core.core.agent_tasks import AgentTasks
 from agent_core.core.flows import FlowService
+from agent_core.core.llm import TOOL_SCHEMAS
 from agent_core.core.projects import ProjectService
 from agent_core.core.sessions import SessionManager
 from agent_core.core.storage import SessionStore
+from agent_core.core.tool_settings import selected_schemas
 
 
 def definition(code=None):
@@ -197,9 +199,27 @@ def test_parent_can_revoke_during_actual_smart_confirmation_without_deadlock(run
 @pytest.mark.skipif(os.name == "nt", reason="真实 Linux sandbox；Windows 桥接另验")
 def test_actual_delegation_inherits_only_selected_definition(runtime):
     store, workspace = runtime
+    catalogs = []
     async def controlled_model(history, **kwargs):
+        schemas = selected_schemas(TOOL_SCHEMAS)
+        catalogs.append(copy.deepcopy(schemas))
         if history[-1]["role"] != "tool":
+            assert "authority_probe" not in {row["function"]["name"] for row in schemas}
+            assert not any("hidden_probe" in row["function"].get("description", "") for row in schemas)
+            previews = [row for row in schemas if "authority_probe" in row["function"].get("description", "")]
+            assert len(previews) == 1
+            assert previews[0]["function"]["parameters"] == definition()["parameters"]
+            draft = call("authority-draft")
+            draft["function"]["name"] = previews[0]["function"]["name"]
+            return {"role": "assistant", "content": None, "tool_calls": [draft]}
+        if history[-1]["tool_call_id"] == "authority-draft":
+            assert "草稿已批准" in history[-1]["content"], history[-1]
+            assert history[-1]["_provenance"] == "not_executed"
+            schema = next(row for row in schemas if row["function"]["name"] == "authority_probe")
+            assert schema["function"]["parameters"] == definition()["parameters"]
             return {"role": "assistant", "content": None, "tool_calls": [call()]}
+        assert history[-1]["tool_call_id"] == "authority-call"
+        assert history[-1]["_provenance"] == "executed"
         assert "[退出码] 0" in history[-1]["content"], history[-1]
         return {"role": "assistant", "content": "已执行获准的子工具"}
     async def scenario():
@@ -219,6 +239,14 @@ def test_actual_delegation_inherits_only_selected_definition(runtime):
             child = manager.sessions[record["child_id"]]
             assert [item["name"] for item in child.record["custom_tools"]] == ["authority_probe"]
             assert child.record["custom_tools"] == child.record["inherited_custom_tools"]
+            assert len(catalogs) == child.record["last_run"]["model_rounds"] == 3
+            actual_calls = [entry for row in child.record["messages"] for entry in row.get("tool_calls", [])]
+            receipts = [row for row in child.record["messages"] if row["role"] == "tool"]
+            assert [entry["id"] for entry in actual_calls] == ["authority-draft", "authority-call"]
+            assert [row["tool_call_id"] for row in receipts] == ["authority-draft", "authority-call"]
+            assert [entry["function"]["name"] for entry in actual_calls] == [
+                catalogs[0][0]["function"]["name"], "authority_probe"]
+            assert [entry["function"]["arguments"] for entry in actual_calls] == ["{}", "{}"]
             assert (workspace / "executed").exists()
             assert not child.tool_workers and not manager._active_tools
         finally:
@@ -232,7 +260,25 @@ def test_reused_flow_session_replaces_previous_custom_capability(runtime, edit):
     store, workspace = runtime
     async def controlled_model(history, **kwargs):
         last_user = max(index for index, row in enumerate(history) if row["role"] == "user")
-        if not any(row["role"] == "tool" for row in history[last_user + 1:]):
+        results = [row for row in history[last_user + 1:] if row["role"] == "tool"]
+        if not results:
+            schemas = selected_schemas(TOOL_SCHEMAS)
+            previews = [row for row in schemas if "authority_probe" in row["function"].get("description", "")]
+            if previews:
+                assert len(previews) == 1
+                assert "authority_probe" not in {row["function"]["name"] for row in schemas}
+                assert previews[0]["function"]["parameters"] == definition()["parameters"]
+                draft = call("authority-draft")
+                draft["function"]["name"] = previews[0]["function"]["name"]
+                return {"role": "assistant", "content": None, "tool_calls": [draft]}
+            # 工具移除后仍尝试旧原名，真实回执必须拒绝这次越权调用。
+            return {"role": "assistant", "content": None, "tool_calls": [call()]}
+        if results[-1]["tool_call_id"] == "authority-draft":
+            assert "草稿已批准" in results[-1]["content"], results[-1]
+            assert results[-1]["_provenance"] == "not_executed"
+            schema = next(row for row in selected_schemas(TOOL_SCHEMAS)
+                          if row["function"]["name"] == "authority_probe")
+            assert schema["function"]["parameters"] == definition()["parameters"]
             return {"role": "assistant", "content": None, "tool_calls": [call()]}
         return {"role": "assistant", "content": "本轮已核对实际工具结果"}
     code = ("from pathlib import Path\ndef main(arguments):\n"
@@ -258,6 +304,8 @@ def test_reused_flow_session_replaces_previous_custom_capability(runtime, edit):
             assert first["run"]["status"] == "completed", first["run"]
             session_id = first["run"]["nodes"]["one"]["session_id"]
             assert (workspace / "old-count").read_text() == "1"
+            first_session = manager.sessions[session_id]
+            assert first_session.record["last_run"]["model_rounds"] == 3
             first["nodes"][0]["custom_tools"] = [definition()] if edit == "replace" else []
             if edit == "remove":
                 first["nodes"][0]["tool_names"] = ["read_file", "list_files"]
@@ -270,6 +318,12 @@ def test_reused_flow_session_replaces_previous_custom_capability(runtime, edit):
             assert (workspace / "old-count").read_text() == "1"
             assert (workspace / "executed").exists() is (edit == "replace")
             session = manager.sessions[session_id]
+            expected_ids = ["authority-draft", "authority-call"] * (2 if edit == "replace" else 1)
+            if edit == "remove":
+                expected_ids.append("authority-call")
+            assert [entry["id"] for row in session.record["messages"] for entry in row.get("tool_calls", [])] == expected_ids
+            assert [row["tool_call_id"] for row in session.record["messages"] if row["role"] == "tool"] == expected_ids
+            assert session.record["last_run"]["model_rounds"] == (3 if edit == "replace" else 2)
             result = [row for row in session.record["messages"] if row["role"] == "tool"][-1]["content"]
             if edit == "remove":
                 assert "未知工具" in result or "拒绝" in result, result

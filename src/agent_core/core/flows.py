@@ -636,8 +636,9 @@ class FlowService:
                 return session, True, same_prompt
         session = open_session(self.manager, node["title"], prompt=prompt, workspace_path=path,
                                execution_environment=settings["execution_environment"])
-        if reuse:
+        if value["project_id"]:
             session.record["flow_project_id"] = value["project_id"]
+        if reuse:
             value["session_bindings"][node["id"]] = session.id
         return session, False, session.record["messages"][0] == {"role": "system", "content": prompt}
 
