@@ -290,3 +290,25 @@ def test_tight_recheck_budgets_drop_edits_then_navigation_without_losing_the_pre
     assert [e["id"] for e in summary.get("evidence_passages", [])] == [e["id"] for e in current_e]
     monkeypatch.setattr(claims, meter, lambda hist: limit + 1 if "revision_context" in json.loads(hist[1]["content"]) else actual(hist))
     assert claims.with_revision_navigation(base, target, navigation, char_limit=limit, token_limit=limit) == base
+
+def test_verified_feedback_locates_independent_errors_in_repeated_draft_text():
+    draft = json.dumps({"one/a": "客户明确要求。", "two~b": "客户明确要求。"}, ensure_ascii=False)
+    sources = [{"id": "S1", "text": "样本有定性描述。仅按影响分级。"}]
+    targets = claim_targets(draft)
+    issues = [{"target_id": row["id"], "draft_quote": row["text"], "source_id": "S1",
+               "quote": quote, "reason": reason} for row, quote, reason in zip(
+                   targets, ("样本有定性描述。", "仅按影响分级。"), ("精度不同", "附加条件"), strict=True)]
+    feedback = claim_feedback({"status": "revise", "issues": issues}, sources, targets)
+    for target, issue in zip(targets, issues, strict=True):
+        for value in (target["field"], issue["draft_quote"], issue["quote"], issue["reason"]):
+            assert value in feedback
+    bad_issues = [issues[0], {**issues[1], "quote": "其他材料"}]
+    assert claim_feedback({"status": "revise", "issues": bad_issues}, sources, targets) == INVALID_REVIEW
+
+def test_action_and_handoff_review_distinguish_precision_from_rule_conditions():
+    draft = "客户表示未提供资料，规则要求先提供样本。"
+    sources = [{"id": "S", "text": "原始材料"}]
+    for batched in (False, True):
+        history = claim_messages(draft, sources, targets=claim_targets(draft), whole_batch=batched)
+        assert "定性描述" in history[0]["content"] and "精确数值" in history[0]["content"]
+        assert "调查建议" in history[0]["content"] and "判定条件" in history[0]["content"]

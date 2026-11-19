@@ -537,3 +537,155 @@ def test_failure_before_valid_feedback_still_blocks_future_submission(monkeypatc
         assert await gate.check(draft_with_references(), stage="handoff") == gate.blocked
     asyncio.run(run())
     assert state["reserved"] == len(histories) == 2
+
+
+@pytest.mark.parametrize("first_done", ["C1", "C5"])
+def test_two_verified_rejections_return_in_batch_order_and_recheck_all(monkeypatch, first_done):
+    from agent_core.core import flow_draft_gate as gate_module
+    gate, _, histories, state = setup_gate(monkeypatch)
+    monkeypatch.setattr(gate_module, "review_sources", lambda *a, **kw: [
+        {"id": "s1", "kind": "read_file", "text": "第一条独立原文"},
+        {"id": "s2", "kind": "read_file", "text": "第二条独立原文"},
+    ])
+    original = draft_with_references()
+    revised_data = json.loads(original)
+    revised_data["memo"] += "修订。"
+    revised = json.dumps(revised_data, ensure_ascii=False)
+    async def run():
+        both, done = asyncio.Event(), asyncio.Event()
+        async def action(payload, attempt):
+            if json.loads(payload["draft"]) == revised_data:
+                return reply()
+            if state["active"] == 2:
+                both.set()
+            await both.wait()
+            key = payload["targets"][0]["id"]
+            if key != first_done:
+                await done.wait()
+            else:
+                done.set()
+            first = key == "C1"
+            return reply("revise", issues=[{
+                "target_id": key, "draft_quote": payload["targets"][0]["excerpt"],
+                "source_id": "s1" if first else "s2",
+                "quote": "第一条独立原文" if first else "第二条独立原文",
+                "reason": "第一处理由" if first else "第二处理由",
+            }])
+        install_reviewer(gate, histories, state, action)
+        feedback = await gate.check(original, stage="handoff")
+        assert feedback.index("第一条独立原文") < feedback.index("第二条独立原文")
+        assert "第一处理由" in feedback and "第二处理由" in feedback
+        assert gate.handoff_feedback_valid
+        assert len(histories) == state["reserved"] == 2
+        assert await gate.check(revised, stage="handoff") is None
+        assert not gate.handoff_feedback_valid
+    asyncio.run(run())
+    new_payloads = [p for p in histories if json.loads(p["draft"]) == revised_data]
+    assert [t["id"] for p in new_payloads for t in p["targets"]] == [t["id"] for t in claim_targets(revised)]
+
+
+@pytest.mark.parametrize("change", ["permission", "receipt", "source"])
+def test_inflight_permission_change_suppresses_verified_citation(monkeypatch, change):
+    from agent_core.core import flow_draft_gate as gate_module
+    gate, index, histories, state = setup_gate(monkeypatch)
+    sources = [{"id": "s1", "kind": "read_file", "text": "原始证据"}]
+    monkeypatch.setattr(gate_module, "review_sources", lambda *a, **kw: sources)
+    async def run():
+        both = asyncio.Event()
+        async def action(payload, attempt):
+            if state["active"] == 2:
+                both.set()
+            await both.wait()
+            if change == "permission":
+                gate.session.record["permission_policy"] = "readonly"
+            elif change == "receipt":
+                index.revision += 1
+            else:
+                sources[0]["text"] = "变更后的原文"
+            return rejection(payload)
+        install_reviewer(gate, histories, state, action)
+        feedback = await gate.check(draft_with_references(), stage="handoff")
+        assert feedback == "复核期间交接上下文已改变，草稿尚未批准，请重新核对。"
+        assert len(histories) == state["reserved"] == 2
+    asyncio.run(run())
+    assert audit(gate)["status"] == "context_changed"
+
+@pytest.mark.parametrize("limit", ["chars", "tokens", "dedup"])
+def test_combined_feedback_keeps_complete_first_reply_within_original_limits(monkeypatch, limit):
+    from agent_core.core import flow_draft_gate as gate_module
+
+    gate, _, histories, state = setup_gate(monkeypatch)
+    first, second = "第一批需要的原始资料", "第二批需要的政策资料"
+    if limit != "dedup":
+        metric = "history_size" if limit == "chars" else "request_tokens"
+        original = getattr(gate_module, metric)
+
+        def measure(messages):
+            if len(messages) == 1 and all(word in messages[0]["content"] for word in (first, second)):
+                return 999999
+            return original(messages)
+        monkeypatch.setattr(gate_module, metric, measure)
+
+    async def run():
+        both = asyncio.Event()
+
+        async def action(payload, attempt):
+            if state["active"] == 2:
+                both.set()
+            await both.wait()
+            needed = first if limit == "dedup" or payload["targets"][0]["id"] == "C1" else second
+            return reply("need_source", field="原字段", needed=needed)
+
+        install_reviewer(gate, histories, state, action)
+        feedback = await gate.check(draft_with_references(), stage="handoff")
+        assert feedback == f"字段 原字段 需要来源或重新确认：{first}。请按原权限补读或重新确认。"
+        assert gate.handoff_feedback_valid and gate._whole_pending
+        assert len(histories) == state["reserved"] == 2
+        assert all(b["verdict_status"] == "need_source" for b in audit(gate)["batches"])
+    asyncio.run(run())
+
+@pytest.mark.parametrize("scope", ["single", "serial_batches", "items"])
+@pytest.mark.parametrize("outcome", ["revise", "pass"])
+def test_sequential_handoff_keeps_stale_evidence_out_of_decisions(monkeypatch, scope, outcome):
+    from agent_core.core.model_settings import check_model_dispatch
+
+    gate, _, histories, state = setup_gate(monkeypatch, concurrency=1)
+    drafts = {
+        "single": "客户明确要求办理。",
+        "serial_batches": draft_with_references(),
+        "items": json.dumps([{"id": "A1", "text": "客户明确要求办理。"},
+                             {"id": "A2", "text": "客户明确要求授权。"}], ensure_ascii=False),
+    }
+    dispatched = []
+
+    async def action(payload, attempt):
+        check_model_dispatch()
+        dispatched.append(payload)
+        gate.session.record["permission_policy"] = "readonly"
+        return rejection(payload) if outcome == "revise" else reply()
+
+    install_reviewer(gate, histories, state, action)
+    feedback = asyncio.run(gate.check(drafts[scope], stage="handoff"))
+    assert feedback == "复核期间交接上下文已改变，草稿尚未批准，请重新核对。"
+    assert len(dispatched) == 1
+    assert not gate.handoff_feedback_valid and not gate.passed_items
+    assert gate.session.record["last_run"]["draft_reviews"][-1]["status"] == "context_changed"
+
+
+def test_passing_item_cannot_be_reused_after_node_authority_changes(monkeypatch):
+    gate, _, histories, state = setup_gate(monkeypatch)
+    draft = json.dumps([{"id": "A1", "text": "客户明确提出补充需求。"},
+                        {"id": "A2", "text": "客户明确请求复查。"}], ensure_ascii=False)
+
+    async def action(payload, attempt):
+        return reply()
+
+    install_reviewer(gate, histories, state, action)
+    assert asyncio.run(gate.check(draft, stage="handoff")) is None
+    initial = len(histories)
+    assert initial == 2
+    assert asyncio.run(gate.check(draft, stage="handoff")) is None
+    assert len(histories) == initial
+    gate.session.record["permission_policy"] = "readonly"
+    assert asyncio.run(gate.check(draft, stage="handoff")) is None
+    assert len(histories) == initial * 2

@@ -113,3 +113,28 @@ def test_diagnostic_replay_accepts_v2_without_modifying_source(tmp_path, monkeyp
     rows = asyncio.run(diagnose.run_live(output, 1, 'low', 'disabled', path))
     assert rows[0]['status'] == 'idle'
     assert path.read_bytes() == before
+
+
+def test_private_flow_review_metadata_persists_without_index_or_export(tmp_path):
+    store = SessionStore(tmp_path / 'state', tmp_path / 'work')
+    try:
+        record = store.new_record('private', 'system')
+        record['_flow_review_checkpoints'] = {
+            'turn': {'message_index': 0, 'source': 'independent_handoff_review', 'content': '私有末次复核'}}
+        record['_unrelated_internal'] = '不应持久化'
+        asyncio.run(save(store, record))
+        path = store.directory(record['id']) / 'session.json'
+        disk = json.loads(path.read_text(encoding='utf-8'))
+        assert disk['_flow_review_checkpoints'] == record['_flow_review_checkpoints']
+        assert '_unrelated_internal' not in disk
+        lazy = store.list_metadata()[0]
+        assert '_flow_review_checkpoints' not in lazy
+        loaded = lazy.materialize()
+        assert loaded['_flow_review_checkpoints'] == record['_flow_review_checkpoints']
+        asyncio.run(save(store, loaded))
+        assert store.load_record(path)['_flow_review_checkpoints'] == record['_flow_review_checkpoints']
+        for exported in (store.export_saved(record['id'], 'json'), store.export(loaded, 'json'),
+                         store.export_saved(record['id'], 'md')):
+            assert '私有末次复核' not in exported.read_text(encoding='utf-8')
+    finally:
+        store.close()

@@ -47,6 +47,7 @@ def test_flow_model_entry_keeps_clause_and_missing_field_guidance(tmp_path, monk
             assert "同一来源条款" in system and "具体动作" in system
             assert "来源短原文" in system
             assert "原述未记录" in system and "资料未见" in system and "调查建议" in system
+            assert "调查所需的信息" in system and "分级的必要条件" in system
             assert "写操作参数" in system and "交接" in system
             assert "岗位指令指定的读取工具" in system and "工具已执行" in system
             assert "每项事实写一次" in system and "下游" in system

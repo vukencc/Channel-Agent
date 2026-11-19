@@ -6,7 +6,8 @@ import re
 from agent_core.core.context import history_size, request_tokens
 from agent_core.core.flow_review_navigation import target_record_references
 from agent_core.core.flow_review_passages import relevant_passages, resolve_passage_issues, source_record_ranges
-from agent_core.core.flow_draft_review import (ECHO_GUIDANCE, MEMORY_GUIDANCE, _ASSERTION, _CUSTOMER, _MANDATE, _RULE,
+from agent_core.core.flow_draft_review import (ECHO_GUIDANCE, MEMORY_GUIDANCE, PRECISION_GUIDANCE,
+                                               _ASSERTION, _CUSTOMER, _MANDATE, _RULE,
                                                needs_review, review_messages)
 
 INVALID_REVIEW = "审查结果无效或来源不足：请重新确认具体位置和来源，必要时按原权限补读。"
@@ -210,6 +211,7 @@ def claim_messages(draft: str, sources: list[dict], *, targets: list[dict],
         "只答一个 JSON：通过 {\"status\":\"pass\"}；缺依据 {\"status\":\"need_source\",\"field\":\"位置\","
         '"needed":"所需资料"}；' + (_INDEXED_ISSUE if indexed else _LITERAL_ISSUE)
     )
+    messages[0]["content"] += PRECISION_GUIDANCE
     if shared:
         messages[0]["content"] += ("共享目标的 location 指向派生草稿的 /context，区间相对于该字段解码后的原文；"
                                     "field 是原草稿字段。共享内容须核对归属，不得将其他事项表述当成本事项事实。")
@@ -267,7 +269,8 @@ def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict
         if receipt_facts:
             payload["action_receipt_summary"] = receipt_facts
         scope = (" 本次裁决范围是本批 targets。使用完整草稿与全部来源核对主体、范围、条件、否定和指代。"
-                 "若上下文与本批原句矛盾，引用本批目标并指出冲突。发现首个有据的问题即可退回。")
+                 "逐项核对本批。多处有据的独立错误在一次 revise 中分别列出各自的目标和引文，最多五项。"
+                 "结合上下文指出实质差异，资料不足时说明具体缺口。")
         receipt_guidance = RECEIPT_GUIDANCE if receipt_facts else ""
         ranges = source_record_ranges(sources)
         known = {ref for spans in ranges.values() for _, _, ref in spans}
@@ -392,7 +395,7 @@ def claim_assessment(verdict: dict | None, sources: list[dict], targets: list[di
             if (not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]
                     or row["id"] in index or not isinstance(row.get("text"), str) or not row["text"]):
                 return INVALID_REVIEW, "invalid_scope"
-            index[row["id"]] = row["text"]
+            index[row["id"]] = row
     if not isinstance(verdict, dict):
         return INVALID_REVIEW, "invalid_message"
     if verdict == {"status": "pass"}:
@@ -432,12 +435,13 @@ def claim_assessment(verdict: dict | None, sources: list[dict], targets: list[di
             return INVALID_REVIEW, "invalid_field_or_length"
         if target_id not in target_index or source_id not in indexed:
             return INVALID_REVIEW, "unknown_target_or_source"
-        if draft_quote not in target_index[target_id]:
+        target = target_index[target_id]
+        if draft_quote not in target["text"]:
             return INVALID_REVIEW, "draft_quote_not_found"
-        if quote not in indexed[source_id]:
+        original = indexed[source_id]["text"]
+        if quote not in original:
             return INVALID_REVIEW, "source_quote_not_found"
         if cited_spans is not None:
-            original = indexed[source_id]
             reference = references.get(position)
             if reference is not None:
                 # 前面已验证该编号是本次实际签发的逐字切片，即便原句在全文中重复也可定位。
@@ -451,7 +455,10 @@ def claim_assessment(verdict: dict | None, sources: list[dict], targets: list[di
                 locations = verified.setdefault(target_id, [])
                 if location not in locations:
                     locations.append(location)
-        feedback.append(f"目标 {target_id}（草稿：{draft_quote}）：{reason}（来源 {source_id}，原文：{quote}）")
+        field = target.get("field")
+        location = json.dumps(field, ensure_ascii=False) if isinstance(field, str) and len(field) <= 256 else ""
+        label = f"目标 {target_id} 的字段 {location}" if location else f"目标 {target_id}"
+        feedback.append(f"{label}（草稿：{draft_quote}）：{reason}（来源 {source_id}，原文：{quote}）")
     if cited_spans is not None:
         cited_spans.update(verified)
     return "请修改草稿：" + "；".join(feedback), None

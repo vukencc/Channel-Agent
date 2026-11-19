@@ -1819,6 +1819,12 @@ class SessionManager:
                         if feedback:
                             if gate.blocked or handoff_revisions >= 2:
                                 checkpoint('flow_source_review', gate.blocked or '交接修订后仍缺少来源支持。')
+                                # 仅保存经校验的复核判定；基础设施故障的通用反馈不是语义结论。
+                                if gate.handoff_feedback_valid and not gate.blocked:
+                                    session.record.setdefault('_flow_review_checkpoints', {})[
+                                        session.record['last_run']['turn_id']] = {
+                                            'message_index': len(session.record['messages']) - 1,
+                                            'source': 'independent_handoff_review', 'content': feedback}
                                 break
                             handoff_revisions += 1
                             recover_sources = gate.needs_sources and handoff_revisions == 1

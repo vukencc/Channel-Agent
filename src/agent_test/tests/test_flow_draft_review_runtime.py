@@ -19,6 +19,7 @@ from agent_core.core.tool_settings import selected_schemas
 SOURCE = "页面无法提交，请帮忙排查。"
 DISPUTED = "客户明确要求转人工处理。"
 CORRECTED = "建议安排人工排查页面提交故障。"
+FINAL_REASON = "末次复核：客户未明确要求人工"
 
 
 def assistant(content="", calls=None):
@@ -76,7 +77,7 @@ def runtime_store(tmp_path, monkeypatch, sandbox_env):
 async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
                    disputed=True, review_mode="revise", rounds=None, permission="full_access",
                    repair_tools=False, abandon=False, missing_source=False,
-                   recovery_write=False, recovery_repeat=False, item_ref=None, two_writes=False, final_draft=DISPUTED):
+                   recovery_write=False, recovery_repeat=False, item_ref=None, two_writes=False, final_draft=DISPUTED, downstream=False, check_isolation=False):
     store, project = runtime_store
     seen, reviews, writes, scopes = [], [], [], []
     normal_index = 0
@@ -103,6 +104,16 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
             assert selected_schemas(TOOL_SCHEMAS) == []
             assert payload["sources"] and any(SOURCE in s["text"] for s in payload["sources"])
             assert "独立审查" in history[0]["content"]
+            if review_mode == "context_change":
+                await asyncio.sleep(0)
+                if len(reviews) >= 5:
+                    session.record["permission_policy"] = "readonly"
+            if review_mode == "cancel_final" and len(reviews) == 3:
+                session.cancelled.set()
+                raise asyncio.CancelledError
+            if review_mode == "invalid_final" and len(reviews) == 3:
+                assert not payload.get("targets")
+                return assistant('{"status":"revise","issues":[]}')
             if review_mode == "cancel":
                 session.cancelled.set()
                 raise asyncio.CancelledError
@@ -127,10 +138,11 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
                 return assistant('{"status":"pass"}', [call("malicious", "record_case", reason=DISPUTED)])
             if review_mode == "pass":
                 return assistant('{"status":"pass"}')
-            if review_mode != "reject_all" and CORRECTED in payload["draft"]:
+            if review_mode not in {"reject_all", "invalid_final", "cancel_final"} and CORRECTED in payload["draft"]:
                 return assistant('{"status":"pass"}')
             source = next(s for s in payload["sources"] if SOURCE in s["text"])
-            issue = {"reason": "客户未明确要求人工，应改为排查建议", "source_id": source["id"], "quote": SOURCE}
+            reason = FINAL_REASON if final and review_mode == "reject_all" and len(reviews) == 3 else "客户未明确要求人工，应改为排查建议"
+            issue = {"reason": reason, "source_id": source["id"], "quote": SOURCE}
             if payload.get("targets"):
                 target = payload["targets"][0]
                 issue.update(target_id=target["id"], draft_quote=target["excerpt"])
@@ -171,7 +183,11 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
             assert selected_schemas(TOOL_SCHEMAS) == []
             if repair_tools:
                 return assistant(calls=[call("repeat-success", "record_case", reason=CORRECTED)])
-        return assistant(CORRECTED if final else "已记录一次排查建议。")
+        if not final:
+            return assistant("已记录一次排查建议。")
+        if review_mode == "context_change":
+            return assistant(final_draft.replace("客户", f"客户{normal_index}"))
+        return assistant(DISPUTED if review_mode == "reject_all" else CORRECTED)
 
     manager = SessionManager(store, model=model)
     service = FlowService(manager)
@@ -206,6 +222,9 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
                               "tool_names": ["read_file", "record_case"], "custom_tools": [tool_spec()],
                               "reasoning_effort": "high", "thinking_mode": "enabled"}]
             flow["edges"] = []
+            if downstream:
+                flow["nodes"].append({"id": "b", "title": "下游", "prompt": "接收交接"})
+                flow["edges"] = [{"source": "a", "target": "b"}]
             flow = service.save(flow)
             if rounds is not None:
                 original_submit = manager.submit
@@ -219,6 +238,27 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
             await service.tasks[flow["id"]]
             result = service.get(flow["id"])["run"]
             session = next(iter(manager.sessions.values()))
+        if check_isolation:
+            monkeypatch.setattr(config, "ENABLE_SESSION_BRANCHES", True)
+            branch = await manager.fork_session(session)
+            fresh = manager.create()
+            manager.set_workspace_path(fresh, str(project))
+            assert "_flow_review_checkpoints" not in branch.record
+            assert "_flow_review_checkpoints" not in fresh.record
+            assert FINAL_REASON not in json.dumps(branch.record["messages"], ensure_ascii=False)
+            assert FINAL_REASON not in json.dumps(fresh.record, ensure_ascii=False)
+            assert "_flow_review_checkpoints" not in json.dumps(result, ensure_ascii=False)
+            assert FINAL_REASON not in store.memory(session.id)
+            from agent_core.core.history_context import HistoryContext
+            manager.history_context = history = HistoryContext(manager)
+            manifest = await history._manifest(session)
+            index = len(session.record["messages"]) - 1
+            chunks = history._chunks(session, session.record["messages"], [(index, index + 1)])
+            await history._compact(session, manifest, chunks, local=True)
+            page = await history.read(session, chunks[0]["ID"], limit=6000)
+            raw = "".join(chunk["RawHistory"] for chunk in page["chunks"])
+            assert "[阶段已保存]" in raw
+            assert FINAL_REASON not in raw and "_flow_review_checkpoints" not in raw
         return session.record, result, seen, reviews, writes, scopes
     finally:
         await service.shutdown()
@@ -489,6 +529,93 @@ def test_final_review_timeout_recovers_without_repeating_write(runtime_store, mo
     assert record["last_run"]["recovery_attempts"] == 1
     assert record["last_run"]["draft_reviews"][-1]["attempts"] == ["TimeoutError", "passed"]
     assert record["last_run"]["model_rounds"] == len(scopes)
+
+
+def test_terminal_handoff_revision_preserves_private_review_evidence(runtime_store, monkeypatch):
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="reject_all", downstream=True, check_isolation=True))
+    assert len(reviews) == 3
+    assert len(seen) == 5
+    assert len(scopes) == record["last_run"]["model_rounds"] == 8
+    assert writes == [{"reason": CORRECTED}]
+    assert record["status"] == "checkpoint"
+    assert record["last_run"]["stop_reason"] == "flow_source_review"
+    assert result["status"] != "completed"
+    assert not result["nodes"]["a"]["output_handoff"]
+    assert result["nodes"]["b"]["status"] != "completed"
+    stored = runtime_store[0].load_record(runtime_store[0].directory(record["id"]) / "session.json")
+    checkpoint = stored["messages"][-1]
+    assert checkpoint["content"] == "[阶段已保存] 交接修订后仍缺少来源支持。"
+    assert "_flow_review_feedback" not in json.dumps(stored["messages"], ensure_ascii=False)
+    assert FINAL_REASON not in json.dumps(stored["messages"], ensure_ascii=False)
+    assert "_flow_review_checkpoints" not in stored["last_run"]
+    feedback = stored["_flow_review_checkpoints"][record["last_run"]["turn_id"]]
+    assert feedback["message_index"] == len(stored["messages"]) - 1
+    assert feedback["source"] == "independent_handoff_review"
+    assert SOURCE in feedback["content"]
+    assert DISPUTED in feedback["content"]
+    assert FINAL_REASON in feedback["content"]
+    assert SOURCE not in json.dumps(record["last_run"]["draft_reviews"], ensure_ascii=False)
+    assert SOURCE not in json.dumps(result, ensure_ascii=False)
+
+
+def test_parallel_context_change_does_not_save_verdict(runtime_store, monkeypatch):
+    monkeypatch.setattr(config, "FLOW_REVIEW_CONCURRENCY", 2)
+    draft = json.dumps({
+        "items": [
+            {"id": "A1", "observations": [f"客户明确提出需要查证第{i}个条目。" for i in range(1, 6)]},
+            {"id": "A2", "observations": [f"客户表示希望核对第{i}项，并参考上述记录。" for i in range(6, 10)]},
+        ],
+        "memo": "两者的记录需要结合阅读。",
+    }, ensure_ascii=False)
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, final_draft=draft,
+        review_mode="context_change", downstream=True))
+    assert len(reviews) == 6
+    event = record["last_run"]["draft_reviews"][-1]
+    assert event["status"] == "context_changed"
+    assert any(batch.get("verdict_status") == "revise" for batch in event["batches"])
+    assert result["status"] != "completed"
+    assert result["nodes"]["b"]["status"] != "completed"
+    stored = runtime_store[0].load_record(runtime_store[0].directory(record["id"]) / "session.json")
+    assert "_flow_review_checkpoints" not in stored
+    assert not any("_flow_review_feedback" in message for message in stored["messages"])
+
+
+def test_terminal_invalid_fallback_is_not_semantic_feedback(runtime_store, monkeypatch):
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="invalid_final", downstream=True))
+    assert len(reviews) == 3
+    assert record["status"] == "checkpoint"
+    assert result["status"] != "completed"
+    assert result["nodes"]["b"]["status"] != "completed"
+    stored = runtime_store[0].load_record(runtime_store[0].directory(record["id"]) / "session.json")
+    assert "_flow_review_checkpoints" not in stored
+    assert not any("_flow_review_feedback" in message for message in stored["messages"])
+
+
+def test_terminal_cancel_does_not_save_a_semantic_verdict(runtime_store, monkeypatch):
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="cancel_final", downstream=True))
+    assert len(reviews) == 3
+    assert result["status"] != "completed"
+    assert result["nodes"]["b"]["status"] != "completed"
+    stored = runtime_store[0].load_record(runtime_store[0].directory(record["id"]) / "session.json")
+    assert "_flow_review_checkpoints" not in stored
+    assert not any("_flow_review_feedback" in message for message in stored["messages"])
+
+
+def test_terminal_review_timeout_has_no_semantic_feedback(runtime_store, monkeypatch):
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 0)
+    record, result, seen, reviews, writes, scopes = asyncio.run(scenario(
+        runtime_store, monkeypatch, final=True, review_mode="timeout", downstream=True))
+    assert len(reviews) == 1
+    assert record["status"] == "checkpoint"
+    assert result["status"] != "completed"
+    assert result["nodes"]["b"]["status"] != "completed"
+    stored = runtime_store[0].load_record(runtime_store[0].directory(record["id"]) / "session.json")
+    assert "_flow_review_checkpoints" not in stored
+    assert not any("_flow_review_feedback" in message for message in stored["messages"])
 
 
 def test_final_review_timeout_recovery_disabled(runtime_store, monkeypatch):

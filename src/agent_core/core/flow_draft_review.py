@@ -17,6 +17,10 @@ MEMORY_GUIDANCE = (" workspace_memory_path 表示本轮通过当前工作区的�
                    "业务原句、政策和客户意愿应核对原始资料。")
 
 
+PRECISION_GUIDANCE = ("保留原文已有的定性描述，区分缺少精确数值与整项未说明。"
+                      "核对判定条件是否来自对应规则；需补查的信息可作调查建议，写成必要条件时须有依据。")
+
+
 class AmbiguousDraft(ValueError):
     """交接含有重复字段，不同读取方可能观察到不同的值。"""
 
@@ -150,6 +154,7 @@ def review_messages(draft: str, sources: list[dict], *, node_task: str = "", per
         "不要编造引用。需要来源时请求按原权限补读，不要假定可以访问或强迫编造引文。"
         "没有可引用来源时不要声称通过。"
     )
+    system += PRECISION_GUIDANCE
     if any(row.get('submitted_echoes') for row in rows):
         system += ECHO_GUIDANCE
     if any(row.get("workspace_memory_path") is True for row in rows):
@@ -192,41 +197,46 @@ def parse_review_reply(message: dict) -> dict | None:
     return result if isinstance(result, dict) else None
 
 
-def review_feedback(reply: dict, sources: list[dict]) -> str | None:
-    """仅接受唯一、严格且引用可核验的判定；其余返回有界返工意见。"""
+def assess_review(reply: dict, sources: list[dict]) -> tuple[str | None, bool]:
+    """分别返回给节点的反馈和判定是否有效，避免把协议错误当成来源意见。"""
     invalid = "审查结果无效或来源不足：请依据可用原文重新审查，删除无依据断言或补充来源。"
     if isinstance(reply, dict) and set(reply) == {"status", "field", "needed"} and reply.get("status") == "need_source":
         field, needed = reply["field"], reply["needed"]
         if (isinstance(field, str) and field.strip() and len(field) <= 120
                 and isinstance(needed, str) and needed.strip() and len(needed) <= 300):
-            return f"字段 {field} 需要来源：{needed}。请按原权限补读一次；无法获取时删除或限定无依据断言。"
-        return invalid
+            return f"字段 {field} 需要来源：{needed}。请按原权限补读一次；无法获取时删除或限定无依据断言。", True
+        return invalid, False
     if not isinstance(sources, list) or not sources:
-        return invalid
+        return invalid, False
     indexed = {}
     for row in sources:
         if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
                 or not row["id"] or row["id"] in indexed
                 or not isinstance(row.get("text"), str) or not row["text"]):
-            return invalid
+            return invalid, False
         indexed[row["id"]] = row["text"]
     if not isinstance(reply, dict):
-        return invalid
+        return invalid, False
     if reply == {"status": "pass"}:
-        return None
+        return None, True
     if set(reply) != {"status", "issues"} or reply.get("status") != "revise":
-        return invalid
+        return invalid, False
     issues = reply.get("issues")
     if not isinstance(issues, list) or not 1 <= len(issues) <= 5:
-        return invalid
+        return invalid, False
     feedback = []
     for issue in issues:
         if not isinstance(issue, dict) or set(issue) != {"field", "reason", "source_id", "quote"}:
-            return invalid
+            return invalid, False
         field, reason, source_id, quote = (issue[k] for k in ("field", "reason", "source_id", "quote"))
         if (not all(isinstance(value, str) and value.strip() for value in (field, reason, source_id, quote))
                 or len(field) > 120 or len(reason) > 300 or len(source_id) > 120 or len(quote) > 160
                 or source_id not in indexed or quote not in indexed[source_id]):
-            return invalid
+            return invalid, False
         feedback.append(f"字段 {field}：{reason}（来源 {source_id}，原文：{quote}）")
-    return "请修改草稿：" + "；".join(feedback)
+    return "请修改草稿：" + "；".join(feedback), True
+
+
+def review_feedback(reply: dict, sources: list[dict]) -> str | None:
+    """沿用只取反馈的调用接口。"""
+    return assess_review(reply, sources)[0]

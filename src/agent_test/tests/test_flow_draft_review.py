@@ -116,3 +116,8 @@ def test_path_hints_fall_back_on_invalid_or_excessive_structure():
         payload = json.loads(review_messages(draft, [])[1]["content"])
         assert payload["draft"] == draft
         assert "review_field_hints" not in payload
+
+def test_full_review_guides_scope_of_observations_and_policy():
+    history = review_messages("草稿", [{"id": "S", "text": "原始材料"}])
+    assert "定性描述" in history[0]["content"] and "精确数值" in history[0]["content"]
+    assert "调查建议" in history[0]["content"] and "判定条件" in history[0]["content"]

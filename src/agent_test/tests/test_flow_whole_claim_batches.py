@@ -345,3 +345,18 @@ def test_whole_receipt_budget_omits_optional_index_or_blocks(monkeypatch, reject
             assert "evidence_passages" not in payload
             assert "不能证实客户意愿" in history[0]["content"]
         assert any(rejected_index)
+
+def test_each_batch_requests_all_supported_independent_findings():
+    from agent_core.core.flow_review_claims import prepare_claim_request
+
+    draft = draft_with_references()
+    targets = claim_targets(draft)[2:6]
+    sources = [{"id": "S1", "kind": "read_file", "text": "原始材料支持分别核对事项。"}]
+    history, _ = prepare_claim_request(draft, sources, targets=targets, node_task="复核",
+                                       char_limit=32000, token_limit=16000, whole_batch=True)
+    payload = json.loads(history[1]["content"])
+    assert [row["id"] for row in payload["targets"]] == [t["id"] for t in targets]
+    assert payload["draft"] == draft and payload["sources"] == sources
+    assert "逐项核对本批" in history[0]["content"]
+    assert "各自的目标和引文" in history[0]["content"]
+    assert "首个" not in history[0]["content"]
