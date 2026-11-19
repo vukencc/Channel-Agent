@@ -2,12 +2,65 @@
 
 > 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
 
-Windows 便携成品可直接使用，首启与数据目录见 [Windows 指南](windows.md)。从源码运行时，使用 Python 3.12 及以上、Git 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)；uv 可按安装指南安装 Python。下面的命令适用于 Linux 或 WSL，原生 GUI 需要图形会话，WSL 需要 WSLg。Windows 原生界面及隔离命令的独立环境配置见 [Windows 指南](windows.md)。
+本指南面向 v0.6.2。选择 [v0.6.2 发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.2)上的成品，或从对应标签运行源码。桌面需要图形会话；WSL 中运行 Linux GUI 需要 WSLg。
 
-## 安装与启动
+## 下载桌面成品
+
+发布工作流提供六项文件：Windows 独立 exe、Windows ZIP、Linux x64 tar.gz，及各自同名的 `.sha256` 校验文件。ZIP 和 tar 文件名中的 `<构建时间>` 以发布页实际名称为准。模型服务和本地 RAG 模型权重不随成品提供。
+
+### Windows 10/11 x64
+
+下载 `ChannelAgent-0.6.2-windows-x64.exe` 和 `ChannelAgent-0.6.2-windows-x64.exe.sha256` 到同一目录。在该目录打开 PowerShell，核对输出为 `True`：
+
+```powershell
+$expected = (Get-Content .\ChannelAgent-0.6.2-windows-x64.exe.sha256 -Raw).Trim().Split(' ')[0]
+(Get-FileHash .\ChannelAgent-0.6.2-windows-x64.exe -Algorithm SHA256).Hash -eq $expected
+```
+
+将 exe 放到本地可写 NTFS 目录并双击，无需改名或安装 Python。默认数据保存在 exe 所在目录；已有文件不会覆盖。也可下载带构建时间的 ZIP 及其校验文件，解压后运行内部目录的 `ChannelAgent.exe`。
+
+可先运行免模型离线自检。以下命令使用新的报告文件，等待窗口程序结束，再读取 JSON；退出码为 0 且 `ok` 为 `true` 表示本次自检通过：
+
+```powershell
+$report = Join-Path $env:TEMP ("ChannelAgent-check-" + [guid]::NewGuid().ToString() + ".json")
+$process = Start-Process -FilePath .\ChannelAgent-0.6.2-windows-x64.exe -ArgumentList '--self-check', ('"' + $report + '"') -Wait -PassThru
+$process.ExitCode
+Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+```
+
+自检会初始化便携数据根，但不调用模型或下载权重。没有 WSL 仍可使用桌面和文件功能；隔离命令需另行准备 WSL2 和 Linux 环境，无法隔离时会拒绝执行。数据根及 WSL 步骤见 [Windows 指南](windows.md)。
+
+### Linux x86_64
+
+下载 `ChannelAgent-0.6.2-linux-x64-<构建时间>.tar.gz` 及其同名 `.sha256` 到同一目录，将下面的文件名替换为实际名称：
 
 ```bash
-git clone https://github.com/vukencc/Channel-Agent.git
+archive='ChannelAgent-0.6.2-linux-x64-<构建时间>.tar.gz'
+sha256sum -c "$archive.sha256"
+tar -xzf "$archive"
+cd "${archive%.tar.gz}"
+./ChannelAgent
+```
+
+校验应显示 `OK`；解压后保留 `ChannelAgent`、`_internal` 和附带文件。需要兼容构建包所用 glibc 的图形系统及 Qt 系统库。默认数据在 `$XDG_DATA_HOME/ChannelAgent`，未设置有效绝对路径时为 `~/.local/share/ChannelAgent`。系统依赖和隔离命令准备见 [Linux 指南](linux.md)。
+
+可从解压目录运行离线自检，使用不存在的报告路径；检查退出码及报告中的 `ok`：
+
+```bash
+report="/tmp/channel-agent-check-$(date +%s)-$$.json"
+./ChannelAgent --self-check "$report"
+echo $?
+cat "$report"
+```
+
+自检不调用模型服务或下载权重；它检查本机能力，不能代替真实模型业务验收。
+
+## 从源码运行
+
+Linux 或 WSL 需要 Git、Python 3.12 以上和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。从指定标签克隆：
+
+```bash
+git clone --branch v0.6.2 https://github.com/vukencc/Channel-Agent.git
 cd Channel-Agent
 uv sync --locked --extra desktop --extra web
 ```
@@ -20,7 +73,7 @@ uv run --no-sync ai-agent-web      # 浏览器
 uv run --no-sync ai-agent-startup  # 交互终端
 ```
 
-Web 默认地址为 `http://127.0.0.1:8765`，仅供本机访问，无需 Node 构建。GUI 和 Web 提供 Flow；CLI 提供经典 Agent 会话。默认状态目录由一个进程独占，同时启动时为另一进程指定不同的 `--state-dir`。详见[桌面](desktop.md)、[Web](web-ui.md)和 [CLI](cli.md)指南。
+Web 默认地址为 `http://127.0.0.1:8765`，仅供本机访问，无需 Node 构建。GUI 和 Web 提供 Flow；CLI 提供经典 Agent 会话。默认状态目录由一个进程独占，同时启动时为另一进程指定不同的 `--state-dir`。Windows 原生源码环境及 WSL 环境须分开，具体步骤见 [Windows 指南](windows.md)。详见[桌面](desktop.md)、[Web](web-ui.md)和 [CLI](cli.md)指南。
 
 ## 配置模型并发送消息
 

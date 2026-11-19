@@ -6,11 +6,11 @@
 
 ## 安装与启动
 
-Windows 和 Linux 桌面成品通过 [Releases](https://github.com/vukencc/Channel-Agent/releases) 分发；Windows 可下载独立 exe 及其 SHA256 校验文件，也可选 ZIP；Linux x64 选择 tar.gz。运行与系统依赖见 [Windows 指南](docs/windows.md)和 [Linux 成品指南](docs/linux.md)。桌面、Web 与 Debug 使用平直的深色工作台、细分隔线和小圆角控件，Flow 状态点及连接端口保留圆形。
+Windows 和 Linux 桌面成品通过 [v0.6.2 发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.2)分发；Windows 可下载独立 exe 及其 SHA256 校验文件，也可选 ZIP；Linux x64 选择 tar.gz。下载、校验、离线自检与源码标签步骤见[快速上手](docs/getting-started.md)，系统依赖见 [Windows 指南](docs/windows.md)和 [Linux 成品指南](docs/linux.md)。桌面、Web 与 Debug 使用平直的深色工作台、细分隔线和小圆角控件，Flow 状态点及连接端口保留圆形。
 
-Windows 成品默认构建为免安装单 exe：放入本地可写 NTFS 目录后双击 `ChannelAgent.exe`，无需安装 Windows Python。首次使用在「模型管理」添加连接；配置和数据默认保存在 exe 所在目录。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
+Windows 成品默认构建为免安装单 exe：放入本地可写 NTFS 目录后双击 `ChannelAgent-0.6.2-windows-x64.exe`（ZIP 内为 `ChannelAgent.exe`），无需安装 Windows Python。首次使用在「模型管理」添加连接；配置和数据默认保存在 exe 所在目录。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
 
-0.6.1 增加模型连接短请求测试和设计失败后的模型设置入口，并改进 Windows 启动、结构化历史和长 Flow 的检索上下文。连接测试可能产生费用，仅验证短请求；完整实测、原检查 19/20 的规格差异及已知限制见[验证记录](docs/designer-windows-e2e-validation-2026-11-15.md)。
+0.6.2 收录了 Windows 写盘、事件循环计时和长 Flow 上下文管理改进，并补齐前端 Python 包的运行模块。桌面成品可在本机离线自检。模型管理中的连接测试会向配置的服务发出真实请求，可能产生费用。[更新日志](CHANGELOG.md) · [已有业务验证与已知限制](docs/flow-wording-queue-validation-2026-11-17.md)
 
 ```bash
 uv sync --locked --extra desktop --extra web
