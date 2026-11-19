@@ -31,7 +31,7 @@ from agent_core.core.task_plans import EvidenceCapacityError
 from agent_core.core.delegation_guidance import delegation_guide
 from agent_core.core.log import get_logger
 from agent_core.core.instrumentation import NullObserver, RuntimeObserver, observation_context, operation_span, traced, trace_function, tool_outcome
-from agent_core.core.model_settings import model_profile, model_thinking, active_profile, active_endpoint
+from agent_core.core.model_settings import model_profile, model_thinking, active_profile, active_endpoint, check_model_dispatch
 from agent_core.core.tool_settings import filter_schemas, bounded_schemas, model_tools, effective_tool_names
 from agent_core.core.budgets import BudgetLedger, BudgetExceeded, budget_scope
 from agent_core.rag.assess import assess_rag
@@ -837,6 +837,7 @@ class SessionManager:
                           flow_confirmation=None, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
+            check_model_dispatch()
             session = self.sessions.get(kwargs.get('session_id'))
             names = [] if disable_tools else (self._effective_session_tools(session) if session else config.MODEL_TOOL_NAMES)
             if source_reads:

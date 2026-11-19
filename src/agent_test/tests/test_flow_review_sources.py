@@ -336,3 +336,84 @@ def test_selector_without_path_requires_selection_only_declared_parameters():
     data["custom_tools"][0]["parameters"]["properties"]["body"] = {"type": "string"}
     assert review_sources(data, char_limit=4000) == []
     assert review_sources(selector_result({"limit": -1}, output), char_limit=4000) == []
+
+
+def echo_record():
+    data = custom_record()
+    spec = data["custom_tools"][0]
+    spec["parameters"] = {"type": "object", "properties": {"specimen": {"type": "string"}, "method": {"type": "string"}}, "required": ["specimen", "method"], "additionalProperties": False}
+    args = {"specimen": "矿石甲", "method": "建议进行光谱测定"}
+    saved = {**args, "sample_id": "M1"}
+    call, result, event = data["messages"][1]["tool_calls"][0], data["messages"][2], data["last_run"]["tools"][0]
+    call["function"]["arguments"] = json.dumps(args, ensure_ascii=False)
+    result["content"] = "[退出码] 0\n[stdout]\n" + json.dumps({"ok": True, "sample": saved}, ensure_ascii=False)
+    event["action_stage"] = "commit"
+    text = json.dumps(saved, ensure_ascii=False) + "\n" + json.dumps({"specimen": "矿石乙", "method": "外部记录", "sample_id": "M2"}, ensure_ascii=False)
+    observation = observe_text(text, reader_tool="read_file", body_spans=((0, len(text)),), recovery_notice="重读")
+    read = {"id": "read", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"samples.jsonl\"}"}}
+    data["messages"] += [{"role": "assistant", "tool_calls": [read]}, {"role": "tool", "tool_call_id": "read", "content": text, "_provenance": "executed", "_event_id": "read-event", "_context_observation": extract_observation(observation)}]
+    data["last_run"]["tools"].append({"event_id": "read-event", "tool_call_id": "read", "turn_id": "turn", "name": "read_file", "source": "executed", "outcome": "completed", "execution_progress": True})
+    return data, text
+
+
+def test_formal_receipt_echo_identifies_only_submitted_fields_and_preserves_source():
+    from agent_core.core.flow_draft_review import review_messages
+    data, text = echo_record()
+    sources = review_sources(data, char_limit=4000)
+    row = next(row for row in sources if row["kind"] == "read_file")
+    assert row["text"] == text
+    payload = json.loads(review_messages("草稿", sources)[1]["content"])
+    assert payload["sources"][0]["submitted_echoes"][0]["fields"] == ["method", "specimen"]
+
+
+@pytest.mark.parametrize("mutation", ["preview", "no_stage", "untrusted", "wrong_turn", "disabled", "mismatch", "duplicate_key", "duplicate_line", "truncated", "read_before", "duplicate_call"])
+def test_echo_rejects_ambiguous_or_unconfirmed_evidence(mutation):
+    data, text = echo_record()
+    call, result = data["messages"][1]["tool_calls"][0], data["messages"][2]
+    event = data["last_run"]["tools"][0]
+    if mutation == "preview": event["action_stage"] = "preview"
+    elif mutation == "no_stage": event.pop("action_stage")
+    elif mutation == "untrusted": result["_provenance"] = "unknown"
+    elif mutation == "wrong_turn": event["turn_id"] = "other"
+    elif mutation == "disabled": data["tool_names"] = []
+    elif mutation == "mismatch": result["content"] = result["content"].replace("矿石甲", "矿石丙")
+    elif mutation == "duplicate_key": result["content"] = result["content"].replace("\"ok\": true", "\"ok\": true, \"ok\": true")
+    elif mutation in {"duplicate_line", "truncated"}:
+        text = text.splitlines()[0] + ("\n" + text.splitlines()[0] if mutation == "duplicate_line" else "\n{")
+        observation = observe_text(text, reader_tool="read_file", body_spans=((0, len(text)),), recovery_notice="重读")
+        data["messages"][-1].update(content=text, _context_observation=extract_observation(observation))
+    elif mutation == "read_before": data["messages"] = [data["messages"][0]] + data["messages"][3:] + data["messages"][1:3]
+    elif mutation == "duplicate_call": data["messages"][1]["tool_calls"].append(copy.deepcopy(call))
+    rows = review_sources(data, char_limit=4000)
+    assert all("_submitted_echoes" not in row for row in rows)
+    assert any(row.get("text") == text for row in rows)
+
+
+def test_echo_projection_revalidates_full_line():
+    from agent_core.core.flow_draft_review import review_messages
+    data, text = echo_record()
+    source = next(row for row in review_sources(data, char_limit=4000) if row["kind"] == "read_file")
+    source["text"] = text.splitlines()[1]
+    payload = json.loads(review_messages("草稿", [source])[1]["content"])
+    assert "submitted_echoes" not in payload["sources"][0]
+
+
+def test_echo_never_displaces_existing_sources():
+    data, text = echo_record()
+    data = with_user_input(data, text='独立用户材料')
+    without = copy.deepcopy(data)
+    without["last_run"]["tools"][0].pop("action_stage")
+    for limit in range(len(text), len(text) + 250):
+        actual = review_sources(data, char_limit=limit)
+        baseline = review_sources(without, char_limit=limit)
+        assert [(r["id"], r["text"]) for r in actual] == [(r["id"], r["text"]) for r in baseline]
+
+
+def test_echo_request_does_not_repeat_source_record():
+    from agent_core.core.flow_draft_review import review_messages
+    data, text = echo_record()
+    history = review_messages("草稿", review_sources(data, char_limit=4000))
+    assert history[1]["content"].count("建议进行光谱测定") == 1
+    marker = json.loads(history[1]["content"])["sources"][0]["submitted_echoes"][0]
+    assert set(marker) == {"record_start", "record_end", "fields"}
+    assert text[marker["record_start"]:marker["record_end"]] == text.splitlines()[0]

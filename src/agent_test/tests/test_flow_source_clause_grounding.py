@@ -50,6 +50,8 @@ def test_flow_model_entry_keeps_clause_and_missing_field_guidance(tmp_path, monk
             assert "写操作参数" in system and "交接" in system
             assert "岗位指令指定的读取工具" in system and "工具已执行" in system
             assert "每项事实写一次" in system and "下游" in system
+            assert "共享说明" in system and "原事项编号" in system and "归属待核实" in system
+            assert "询问对象" in system and "核查责任" in system and "本节点提交" in system
             assert "全部必填字段" in system and "例外" in system and "实际回执" in system
             result = next(m["content"] for m in seen[1] if m["role"] == "tool")
             assert body in result and "逐条核对" in result and "不可跨片段" in result

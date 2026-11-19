@@ -5,7 +5,7 @@ import re
 
 from agent_core.core.context import history_size, request_tokens
 from agent_core.core.flow_review_passages import relevant_passages, resolve_passage_issues
-from agent_core.core.flow_draft_review import (_ASSERTION, _CUSTOMER, _MANDATE, _RULE,
+from agent_core.core.flow_draft_review import (ECHO_GUIDANCE, _ASSERTION, _CUSTOMER, _MANDATE, _RULE,
                                                needs_review, review_messages)
 
 INVALID_REVIEW = "审查结果无效或来源不足：请重新确认具体位置和来源，必要时按原权限补读。"
@@ -216,6 +216,8 @@ def claim_messages(draft: str, sources: list[dict], *, targets: list[dict],
         messages[0]["content"] += ("本次只复核当前事项的完整记录和共享备注里归属于它的来源断言。"
                                     "各事项分别核对，整份交接待框架汇总。不要要求当前片段再次提供整个项目的所有记录。")
     payload = json.loads(messages[1]["content"])
+    if any(row.get('submitted_echoes') for row in payload['sources']):
+        messages[0]['content'] += ECHO_GUIDANCE
     payload["targets"] = [{**{key: target[key] for key in ("id", "field", "start", "end")},
                            "excerpt": target["text"][:64],
                            **({"location": "/context"} if shared else {})} for target in targets]

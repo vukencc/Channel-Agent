@@ -126,6 +126,73 @@ def _custom_stdout(content: str, *, require_records: bool = False) -> str | None
     return stdout if isinstance(value, (dict, list)) else None
 
 
+def _strict_json(text: str) -> object:
+    from agent_core.core.flow_handoff import _depth, _exact_float, _unique
+    value = json.loads(text, object_pairs_hook=_unique, parse_float=_exact_float,
+                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    _depth(value)
+    return value
+
+
+def _same(left: object, right: object) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(_same(value, right[key]) for key, value in left.items())
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right, strict=True))
+    return left == right
+
+
+def _receipt_echo(arguments: object, content: str) -> tuple[dict, list[str]] | None:
+    prefix = '[退出码] 0\n[stdout]\n'
+    if not isinstance(arguments, str) or len(arguments) > 16384 or len(content) > 16384 or not content.startswith(prefix):
+        return None
+    try:
+        args = _strict_json(arguments)
+        result = _strict_json(content[len(prefix):])
+        if (not isinstance(args, dict) or not 0 < len(args) <= 32 or not isinstance(result, dict)
+                or result.get('ok') is not True or not all(isinstance(k, str) and len(k) <= 128 for k in args)):
+            return None
+        matches = [v for v in result.values() if isinstance(v, dict)
+                   and all(k in v and _same(v[k], x) for k, x in args.items())]
+        if len(matches) != 1:
+            return None
+        return matches[0], sorted(args)
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
+def _record_key(record: dict) -> str:
+    return json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+def _echo_markers(text: str, echoes: dict[str, list[tuple[int, list[str]]]], before: int) -> list[dict]:
+    # 只识别完整且唯一的 JSONL 行，不猜测未知包装。
+    lines = text.splitlines()
+    if not lines or len(lines) > 128 or any(not line.strip() for line in lines):
+        return []
+    try:
+        records = [_strict_json(line) for line in lines]
+        if any(not isinstance(row, dict) for row in records):
+            return []
+        keys = [_record_key(row) for row in records]
+        counts = Counter(keys)
+        markers = []
+        offset = 0
+        for line, key in zip(text.splitlines(keepends=True), keys, strict=True):
+            body = line.rstrip('\r\n')
+            matches = echoes.get(key, [])
+            if len(matches) == 1 and matches[0][0] < before and counts[key] == 1:
+                markers.append({'record_start': offset, 'record_end': offset + len(body),
+                                'digest': hashlib.sha256(body.encode('utf-8', 'surrogatepass')).hexdigest(),
+                                'fields': matches[0][1]})
+            offset += len(line)
+        return markers
+    except (ValueError, TypeError, RecursionError):
+        return []
+
+
 def review_sources(record: dict, *, char_limit: int) -> list[dict]:
     """返回完整观察区间；预算按正文字符计，不表示整个文件完整。"""
     if type(char_limit) is not int or char_limit <= 0 or not isinstance(record, dict):
@@ -161,6 +228,9 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
     event_by_id = {event["event_id"]: event for event in events
                    if isinstance(event, dict) and isinstance(event.get("event_id"), str)}
     rows = []
+    echoes = []
+    echo_overflow = False
+    pending_echoes = []
     custom_rows = []
     custom_names = _custom_names(record)
     seen_spans = set()
@@ -208,6 +278,13 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
             if not isinstance(arguments, dict) or (name == "rag_search" and arguments.get("source") == "history"):
                 continue
             if name in custom_names:
+                if event.get('action_stage') == 'commit':
+                    echo = _receipt_echo(function.get('arguments'), content)
+                    if echo is not None:
+                        if len(echoes) < 128:
+                            echoes.append(echo)
+                        else:
+                            echo_overflow = True
                 path_info = _custom_args(arguments, custom_names[name])
                 if path_info is not None:
                     stdout = _custom_stdout(content, require_records=path_info[1] is None)
@@ -231,6 +308,8 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
                        "scope": "observed_span"}
                 if isinstance(value, str) and value and len(value) <= 1024:
                     row[key] = value
+                if name == 'read_file' and echoes:
+                    pending_echoes.append((row, len(echoes)))
                 rows.append(row)
                 if identity is not None:
                     seen_spans.add(identity)
@@ -251,6 +330,18 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
         rows.append(row)
         seen.add(identity)
         budget -= len(stdout)
+        remaining -= len(stdout)
+    # 所有原始来源优先；可选标记只使用剩余预算。
+    if not echo_overflow and pending_echoes:
+        index = {}
+        for i, (obj, fields) in enumerate(echoes):
+            index.setdefault(_record_key(obj), []).append((i, fields))
+        for row, before in pending_echoes:
+            markers = _echo_markers(row['text'], index, before)
+            cost = len(json.dumps(markers, ensure_ascii=True)) + 256 if markers else 0
+            if markers and cost <= remaining:
+                row['_submitted_echoes'] = markers
+                remaining -= cost
     return rows
 
 
