@@ -25,11 +25,11 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
     normal_index = 0
     preview_name = None
     approved = {"reason": CORRECTED, "item_ref": "case-1"}
-    unidentified = mode in {"source_change", "two_unidentified"}
+    unidentified = mode in {"source_change", "source_change_end", "two_unidentified"}
     second_approved = {"reason": "客户表示页面无法提交，建议记录故障排查。"}
     if unidentified:
         approved = {"reason": "客户表示页面无法提交，建议安排人工排查。"}
-    if mode == "source_change":
+    if mode in {"source_change", "source_change_end"}:
         (project / "extra-source.txt").write_text("补充资料：本事项尚待排查。", encoding="utf-8")
     if mode == "blind_batch":
         approved["reason"] = "客户表示页面无法提交，建议安排人工排查。"
@@ -77,12 +77,14 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         if unidentified:
             if normal_index == 2:
                 return assistant(calls=[call("draft-first", preview_name, **approved)])
-            if mode == "source_change":
+            if mode in {"source_change", "source_change_end"}:
                 if normal_index == 3:
                     assert "record_case" in names
                     return assistant(calls=[call("extra-source", "read_file", path="extra-source.txt")])
                 if normal_index == 4:
                     assert "record_case" not in names, "补读新来源后旧批准必须失效"
+                    if mode == "source_change_end":
+                        return assistant("来源已补读，结束本节点。")
                     return assistant(calls=[call("stale-formal", "record_case", **approved)])
                 if normal_index == 5:
                     return assistant(calls=[call("draft-renewed", preview_name, **approved)])
@@ -229,6 +231,9 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         flow["nodes"] = [{"id": "a", "title": "原业务", "prompt": "读取原文并记录排查建议后交接",
                           "tool_names": ["read_file", "record_case"], "custom_tools": [tool_spec()]}]
         flow["edges"] = []
+        if mode == "source_change_end":
+            flow["nodes"].append({"id": "downstream", "title": "下游", "prompt": "不得接收未提交交接", "tool_names": []})
+            flow["edges"] = [{"source": "a", "target": "downstream"}]
         flow = service.save(flow)
         service.start(flow["id"])
         await service.tasks[flow["id"]]
@@ -287,6 +292,9 @@ def test_staged_approval_cannot_authorize_other_or_repeated_execution(runtime_st
         assert len(receipts) == 1 and receipts[0]["_provenance"] == "not_executed"
     if mode == "timeout":
         assert len(reviews) == 1 and result["status"] != "completed"
+        assert all(word in result["error"] for word in ("来源", "复核", "未完成"))
+        assert "已批准" not in result["error"] and "来源变化" not in result["error"]
+        assert all(text not in result["error"] for text in (SOURCE, DISPUTED, CORRECTED))
     elif mode == "blind_batch":
         assert len(reviews) == 1
     elif mode == "direct_unapproved":
@@ -344,6 +352,7 @@ def test_stop_during_model_preparation_prevents_provider_call(runtime_store, mon
         staged_scenario(runtime_store, monkeypatch, "cancel_before_model"))
     assert not schemas and not reviews and not writes
     assert record["status"] == "cancelled" and run["status"] != "completed"
+    assert "审计" not in run["error"] and "来源变化" not in run["error"]
     assert_paired(record)
 
 
@@ -357,6 +366,10 @@ def test_uncertain_result_audit_with_stop_preserves_checkpoint(runtime_store, mo
     formal = next(row for row in record["last_run"]["tools"] if row["tool_call_id"] == "formal")
     assert formal["source"] == "executed" and formal["outcome"] == "error"
     assert not formal["execution_progress"]
+    error = run["error"]
+    assert "审计" in error and "失败" in error
+    assert "回执" in error and any(word in error for word in ("核对", "核验"))
+    assert all(text not in error for text in (SOURCE, DISPUTED, CORRECTED))
 
 
 @pytest.mark.parametrize("descendant_kind", ["child", "branch"])
@@ -469,4 +482,31 @@ def test_repeated_early_handoff_is_bounded_without_automatic_commit(runtime_stor
     assert record["last_run"]["model_rounds"] == len(schemas) + len(reviews) <= config.MAX_TOOL_ROUNDS
     assert not any(entry["function"]["name"] == "record_case"
                    for row in record["messages"] for entry in row.get("tool_calls", []))
+    assert_paired(record)
+    error = run["error"]
+    assert "批准" in error and any(word in error for word in ("未提交", "待提交"))
+    assert any(word in error for word in ("原工具", "正式"))
+    assert "来源复核未完成" not in error
+    assert all(text not in error for text in (SOURCE, DISPUTED, CORRECTED))
+
+
+@pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
+def test_public_error_distinguishes_expired_source_approval(runtime_store, monkeypatch, structured):
+    monkeypatch.setattr(config, "ENABLE_STRUCTURED_CONTEXT", structured)
+    record, run, reviews, schemas, writes, *_ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "source_change_end"))
+    assert record["status"] == "checkpoint" and run["status"] != "completed"
+    assert len(reviews) == 1
+    assert writes == [] and not (runtime_store[1] / "staged-record.json").exists()
+    assert run["nodes"]["downstream"]["session_id"] is None
+    assert not run["nodes"]["a"]["output_handoff"]
+    events = record["last_run"]["action_preflights"]
+    assert any(event["tool_call_id"] == "draft-first" and event["status"] == "approved" for event in events)
+    read = next(row for row in record["messages"] if row.get("tool_call_id") == "extra-source")
+    assert read["_provenance"] == "executed" and "补充资料" in read["content"]
+    error = run["error"]
+    assert "来源" in error and any(word in error for word in ("变化", "变更"))
+    assert any(word in error for word in ("重新预审", "重新复核"))
+    assert all(text not in error for text in (SOURCE, DISPUTED, CORRECTED,
+        "客户表示页面无法提交，建议安排人工排查。", "补充资料：本事项尚待排查。"))
     assert_paired(record)

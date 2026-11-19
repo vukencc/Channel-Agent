@@ -777,11 +777,16 @@ class FlowService:
                         raise
                 await self._drain(session, identity, value["id"], cancel=session.record["status"] != "idle", run=run)
                 await asyncio.sleep(0)
-                if run["status"] == "cancelling" or session.cancelled.is_set():
+                last_run = session.record.get("last_run")
+                reason = last_run.get("stop_reason") if isinstance(last_run, dict) else None
+                audit_checkpoint = session.record["status"] == "checkpoint" and reason == "flow_action_audit"
+                if (run["status"] == "cancelling" or session.cancelled.is_set()) and not audit_checkpoint:
                     raise asyncio.CancelledError
                 if session.record["status"] != "idle" or session.tool_workers:
+                    from agent_core.core.flow_staged_actions import ACTION_CHECKPOINT_MESSAGES
                     # 只映射受控状态码，不传播会话消息或服务商异常正文。
                     reasons = {
+                        **ACTION_CHECKPOINT_MESSAGES,
                         "model_connection": "模型连接中断，节点已保存检查点",
                         "flow_source_review": "草稿的来源复核未完成，节点已保存检查点",
                         "cost_or_rate_budget": "费用或请求速率预算已达到限制，节点已保存检查点",
@@ -792,8 +797,6 @@ class FlowService:
                         "task_continuation_limit": "自动续跑次数已达到限制，节点已保存检查点",
                         "tool_budget": "模型交互次数已达到限制，节点已保存检查点",
                     }
-                    last_run = session.record.get("last_run")
-                    reason = last_run.get("stop_reason") if isinstance(last_run, dict) else None
                     message = reasons.get(reason) if isinstance(reason, str) and session.record["status"] == "checkpoint" else None
                     raise RuntimeError(message or "节点未正常完成或工具尚未排空")
                 self._check_idle({identity}, value["id"])

@@ -1552,7 +1552,7 @@ class SessionManager:
                                                                'content': reminder})
                             await self.save(session)
                             continue
-                        checkpoint('flow_source_review', gate.blocked or '待提交草稿尚无正式执行回执，请核对后继续。')
+                        checkpoint(*staged_actions.handoff_checkpoint())
                         break
                     if policy.automatic:
                         unfinished, waiting = execution_state(self, session)

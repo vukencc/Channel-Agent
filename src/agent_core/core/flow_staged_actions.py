@@ -17,6 +17,13 @@ from agent_core.core.tool_settings import bounded_schemas
 from agent_core.tools import TOOL_REGISTRY
 
 
+ACTION_CHECKPOINT_MESSAGES = {
+    'flow_action_pending': '草稿已批准，原工具仍待提交，节点已保存检查点',
+    'flow_action_expired': '草稿批准时的来源或权限发生变化，需要重新预审，节点已保存检查点',
+    'flow_action_audit': '动作审计写入失败，请核对原工具回执和实际业务状态，勿自动重发',
+}
+
+
 class FlowStagedActions:
     def __init__(self, gate):
         self.gate = gate
@@ -32,6 +39,7 @@ class FlowStagedActions:
         self.previewed = set()
         self.receipts = {}
         self.unresolved = set()
+        self.invalidated = set()
         self.receipt_binding = None
         self.audit_failed = False
         self._audit_queue = []
@@ -76,6 +84,16 @@ class FlowStagedActions:
     def pending(self) -> bool:
         return bool(self.unresolved or self.receipts)
 
+    def handoff_checkpoint(self) -> tuple[str, str]:
+        # 语义退回标记直到原工具成功才清理；后来获批或失效的同一稿应显示当前办理状态。
+        disputed = self.gate.pending_tools.difference(self.receipts.values(), self.invalidated)
+        if not self.gate.blocked and not disputed:
+            if self.unresolved and self.unresolved <= self.invalidated:
+                return 'flow_action_expired', ACTION_CHECKPOINT_MESSAGES['flow_action_expired']
+            if self.receipts and not self.unresolved:
+                return 'flow_action_pending', ACTION_CHECKPOINT_MESSAGES['flow_action_pending']
+        return 'flow_source_review', self.gate.blocked or '待提交草稿尚无正式执行回执，请核对后继续。'
+
     def _authorized(self):
         allowed = self.manager._effective_session_tools(self.session)
         return {name: tool.definition for name, tool in self.manager._session_custom_registry(self.session).items()
@@ -92,6 +110,7 @@ class FlowStagedActions:
                 stage_selectors=self.requires_preview)
             self.definitions = authorized
             self.unresolved.update(self.receipts.values())
+            self.invalidated.update(self.receipts.values())
             self.receipts.clear()
             self.issued = frozenset()
         if self.receipts:
@@ -162,6 +181,7 @@ class FlowStagedActions:
     def _expire_changed(self, binding: dict) -> None:
         if self.receipts and binding != self.receipt_binding:
             self.unresolved.update(self.receipts.values())
+            self.invalidated.update(self.receipts.values())
             for identifier in self.receipts:
                 self._queue_audit(self._receipt_events.pop(identifier), 'preview', 'context_changed')
                 self.preflight.discard(identifier)
@@ -205,6 +225,7 @@ class FlowStagedActions:
             event['status'] = 'invalid_draft'
             return f'[已拒绝] 草稿未获受理：{exc}。'
         event['draft_id'] = identifier
+        self.invalidated.discard(key)
         # 新草稿校验通过后才撤销同事项的旧批准。
         if key != self.gate.tool_key(name, '{}'):
             for prior, prior_key in list(self.receipts.items()):
@@ -315,9 +336,11 @@ class FlowStagedActions:
                 event['status'] = 'cancelled'
                 raise asyncio.CancelledError
             if self._authorized().get(name) != definition:
+                self.invalidated.add(key)
                 event['status'] = 'authorization_changed'
                 return '[已拒绝] 工具选择或定义已变化，业务操作尚未执行。'
             if self._binding() != binding:
+                self.invalidated.add(key)
                 event['status'] = 'context_changed'
                 return '[已拒绝] 来源或权限已变化，业务操作尚未执行。'
             if self.gate.blocked:
@@ -340,5 +363,6 @@ class FlowStagedActions:
         event['status'] = tool_outcome(result)
         if evidence.get('source') == 'executed' and event['status'] == 'completed':
             self.unresolved.discard(key)
+            self.invalidated.discard(key)
             self.gate.pending_tools.discard(key)
         return result
