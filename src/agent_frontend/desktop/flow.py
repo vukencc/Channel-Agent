@@ -7,7 +7,7 @@ import math
 import os
 import json
 import re
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import sys
 import uuid
 
@@ -501,6 +501,8 @@ class FlowPanel(QWidget):
         self.import_button.clicked.connect(self._import_file)
         self.export_button.clicked.connect(self._export_file)
         self._export_path = None
+        self._import_path = None
+        self._template_directory = None
         self.prompt_edit = self.node_fields['prompt']
         result_scroll = QScrollArea()
         result_scroll.setWidgetResizable(True)
@@ -906,8 +908,20 @@ class FlowPanel(QWidget):
                  [name for name, check in {**self.tool_checks, **self.custom_tool_checks}.items() if check.isChecked()]) if custom else None
         self._field_changed('tool_names', names, True)
 
+    def _template_start_directory(self) -> Path:
+        if self._template_directory and self._template_directory.is_dir():
+            return self._template_directory
+        root = os.environ.get('AI_AGENT_PROJECT_ROOT', '').strip()
+        if root and Path(root).is_dir():
+            data = Path(root) / 'data'
+            return data if data.is_dir() else Path(root)
+        documents = Path.home() / 'Documents'
+        return documents if documents.is_dir() else Path.home()
+
     def _import_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, '导入 Flow 模板', '', 'JSON (*.json)')
+        if self._import_path is not None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, '导入 Flow 模板', str(self._template_start_directory()), 'JSON (*.json)')
         if not path:
             return
         try:
@@ -925,6 +939,7 @@ class FlowPanel(QWidget):
             if missing:
                 choice = QMessageBox.question(self, '缺失模型', '模板引用的模型不存在，改为继承模型？\n选择“否”将严格检查模型。',
                                               QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            self._import_path = path
             self.command.emit('flow_import', {'payload': payload, 'missing_models': 'inherit' if choice == QMessageBox.StandardButton.Yes else 'error'})
         except (OSError, ValueError, UnicodeError) as exc:
             QMessageBox.warning(self, '导入失败', str(exc))
@@ -943,7 +958,7 @@ class FlowPanel(QWidget):
             return
         if self._export_path is not None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, '导出 Flow 模板', '', 'JSON (*.json)')
+        path, _ = QFileDialog.getSaveFileName(self, '导出 Flow 模板', str(self._template_start_directory() / 'flow-template.json'), 'JSON (*.json)')
         if path:
             self._export_path = path
             self.export_button.setEnabled(False)
@@ -1227,6 +1242,11 @@ class FlowPanel(QWidget):
         if action == 'flow_design':
             self.designer.accept_result(result)
             return
+        if action == 'flow_import':
+            path, self._import_path = self._import_path, None
+            if path and not result.get('error') and result.get('ok') is not False:
+                self._template_directory = Path(path).absolute().parent
+            return
         if action == 'flow_export':
             path, self._export_path = self._export_path, None
             self.export_button.setEnabled(bool(self._flow))
@@ -1236,6 +1256,8 @@ class FlowPanel(QWidget):
                 if len(data) > 1024 * 1024 or not file.open(QIODevice.OpenModeFlag.WriteOnly) or file.write(data) != len(data) or not file.commit():
                     file.cancelWriting()
                     QMessageBox.warning(self, '导出失败', '无法安全写入模板文件，或模板超过 1 MiB。')
+                else:
+                    self._template_directory = Path(path).absolute().parent
             return
         if action == 'project_update':
             directory_id = self._directory_update_id
