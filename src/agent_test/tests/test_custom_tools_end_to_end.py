@@ -64,6 +64,7 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
                            'tool_names': [tool['name'] for tool in tools], 'custom_tools': tools}], 'edges': []}
     budget_schemas, provider_schemas, actual_results = [], [], []
     scheduled_calls, observed_results, business_rounds = [], [], []
+    runtime_sessions = []
     events = []
 
     class CaptureObserver(NullObserver):
@@ -72,12 +73,18 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
         def event(self, kind, *, session_id=None, **fields):
             events.append((kind, fields))
     original_prepare = sessions.prepare_model_history
+    original_confirmation = sessions.confirmation_history
 
     async def observed_prepare(*args, **kwargs):
         budget_schemas.append(copy.deepcopy(kwargs['schemas']))
         return await original_prepare(*args, **kwargs)
 
+    def observed_confirmation(offer, schemas, history_context, **kwargs):
+        budget_schemas.append(copy.deepcopy(schemas))
+        return original_confirmation(offer, schemas, history_context, **kwargs)
+
     monkeypatch.setattr(sessions, 'prepare_model_history', observed_prepare)
+    monkeypatch.setattr(sessions, 'confirmation_history', observed_confirmation)
     steps = [tool_call('read_feedback', {}, 'read'),
              tool_call('send_ai_reply', {'feedback_id': 'synthetic-1', 'message': '使用说明'}, 'reply'),
              tool_call('submit_human', {'feedback_id': 'synthetic-2', 'message': '待人工核对'}, 'human')]
@@ -90,7 +97,7 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
         assert provider_schemas[-1] == budget_schemas[-1]
         request_index = len(provider_schemas) - 1
         assert request_index <= 6, "三个预审、三个正式业务操作和最终回应必须精确为七轮"
-        previous = [row for row in history if row['role'] == 'tool']
+        previous = [row for row in runtime_sessions[0][session_id].record['messages'] if row['role'] == 'tool']
         assert len(previous) == request_index
         if previous:
             receipt = previous[-1]
@@ -103,6 +110,7 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
                 actual_results.append(copy.deepcopy(receipt))
                 assert '[退出码] 0' in receipt['content'], receipt
                 assert receipt['_provenance'] == 'executed'
+                assert receipt in history, '每次正式业务执行后，普通轮模型必须实际读到该回执'
         if request_index < 6:
             step = copy.deepcopy(steps[request_index // 2])
             original = step['function']['name']
@@ -115,8 +123,10 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
                 step['function']['name'] = previews[0]['function']['name']
                 step['id'] = 'draft-' + step['id']
             else:
-                assert original in schemas
+                assert list(schemas) == [original], '每个获批动作的下一次模型交互只确认当前这一笔'
                 assert step['function']['arguments'] == scheduled_calls[-1]['function']['arguments']
+                assert any(row.get('_context_reference') and original in row.get('content', '')
+                           and step['function']['arguments'] in row.get('content', '') for row in history)
                 business_rounds.append(original)
             spec = tools[request_index // 2]
             assert schemas[step['function']['name']]['function']['parameters'] == spec['parameters']
@@ -127,6 +137,7 @@ def test_designed_feedback_flow_executes_and_round_trips(isolated_runtime, monke
 
     async def scenario():
         manager = SessionManager(store, model=controlled_model, observer=CaptureObserver())
+        runtime_sessions.append(manager.sessions)
         flows = FlowService(manager)
         projects = ProjectService(manager, flows)
         try:

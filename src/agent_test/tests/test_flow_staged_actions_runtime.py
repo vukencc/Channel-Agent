@@ -2,11 +2,14 @@
 import asyncio
 import copy
 import json
+import uuid
 
 import pytest
 
 from agent_core import config
 from agent_core.core.flows import FlowService
+from agent_core.core.flow_review_sources import review_sources
+from agent_core.core.instrumentation import tool_outcome
 from agent_core.core.llm import TOOL_SCHEMAS
 from agent_core.core.messages import is_user_request
 from agent_core.core.projects import ProjectService
@@ -16,6 +19,29 @@ from test_flow_draft_review_runtime import (
     CORRECTED, DISPUTED, SOURCE, assistant, call, review_payload,
     runtime_store, tool_spec,
 )
+
+
+async def refresh_real_source(manager, session, identifier, path):
+    """受控并发读取沿用真实工具及完整账本格式，不放宽来源校验。"""
+    from agent_core.core.tool_observations import extract_observation
+    before = review_sources(session.record, char_limit=24000)
+    refresh = call(identifier, "read_file", path=path)
+    evidence = {"source": "not_executed"}
+    result = await manager._tool(session, refresh, evidence=evidence)
+    metadata = extract_observation(result)
+    assert evidence["source"] == "executed" and metadata
+    event_id = uuid.uuid4().hex
+    turn_id = session.record["last_run"]["turn_id"]
+    session.record["messages"].extend([assistant(calls=[refresh]), {
+        "role": "tool", "tool_call_id": identifier, "content": str(result),
+        "_provenance": evidence["source"], "_event_id": event_id, "_context_observation": metadata}])
+    session.record["last_run"]["tools"].append({
+        "name": "read_file", "tool_call_id": identifier, "source": evidence["source"],
+        "event_id": event_id, "turn_id": turn_id, "outcome": tool_outcome(result),
+        "output_chars": len(result), "execution_progress": tool_outcome(result) == "completed"})
+    after = review_sources(session.record, char_limit=24000)
+    assert len(after) > len(before), "必须实际新增可验证来源，不能只插入未受信任文本"
+    return result
 
 
 async def staged_scenario(runtime_store, monkeypatch, mode="success"):
@@ -76,28 +102,37 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
             return assistant(calls=[call("source", "read_file", path="source.txt")])
         if unidentified:
             if normal_index == 2:
-                return assistant(calls=[call("draft-first", preview_name, **approved)])
-            if mode in {"source_change", "source_change_end"}:
+                calls = [call("draft-first", preview_name, **approved)]
+                if mode == "two_unidentified":
+                    calls.append(call("draft-second", preview_name, **second_approved))
+                return assistant(calls=calls)
+            if mode == "source_change_end" and normal_index == 3:
+                assert names == {"record_case"}
+                # 受控并发证据刷新：真实读工具、真实观察元数据及完整配对，非模型越权请求。
+                await refresh_real_source(manager, session, "extra-source", "extra-source.txt")
+                return assistant("来源已补读，结束本节点。")
+            if mode == "source_change":
                 if normal_index == 3:
-                    assert "record_case" in names
-                    return assistant(calls=[call("extra-source", "read_file", path="extra-source.txt")])
+                    assert names == {"record_case"}
+                    return assistant('{"decision":"revise","reason":"补读新来源再预审。"}')
                 if normal_index == 4:
-                    assert "record_case" not in names, "补读新来源后旧批准必须失效"
-                    if mode == "source_change_end":
-                        return assistant("来源已补读，结束本节点。")
-                    return assistant(calls=[call("stale-formal", "record_case", **approved)])
+                    assert "record_case" not in names and "read_file" in names
+                    return assistant(calls=[call("extra-source", "read_file", path="extra-source.txt")])
                 if normal_index == 5:
-                    return assistant(calls=[call("draft-renewed", preview_name, **approved)])
+                    assert "record_case" not in names, "补读新来源后旧批准必须失效"
+                    return assistant(calls=[call("stale-formal", "record_case", **approved)])
                 if normal_index == 6:
-                    assert "record_case" in names
+                    return assistant(calls=[call("draft-renewed", preview_name, **approved)])
+                if normal_index == 7:
+                    assert names == {"record_case"}
                     return assistant(calls=[call("formal", "record_case", **approved)])
             else:
                 if normal_index == 3:
-                    return assistant(calls=[call("draft-second", preview_name, **second_approved)])
+                    assert names == {"record_case"}
+                    return assistant(calls=[call("formal-first", "record_case", **approved)])
                 if normal_index == 4:
-                    assert "record_case" in names
-                    return assistant(calls=[call("formal-first", "record_case", **approved),
-                                            call("formal-second", "record_case", **second_approved)])
+                    assert names == {"record_case"}
+                    return assistant(calls=[call("formal-second", "record_case", **second_approved)])
             return assistant("已核对回执。")
         if normal_index == 2:
             assert "record_case" not in names
@@ -129,9 +164,14 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
             return assistant(calls=[call("formal", "record_case", **arguments)])
         if normal_index >= 5 and mode in {"early_handoff", "ignore_handoff"}:
             assert (manager.history_context is not None) == config.ENABLE_STRUCTURED_CONTEXT
-            early = next(index for index, row in enumerate(history)
+            early = next(index for index, row in enumerate(session.record["messages"])
                          if row.get("content") == "提前交接：草稿已批准，本节点处理结束。")
-            references = [row for row in history[early + 1:] if row["role"] == "user" and row.get("content")]
+            if mode == "early_handoff" and normal_index > 5:
+                receipt = next(row for row in history if row.get("tool_call_id") == "formal")
+                assert receipt["_provenance"] == "executed"
+                assert CORRECTED in receipt["content"]
+                return assistant("已读取正式执行回执，本节点完成。")
+            references = [row for row in history if row["role"] == "user" and row.get("_context_reference") and row.get("content")]
             assert references, "提前交接后须提供待提交上下文"
             assert all(row.get("_context_reference") and not is_user_request(row) for row in references), "获批参数仍是引用数据，不能变为新用户授权"
             if normal_index == 5 or mode == "ignore_handoff":
@@ -190,13 +230,13 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
 
     if mode == "cancel_before_model":
         from agent_core.core.flow_staged_actions import FlowStagedActions
-        begin = FlowStagedActions.begin_request
+        begin = FlowStagedActions.begin_drafting
 
         def stop_before_provider(staged):
             begin(staged)
             staged.session.cancelled.set()
 
-        monkeypatch.setattr(FlowStagedActions, "begin_request", stop_before_provider)
+        monkeypatch.setattr(FlowStagedActions, "begin_drafting", stop_before_provider)
     if mode == "audit_cancel":
         import agent_core.core.flow_staged_actions as staged_module
         original_append = staged_module.append_audit
@@ -468,6 +508,12 @@ def test_approved_action_early_handoff_gets_explicit_commit_opportunity(runtime_
     assert formal_receipt["_provenance"] == "executed" and CORRECTED in formal_receipt["content"]
     assert record["last_run"]["model_rounds"] == len(schemas) + len(reviews) <= config.MAX_TOOL_ROUNDS
     assert run["nodes"]["a"]["output_handoff"].endswith("已读取正式执行回执，本节点完成。")
+    store = runtime_store[0]
+    persisted = store.read_record(store.directory(record["id"]) / "session.json")
+    premature = [row for row in persisted["messages"]
+                 if row["role"] == "assistant" and row.get("content") == "提前交接：草稿已批准，本节点处理结束。"]
+    assert len(premature) == 1, "第一次提前交接的原 assistant 必须耐久保留"
+    assert_paired(persisted)
 
 
 @pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
@@ -476,6 +522,7 @@ def test_repeated_early_handoff_is_bounded_without_automatic_commit(runtime_stor
     record, run, reviews, schemas, writes, *_ = asyncio.run(
         staged_scenario(runtime_store, monkeypatch, "ignore_handoff"))
     assert len(schemas) >= 5, "首次提前交接应有下一轮补交机会"
+    assert len(schemas) == 5, "同一提案的纯文本误交接最多纠正一次"
     assert record["status"] == "checkpoint" and run["status"] != "completed"
     assert writes == [] and not (runtime_store[1] / "staged-record.json").exists()
     assert len(reviews) == 2

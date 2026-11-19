@@ -11,6 +11,7 @@ from agent_core import config
 from agent_core.core.agent_tasks import AgentTasks
 from agent_core.core.flows import FlowService
 from agent_core.core.llm import TOOL_SCHEMAS
+from agent_core.core.messages import is_user_request
 from agent_core.core.projects import ProjectService
 from agent_core.core.sessions import SessionManager
 from agent_core.core.storage import SessionStore
@@ -200,10 +201,13 @@ def test_parent_can_revoke_during_actual_smart_confirmation_without_deadlock(run
 def test_actual_delegation_inherits_only_selected_definition(runtime):
     store, workspace = runtime
     catalogs = []
+    runtime_sessions = []
     async def controlled_model(history, **kwargs):
         schemas = selected_schemas(TOOL_SCHEMAS)
         catalogs.append(copy.deepcopy(schemas))
-        if history[-1]["role"] != "tool":
+        actual_messages = runtime_sessions[0][kwargs["session_id"]].record["messages"]
+        receipts = [row for row in actual_messages if row["role"] == "tool"]
+        if not receipts:
             assert "authority_probe" not in {row["function"]["name"] for row in schemas}
             assert not any("hidden_probe" in row["function"].get("description", "") for row in schemas)
             previews = [row for row in schemas if "authority_probe" in row["function"].get("description", "")]
@@ -212,18 +216,21 @@ def test_actual_delegation_inherits_only_selected_definition(runtime):
             draft = call("authority-draft")
             draft["function"]["name"] = previews[0]["function"]["name"]
             return {"role": "assistant", "content": None, "tool_calls": [draft]}
-        if history[-1]["tool_call_id"] == "authority-draft":
-            assert "草稿已批准" in history[-1]["content"], history[-1]
-            assert history[-1]["_provenance"] == "not_executed"
+        receipt = receipts[-1]
+        if receipt["tool_call_id"] == "authority-draft":
+            assert "草稿已批准" in receipt["content"], receipt
+            assert receipt["_provenance"] == "not_executed"
+            assert [row["function"]["name"] for row in schemas] == ["authority_probe"]
             schema = next(row for row in schemas if row["function"]["name"] == "authority_probe")
             assert schema["function"]["parameters"] == definition()["parameters"]
             return {"role": "assistant", "content": None, "tool_calls": [call()]}
-        assert history[-1]["tool_call_id"] == "authority-call"
-        assert history[-1]["_provenance"] == "executed"
-        assert "[退出码] 0" in history[-1]["content"], history[-1]
+        assert receipt["tool_call_id"] == "authority-call"
+        assert receipt["_provenance"] == "executed"
+        assert "[退出码] 0" in receipt["content"], receipt
         return {"role": "assistant", "content": "已执行获准的子工具"}
     async def scenario():
         manager = SessionManager(store, model=controlled_model)
+        runtime_sessions.append(manager.sessions)
         try:
             parent = root_session(manager, workspace)
             hidden = {**definition("def main(arguments): return 'hidden'\n"), "name": "hidden_probe"}
@@ -258,9 +265,11 @@ def test_actual_delegation_inherits_only_selected_definition(runtime):
 @pytest.mark.parametrize("edit", ["replace", "remove"])
 def test_reused_flow_session_replaces_previous_custom_capability(runtime, edit):
     store, workspace = runtime
+    runtime_sessions = []
     async def controlled_model(history, **kwargs):
-        last_user = max(index for index, row in enumerate(history) if row["role"] == "user")
-        results = [row for row in history[last_user + 1:] if row["role"] == "tool"]
+        actual_messages = runtime_sessions[0][kwargs["session_id"]].record["messages"]
+        last_user = max(index for index, row in enumerate(actual_messages) if is_user_request(row))
+        results = [row for row in actual_messages[last_user + 1:] if row["role"] == "tool"]
         if not results:
             schemas = selected_schemas(TOOL_SCHEMAS)
             previews = [row for row in schemas if "authority_probe" in row["function"].get("description", "")]
@@ -276,6 +285,7 @@ def test_reused_flow_session_replaces_previous_custom_capability(runtime, edit):
         if results[-1]["tool_call_id"] == "authority-draft":
             assert "草稿已批准" in results[-1]["content"], results[-1]
             assert results[-1]["_provenance"] == "not_executed"
+            assert [row["function"]["name"] for row in selected_schemas(TOOL_SCHEMAS)] == ["authority_probe"]
             schema = next(row for row in selected_schemas(TOOL_SCHEMAS)
                           if row["function"]["name"] == "authority_probe")
             assert schema["function"]["parameters"] == definition()["parameters"]
@@ -287,6 +297,7 @@ def test_reused_flow_session_replaces_previous_custom_capability(runtime, edit):
             "    return 'old'\n")
     async def scenario():
         manager = SessionManager(store, model=controlled_model)
+        runtime_sessions.append(manager.sessions)
         flows = FlowService(manager)
         projects = ProjectService(manager, flows)
         try:

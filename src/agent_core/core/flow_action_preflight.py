@@ -180,6 +180,14 @@ class FlowActionPreflight:
 
     def reserve_approval(self, name: str, arguments_json: str, binding: object, definition: dict,
                          *, issued: frozenset[str]) -> str | None:
+        identifier = self.match_approval(name, arguments_json, binding, definition, issued=issued)
+        if identifier is not None:
+            row = self._records[identifier]
+            self._records[identifier] = (*row[:4], "reserved")
+        return identifier
+
+    def match_approval(self, name: str, arguments_json: str, binding: object, definition: dict,
+                       *, issued: frozenset[str]) -> str | None:
         if not isinstance(issued, frozenset):
             return None
         if name not in self._by_name:
@@ -191,7 +199,6 @@ class FlowActionPreflight:
             return None
         for identifier, row in list(self._records.items()):
             if identifier in issued and row[:4] == signature and row[4] == "approved":
-                self._records[identifier] = (*row[:4], "reserved")
                 return identifier
         return None
 
