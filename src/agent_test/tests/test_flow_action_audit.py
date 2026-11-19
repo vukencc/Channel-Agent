@@ -56,6 +56,26 @@ def test_audit_failure_blocks_dispatch_and_uncertain_result_never_retries(tmp_pa
     asyncio.run(_audit_failures(tmp_path, monkeypatch))
 
 
+def test_unsuccessful_tool_diagnostic_preserves_stronger_blockers(tmp_path):
+    staged, _ = make_staged(tmp_path)
+    key = ("send", "key")
+    staged.unresolved.add(key)
+    staged.unsuccessful.add(key)
+    staged.gate.pending_tools.add(key)
+    assert staged.handoff_checkpoint()[0] == "flow_action_tool_unsuccessful"
+    staged.gate.pending_tools.add(("other", "disputed"))
+    assert staged.handoff_checkpoint()[0] == "flow_source_review"
+    staged.gate.pending_tools.clear()
+    staged.invalidated.add(key)
+    assert staged.handoff_checkpoint()[0] == "flow_action_expired"
+    staged.invalidated.clear()
+    staged.gate.blocked = "动作审计失败"
+    assert staged.handoff_checkpoint()[1] == "动作审计失败"
+    staged.gate.blocked = ""
+    staged.session.cancelled.set()
+    assert staged.handoff_checkpoint()[0] != "flow_action_tool_unsuccessful"
+
+
 async def _audit_failures(tmp_path, monkeypatch):
     import agent_core.core.flow_staged_actions as module
     staged, calls = make_staged(tmp_path)

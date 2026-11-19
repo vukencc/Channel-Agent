@@ -96,9 +96,13 @@ def handoff_output_instruction(contract: dict) -> str:
             + json.dumps(schema, ensure_ascii=True, separators=(',', ':')))
 
 
-def validate_handoff(text: str, contract: dict) -> tuple[str, dict | None]:
+def _failed(code: str, message: str) -> dict:
+    return {"status": "failed", "code": code, "message": message}
+
+
+def _decode_handoff(text: str) -> tuple[object, dict | None]:
     def failed(code, message):
-        return "", {"status": "failed", "code": code, "message": message}
+        return None, _failed(code, message)
 
     if len(text) > MAX_HANDOFF_CHARS:
         return failed("output_too_large", "交接输出超过长度限制")
@@ -115,14 +119,67 @@ def validate_handoff(text: str, contract: dict) -> tuple[str, dict | None]:
         _depth(value)
     except (ValueError, RecursionError):
         return failed("invalid_json", "交接输出不是有效的 JSON")
-    fields = contract["fields"]
-    if not isinstance(value, dict) or set(value) != set(fields):
-        return failed("fields_mismatch", "交接字段与契约不符")
+    return value, None
+
+
+def _field_error(value: dict, fields: dict) -> dict | None:
     for key, spec in fields.items():
+        if key not in value:
+            continue
         item = value[key]
         if not _matches(item, spec["type"]):
-            return failed("type_mismatch", "交接字段类型不符")
+            return _failed("type_mismatch", "交接字段类型不符")
         enum = spec.get("enum")
         if enum is not None and not any(item == choice for choice in enum):
-            return failed("enum_mismatch", "交接字段不在允许的枚举中")
-    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False), None
+            return _failed("enum_mismatch", "交接字段不在允许的枚举中")
+    return None
+
+
+def _canonical(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False)
+
+
+def validate_handoff(text: str, contract: dict) -> tuple[str, dict | None]:
+    value, failure = _decode_handoff(text)
+    if failure:
+        return "", failure
+    fields = contract["fields"]
+    if not isinstance(value, dict) or set(value) != set(fields):
+        return "", _failed("fields_mismatch", "交接字段与契约不符")
+    failure = _field_error(value, fields)
+    return ("", failure) if failure else (_canonical(value), None)
+
+
+def receipt_field_correction(text: str, contract: dict, expected: dict) -> tuple[dict, set[str]] | None:
+    """只允许原模型补正有真实回执支持的签发编号字段，其他结构错误沿用契约拒绝。"""
+    if not expected:
+        return None
+    value, failure = _decode_handoff(text)
+    fields = contract["fields"]
+    if failure or not isinstance(value, dict) or not value or value.keys() - fields.keys():
+        return None
+    missing = fields.keys() - value.keys()
+    if missing - expected.keys() or _field_error(value, fields):
+        return None
+    corrections = set(missing)
+    for field, issued in expected.items():
+        if field not in value:
+            continue
+        claimed = value[field]
+        if (not isinstance(claimed, list) or len(claimed) != len(issued)
+                or any(not isinstance(item, str) for item in claimed) or set(claimed) != set(issued)):
+            corrections.add(field)
+    return (value, corrections) if corrections else None
+
+
+def preserves_handoff_fields(original: dict, corrected: dict, editable: set[str]) -> bool:
+    """编号修正可在 notes 追加回执说明，其他已有业务字段逐项保持（区分 false 与 0）。"""
+    for key, previous in original.items():
+        if key in editable:
+            continue
+        current = corrected.get(key)
+        if key == "notes" and isinstance(previous, str) and isinstance(current, str) and current.startswith(previous):
+            continue
+        if key not in corrected or _canonical(previous) != _canonical(current):
+            return False
+    return True

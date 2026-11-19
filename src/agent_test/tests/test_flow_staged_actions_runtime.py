@@ -259,6 +259,9 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         arguments = json.loads(tool_call["function"]["arguments"])
         writes.append(arguments)
         (project / "staged-record.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
+        if mode == "formal_failure":
+            evidence["source"] = "executed"
+            return "[失败] 受控工具在写入后未返回成功回执。"
         if mode == "audit_cancel":
             session.cancelled.set()
         evidence["source"] = "executed"
@@ -292,6 +295,17 @@ def assert_paired(record):
     receipts = [row["tool_call_id"] for row in record["messages"] if row["role"] == "tool"]
     assert len(calls) == len(set(calls))
     assert sorted(calls) == sorted(receipts)
+
+
+@pytest.mark.parametrize("mode", ["readonly", "formal_failure"])
+def test_approved_action_without_success_receipt_reports_tool_status(runtime_store, monkeypatch, mode):
+    record, run, reviews, _, writes, _, _ = asyncio.run(staged_scenario(runtime_store, monkeypatch, mode))
+    assert len(reviews) == 2 and run["status"] != "completed"
+    assert record["status"] == "checkpoint"
+    assert len(writes) == (1 if mode == "formal_failure" else 0)
+    assert "原工具未成功" in run["error"] and "核对" in run["error"]
+    assert "来源复核未完成" not in run["error"]
+    assert_paired(record)
 
 
 def test_staged_review_revise_then_formal_same_arguments_execute_once(runtime_store, monkeypatch):

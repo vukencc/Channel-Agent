@@ -23,6 +23,7 @@ ACTION_CHECKPOINT_MESSAGES = {
     'flow_action_audit': '动作审计写入失败，请核对原工具回执和实际业务状态，勿自动重发',
     'flow_action_stopped': '已按确认结果停止，草稿尚未执行，节点已保存检查点',
     'flow_action_confirmation_rejected': '确认回复不符合单笔提交要求，业务尚未执行，请核对后继续',
+    'flow_action_tool_unsuccessful': '原工具未成功，请核对已有回执和实际状态，勿自动重发，节点已保存检查点',
 }
 
 
@@ -42,6 +43,7 @@ class FlowStagedActions:
         self.receipts = {}
         self.unresolved = set()
         self.invalidated = set()
+        self.unsuccessful = set()
         self.receipt_binding = None
         self.audit_failed = False
         self._audit_queue = []
@@ -90,8 +92,12 @@ class FlowStagedActions:
 
     def handoff_checkpoint(self) -> tuple[str, str]:
         # 语义退回标记直到原工具成功才清理；后来获批或失效的同一稿应显示当前办理状态。
-        disputed = self.gate.pending_tools.difference(self.receipts.values(), self.invalidated)
+        disputed = self.gate.pending_tools.difference(self.receipts.values(), self.invalidated, self.unsuccessful)
         if not self.gate.blocked and not disputed:
+            if (not self.session.cancelled.is_set() and self.unsuccessful
+                    and not self.invalidated and self.unresolved <= self.unsuccessful
+                    and set(self.receipts.values()) <= self.unsuccessful):
+                return 'flow_action_tool_unsuccessful', ACTION_CHECKPOINT_MESSAGES['flow_action_tool_unsuccessful']
             if self.unresolved and self.unresolved <= self.invalidated:
                 return 'flow_action_expired', ACTION_CHECKPOINT_MESSAGES['flow_action_expired']
             if self.receipts and not self.unresolved:
@@ -274,6 +280,7 @@ class FlowStagedActions:
         self.previewed.add(name)
         key = self.gate.tool_key(name, fn['arguments'])
         self.unresolved.add(key)
+        self.unsuccessful.discard(key)
         definition = self._authorized().get(name)
         if definition is None or definition != self.definitions.get(name):
             event['status'] = 'authorization_changed'
@@ -382,6 +389,10 @@ class FlowStagedActions:
         # 动态工具最终通过 run_command；readonly 策略在沙箱中一律拒绝该命令。
         if self.gate.blocked or self.session.cancelled.is_set() or not definition or policy == 'readonly':
             event['status'] = 'blocked'
+            if (policy == 'readonly' and not self.gate.blocked and not self.session.cancelled.is_set()
+                    and definition and self.preflight.match_approval(name, fn['arguments'], self._binding(),
+                                                                    definition, issued=self.issued)):
+                self.unsuccessful.add(key)
             return '[已拒绝] 当前节点、复核或工具权限不允许正式提交。'
         binding = copy.deepcopy(self._binding())
         definition = copy.deepcopy(definition)
@@ -428,10 +439,14 @@ class FlowStagedActions:
             raise
         except Exception:
             event['status'] = 'execution_error'
+            self.unsuccessful.add(key)
             raise
         event['status'] = tool_outcome(result)
         if evidence.get('source') == 'executed' and event['status'] == 'completed':
             self.unresolved.discard(key)
             self.invalidated.discard(key)
+            self.unsuccessful.discard(key)
             self.gate.pending_tools.discard(key)
+        else:
+            self.unsuccessful.add(key)
         return result

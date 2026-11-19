@@ -1,0 +1,117 @@
+import json
+
+from agent_core.core.flow_handoff_receipts import FlowHandoffReceipts
+
+
+CONTRACT = {"fields": {"submitted_ticket_ids": {"type": "array"}, "notes": {"type": "string"}}}
+
+
+def observe(receipts, call_id, payload, *, tool_name="submit_to_ops", arguments="{}", **changes):
+    call = {"id": call_id, "type": "function", "function": {"name": tool_name, "arguments": arguments}}
+    metrics = {"tool_call_id": call_id, "name": tool_name, "action_stage": "commit", "source": "executed", "outcome": "completed", "execution_progress": True}
+    metrics.update(changes)
+    result = "[退出码] 0\n[stdout]\n" + (payload if isinstance(payload, str) else json.dumps(payload))
+    receipts.observe(call, result, metrics)
+
+
+def test_simulated_receipts_do_not_turn_feedback_ids_into_ticket_ids():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    for i in range(2):
+        observe(receipts, str(i), {"ok": True, "simulated": True, "delivered_externally": False, "ticket": {"feedback_id": f"F{i}"}})
+    assert receipts.expectations() == {"submitted_ticket_ids": []}
+    guide = receipts.guide(include_values=True)
+    assert "F0" in guide and "F1" in guide and "2" in guide and "[]" in guide
+
+
+def test_issued_ids_are_ordered_and_conflicts_are_not_inferred():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    observe(receipts, "1", {"ok": True, "ticket": {"ticket_id": "T1", "feedback_id": "F1"}})
+    observe(receipts, "2", {"ok": True, "ticket": {"id": "T2"}})
+    assert receipts.expectations() == {"submitted_ticket_ids": ["T1", "T2"]}
+    observe(receipts, "3", {"ok": True, "ticket": {"ticket_id": "T3", "id": "other"}})
+    assert receipts.expectations() == {}
+
+
+def test_uncertain_commit_invalidates_complete_mapping():
+    for payload, changes in [({"ok": False, "ticket": {}}, {}), ("{\"ok\":true,\"ticket\":{}", {}), ({"ok": True, "ticket": {}}, {"outcome": "error"}), ({"ok": True, "ticket": {}}, {"tool_call_id": "other"})]:
+        receipts = FlowHandoffReceipts(CONTRACT)
+        observe(receipts, "1", {"ok": True, "ticket": {"feedback_id": "F"}})
+        observe(receipts, "2", payload, **changes)
+        assert receipts.expectations() == {}
+
+
+def test_preview_and_read_do_not_establish_receipts():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    observe(receipts, "1", {"ok": True, "ticket": {}}, action_stage="preview")
+    observe(receipts, "2", {"ok": True, "ticket": {}}, action_stage=None)
+    assert receipts.expectations() == {}
+
+
+def test_duplicates_and_unrelated_custom_contract_are_not_enforced():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    observe(receipts, "1", {"ok": True, "ticket": {"id": "T1"}})
+    observe(receipts, "2", {"ok": True, "ticket": {"id": "T1"}})
+    assert receipts.expectations() == {}
+    receipts = FlowHandoffReceipts({"fields": {"feedback_ids": {"type": "array"}}})
+    observe(receipts, "1", {"ok": True, "feedback": {"id": "F1"}})
+    assert receipts.expectations() == {}
+
+
+def test_invalid_and_truncated_receipts_cannot_prove_empty_ids():
+    for payload in ["{\"ok\":true,\"ok\":true,\"ticket\":{}}", "{\"ok\":true,\"ticket\":{}}\n[输出已截断]", {"ok": True, "ticket": {"ticket_id": None}}, {"ok": True, "other": {}}]:
+        receipts = FlowHandoffReceipts(CONTRACT)
+        observe(receipts, "1", payload)
+        assert receipts.expectations() == {}
+
+
+def test_duplicate_call_and_capacity_fail_closed():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    observe(receipts, "1", {"ok": True, "ticket": {"feedback_id": "F"}})
+    observe(receipts, "1", {"ok": True, "ticket": {"feedback_id": "F"}})
+    assert receipts.expectations() == {}
+    receipts = FlowHandoffReceipts(CONTRACT)
+    for i in range(129):
+        observe(receipts, str(i), {"ok": True, "ticket": {"feedback_id": "F"}})
+    assert receipts.expectations() == {}
+
+
+def test_independent_entities_and_not_executed_rejection():
+    contract = {"fields": {"submitted_ticket_ids": {"type": "array"}, "created_case_ids": {"type": "array"}}}
+    receipts = FlowHandoffReceipts(contract)
+    observe(receipts, "1", {"ok": True, "ticket": {"id": "T1"}})
+    observe(receipts, "2", {"ok": True, "case": {"case_id": "C1"}}, tool_name="create_case")
+    observe(receipts, "3", {}, source="not_executed", outcome="rejected", execution_progress=False)
+    assert receipts.expectations() == {"submitted_ticket_ids": ["T1"], "created_case_ids": ["C1"]}
+
+
+def test_action_and_entity_must_match():
+    for name in ("read_ticket", "create_ticket", "unknown_ticket"):
+        receipts = FlowHandoffReceipts(CONTRACT)
+        observe(receipts, "1", {"ok": True, "ticket": {"feedback_id": "F"}}, tool_name=name)
+        assert receipts.expectations() == {}
+
+
+def test_root_ids_and_insufficient_evidence():
+    for payload in ({"ok": True, "ticket": {}}, {"ok": True, "id": "T", "ticket": {"feedback_id": "F"}}, {"ok": True, "ticket_no": "T", "ticket": {"feedback_id": "F"}}, {"ok": True, "ticketId": "T", "ticket": {"feedback_id": "F"}}, {"ok": True, "ticket": {"number": "T", "feedback_id": "F"}}, {"ok": True, "ticket_id": "T1", "ticket": {"id": "T2"}}):
+        receipts = FlowHandoffReceipts(CONTRACT)
+        observe(receipts, "1", payload)
+        assert receipts.expectations() == {}
+    receipts = FlowHandoffReceipts(CONTRACT)
+    observe(receipts, "1", {"ok": True, "ticket_id": "T1", "ticket": {"id": "T1"}})
+    assert receipts.expectations() == {"submitted_ticket_ids": ["T1"]}
+
+
+def test_values_excluded_by_default_and_echoed_id_is_not_issued():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    observe(receipts, "1", {"ok": True, "ticket": {"id": "T1", "feedback_id": "F1"}}, arguments='{"ticket_id":"T1"}')
+    assert receipts.expectations() == {"submitted_ticket_ids": []}
+    assert "T1" not in receipts.guide() and "F1" not in receipts.guide()
+    assert "F1" in receipts.guide(include_values=True)
+
+
+def test_oversized_full_reference_has_no_constraints():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    for i in range(100):
+        observe(receipts, str(i), {"ok": True, "ticket": {"feedback_id": str(i) + "x" * 100}})
+    assert receipts.guide(include_values=True) == ""
+    assert receipts.expectations() == {}

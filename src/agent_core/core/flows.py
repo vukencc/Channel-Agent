@@ -789,6 +789,7 @@ class FlowService:
                         **ACTION_CHECKPOINT_MESSAGES,
                         "model_connection": "模型连接中断，节点已保存检查点",
                         "flow_source_review": "草稿的来源复核未完成，节点已保存检查点",
+                        "flow_handoff_receipts": "交接与原工具回执或已核对的内容不符，节点已保存检查点",
                         "cost_or_rate_budget": "费用或请求速率预算已达到限制，节点已保存检查点",
                         "context_budget": "上下文预算已达到限制，节点已保存检查点",
                         "plan_waiting": "任务计划受阻或等待必要信息，节点已保存检查点",
@@ -798,6 +799,8 @@ class FlowService:
                         "tool_budget": "模型交互次数已达到限制，节点已保存检查点",
                     }
                     message = reasons.get(reason) if isinstance(reason, str) and session.record["status"] == "checkpoint" else None
+                    if reason == "flow_handoff_receipts":
+                        result["handoff_validation"] = {"status": "failed", "code": "receipt_mismatch", "message": message}
                     raise RuntimeError(message or "节点未正常完成或工具尚未排空")
                 self._check_idle({identity}, value["id"])
                 messages = session.record["messages"]

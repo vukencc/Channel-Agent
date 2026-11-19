@@ -1,7 +1,12 @@
-"""受控离线模型验证逐笔确认；动态工具经真实 Linux 隔离执行，不是实模型或回放。"""
+"""受控离线逐笔确认；Linux/显式 WSL 真沙箱，托管 Windows 固定真实子进程；非实模型/回放。"""
 import asyncio
+import base64
 import copy
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -27,6 +32,72 @@ def record_definition(name="confirm_record"):
                 "message": {"type": "string"}},
                 "required": ["item_ref", "amount", "message"], "additionalProperties": False},
             "code": "import json\nfrom pathlib import Path\ndef main(arguments):\n    path = Path('confirmed.jsonl')\n    before = path.read_text(encoding='utf-8') if path.exists() else ''\n    path.write_text(before + json.dumps(arguments, ensure_ascii=False) + '\\n', encoding='utf-8')\n    return {'recorded': arguments['item_ref']}\n"}
+
+
+@pytest.fixture(autouse=True)
+def confirmation_command_transport(monkeypatch, request, tmp_path, sandbox_env):
+    """仅本文件固定写入代码使用受控本机子进程，不是 Windows 沙箱能力验证。
+
+    托管 Windows 没有 WSL；与公共 lookup_command_transport 采用相同边界。
+    RUN_WINDOWS_WSL_TESTS=1 保留原生产桥，发行版/Python 路径仍用原配置显式指定。
+    Linux 始终执行真实 bubblewrap，不因宿主 PATH 或可用性静默跳过。
+    """
+    native_fixture = os.name == "nt" and os.environ.get("RUN_WINDOWS_WSL_TESTS") != "1"
+    label = ("controlled_native_python_subprocess" if native_fixture else
+             "real_windows_wsl" if os.name == "nt" else "real_linux_bubblewrap")
+    request.node.user_properties.append(("confirmation_transport", label))
+    if not native_fixture:
+        return
+    allowed_tests = {
+        "test_each_approved_action_gets_dedicated_explicit_confirmation",
+        "test_confirmation_refuses_stop_unrelated_duplicate_or_changed_authority",
+        "test_confirmation_budget_rejects_large_reference_without_truncating_private_data",
+        "test_confirmation_retry_survives_existing_single_round_stage_boundary",
+    }
+    assert request.node.originalname in allowed_tests
+    root = Path(sandbox_env).resolve(strict=True)
+    assert root.is_relative_to(tmp_path.resolve(strict=True))
+    from agent_core.core.command_review import bound_review
+    from agent_core.tools import sandbox, wsl_command
+
+    def execute_fixed_confirmation(operation, arguments):
+        assert operation == "run_command"
+        command = arguments["command"]
+        review = bound_review(command, arguments.get("network", False))
+        assert (review is not None and review.name == "confirm_record"
+                and review.code == record_definition()["code"] and not review.network)
+        assert arguments.get("network", False) is False
+        assert arguments.get("runtime_profile", "system") == "system"
+        assert arguments.get("resource_profile", "standard") == "standard"
+        values = json.loads(review.arguments_json)
+        assert values in [json.loads(RAW_FIRST), json.loads(RAW_SECOND)]
+        assert sandbox.sandbox_root().resolve(strict=True) == root
+        assert (root / "confirmed.jsonl").resolve().parent == root
+        assert not sandbox.cancellation_requested()
+        if not sandbox.ask_permission("run_command", command, arguments.get("reason", ""), command=command):
+            return "[已取消] 用户未确认（拒绝或确认超时），命令未执行。"
+        # 不执行任意命令：逐字白名单源码及两组已知参数经独立 argv 进入真实进程。
+        script = ("import base64,json,sys; ns={}; "
+                  "exec(compile(base64.b64decode(sys.argv[1]),'<test-confirmation>','exec'),ns); "
+                  "print(json.dumps(ns['main'](json.loads(sys.argv[2])),ensure_ascii=False,allow_nan=False))")
+        code = base64.b64encode(review.code.encode("utf-8")).decode("ascii")
+        env = {name: os.environ[name] for name in ("SystemRoot", "TEMP", "TMP") if name in os.environ}
+        with sandbox.execution_authority():
+            sandbox.audit("command_started", strict=True, test_transport=label)
+            process = subprocess.run([sys.executable, "-I", "-X", "utf8", "-c", script,
+                                      code, review.arguments_json], cwd=root, env=env,
+                                     stdin=subprocess.DEVNULL, capture_output=True,
+                                     encoding="utf-8", timeout=config.COMMAND_TIMEOUT,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            sandbox.audit("command", strict=True, exit_code=process.returncode, test_transport=label)
+        # 协议外壳沿用命令工具；退出码、stdout、stderr 均来自真实进程。
+        parts = [f"[退出码] {process.returncode}",
+                 f"[stdout]\n{sandbox.truncate(process.stdout)}" if process.stdout else "[stdout] （空）"]
+        if process.stderr:
+            parts.append(f"[stderr]\n{sandbox.truncate(process.stderr)}")
+        return "\n".join(parts)
+
+    monkeypatch.setattr(wsl_command, "execute_wsl_tool", execute_fixed_confirmation)
 
 
 def raw_call(identifier, name, raw):

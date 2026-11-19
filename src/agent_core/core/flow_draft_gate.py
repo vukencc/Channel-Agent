@@ -25,10 +25,11 @@ from agent_core.core.session_limits import limit as session_limit
 class FlowDraftGate:
     """仅属当前节点的当前轮。复核与主模型共享连接、交互轮、费用和时限。"""
 
-    def __init__(self, manager, session, reserve_round: Callable[[], bool]):
+    def __init__(self, manager, session, reserve_round: Callable[[], bool], *, receipt_index=None):
         self.manager = manager
         self.session = session
         self.reserve_round = reserve_round
+        self.receipt_index = receipt_index
         self.blocked = ''
         self.needs_sources = False
         self.pending_tools: set[tuple[str, str]] = set()
@@ -135,7 +136,11 @@ class FlowDraftGate:
         for unit in units:
             item_id = unit['item_id']
             kind = unit.get('kind', 'item')
-            key = hashlib.sha256(json.dumps([kind, item_id, unit['draft'], unit['sources'], self.session.flow_review_task],
+            receipt_index = getattr(self, 'receipt_index', None)
+            receipt_revision = getattr(receipt_index, 'revision', 0) if kind != 'item' else 0
+            receipt_budget = (char_limit, session_limit('MODEL_INPUT_TOKENS')) if receipt_revision else None
+            key = hashlib.sha256(json.dumps([kind, item_id, unit['draft'], unit['sources'], self.session.flow_review_task,
+                receipt_revision, receipt_budget],
                 ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             item_digest = hashlib.sha256(item_id.encode('utf-8', 'surrogatepass')).hexdigest()
             if key in self.passed_items and item_id not in self.pending_items:
@@ -214,7 +219,12 @@ class FlowDraftGate:
             return '尚无本轮可核对的原文。请先读取相关原始资料，或去掉无依据的事实断言，明确标注推断或待核实事项。'
         task = self.session.flow_review_task
         event['task_digest'] = hashlib.sha256(task.encode('utf-8', 'surrogatepass')).hexdigest()
-        fingerprint = hashlib.sha256(json.dumps([sources, task, action_context, unit_kind, revision_definition],
+        receipt_index = getattr(self, 'receipt_index', None)
+        receipt_revision = (getattr(receipt_index, 'revision', 0)
+                            if stage == 'handoff' and unit_kind != 'item' else 0)
+        receipt_budget = (char_limit, session_limit('MODEL_INPUT_TOKENS')) if receipt_revision else None
+        fingerprint = hashlib.sha256(json.dumps([sources, task, action_context, unit_kind, revision_definition,
+            receipt_revision, receipt_budget],
             ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         shared = unit_kind == 'shared_claim'
         targets = shared_targets(draft) if shared else claim_targets(draft)
@@ -240,6 +250,20 @@ class FlowDraftGate:
         if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
             event['status'] = 'context_budget'
             return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
+        if stage == 'handoff' and unit_kind != 'item' and receipt_index is not None:
+            facts = receipt_index.review_facts()
+            if facts:
+                payload = json.loads(history[1]['content'])
+                payload['action_receipt_summary'] = facts
+                augmented = [
+                    {**history[0], 'content': history[0]['content'] + (
+                        ' action_receipt_summary 只证明原工具所报告的模拟办理数量、标志或查询字段，'
+                        '不能证实客户意愿、权限、规则或外部送达。')},
+                    {**history[1], 'content': json.dumps(payload, ensure_ascii=False)},
+                ]
+                if (history_size(augmented) <= char_limit
+                        and request_tokens(augmented) <= session_limit('MODEL_INPUT_TOKENS')):
+                    history = augmented
         if not self.reserve_round():
             event['status'] = 'round_budget'
             self.blocked = '原模型交互轮次已用完，未获来源复核批准。'
