@@ -110,7 +110,7 @@ uv sync --project /mnt/d/AI/AgentSrcCode/ChannelAgent --locked --python 3.12
 
 该命令将 Linux 环境放在 WSL 用户目录，不覆盖仓库中 Windows 的 `.venv`。两套环境分别安装依赖；不要用 Windows uv 操作 Linux 虚拟环境，也不要用 Linux uv 重建 Windows `.venv`。WSL 的 Linux Python 必须能加载项目依赖，系统还须允许 Bubblewrap 所需命名空间，单纯安装软件包不保证隔离可用。
 
-在 Windows 应用的 `.env` 中按实际用户路径设置：
+默认自动使用上述当前 WSL 用户目录中的解释器；也可在 Windows 应用的 `.env` 中按实际用户路径显式设置：
 
 ```dotenv
 WINDOWS_WSL_DISTRIBUTION=Ubuntu
@@ -118,7 +118,7 @@ WINDOWS_WSL_PYTHON=/home/<Linux用户名>/.local/share/ChannelAgent/wsl-venv/bin
 COMMAND_EXECUTION_ENVIRONMENT=sandbox
 ```
 
-发行版默认值为 `Ubuntu`，Python 默认值为 `python3`；默认 Python 也必须安装项目依赖。改完重启应用。WSL 启动器使用受限环境，禁用 `.env` 加载，不继承用户 shell 配置或模型密钥。命令、环境探测和可启用的依赖准备使用原有 Linux 沙箱；依赖准备默认关闭，联网仍受配置、权限和确认约束。配置详见 [沙箱](sandbox.md)和[环境准备](environment-preparation.md)。
+发行版默认值为 `Ubuntu`，Python 默认值为 `auto`，优先使用当前 WSL 用户的 `~/.local/share/ChannelAgent/wsl-venv/bin/python`，不存在时回退到 `python3`。显式设置（包括 `python3`）保持原样；所选 Python 必须安装项目依赖。改完重启应用。WSL 启动器使用受限环境，禁用 `.env` 加载，不继承用户 shell 配置或模型密钥。命令、环境探测和可启用的依赖准备使用原有 Linux 沙箱；依赖准备默认关闭，联网仍受配置、权限和确认约束。配置详见 [沙箱](sandbox.md)和[环境准备](environment-preparation.md)。
 
 在 Windows 的项目目录执行实际隔离探针。
 

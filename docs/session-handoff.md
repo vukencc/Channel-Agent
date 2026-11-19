@@ -2,6 +2,10 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
+## 设计助手格式修复
+
+基线是 0.6.2 的主线提交 `93d3e97`。设计助手识别标准 JSON、单一代码块与简单说明；完整草稿语法出错时可以同模型修正一次。Windows 隔离命令支持发现当前 WSL 用户按发行指南安装的解释器。两项均在独立工作区开发。[设计与恢复规则](agent-flow.md) · [Windows 运行环境](windows.md)
+
 ## 0.6.2 稳定版本
 
 本版基于 [主线提交 a199420](https://github.com/vukencc/Channel-Agent/commit/a1994202bee272e1ebdd1970c113c2d2453113a9) 及其[双平台回归](https://github.com/vukencc/Channel-Agent/actions/runs/44052153866)，更新了分发清单、版本标识与使用文档。Windows 和 Linux 成品均从 `v0.6.2` 标签构建。[发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.2) 提供下载包与 SHA256，[快速上手](getting-started.md) 给出本机离线自检及通过条件。本次发布验收采用离线回归和成品自检。[PR #62](https://github.com/vukencc/Channel-Agent/pull/62) 的实验性改动另行评估。

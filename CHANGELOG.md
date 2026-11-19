@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-19
+
+- Flow 设计器可导入附简单说明或 Markdown 围栏的单份完整模板。完整草稿出现 JSON 语法错误时，可在预算内向同一模型请求一次格式修正。停止、图结构、权限及工具校验仍生效。测试反馈工作流采用分支汇合、修订及复验的有限步骤。
+- Windows 隔离命令默认发现当前 WSL 用户按指南安装的独立 Python 环境。显式指定的解释器继续生效。
+
 ## [0.6.2] - 2026-11-19
 
 - 修正前端 Python 包遗漏 `runtime_loop.py` 导致安装后启动失败的问题，统一 Core 对外报告的版本号。
@@ -181,7 +186,8 @@
 - 全量模型推理峰值内存、RAG p95/吞吐权衡、真实视觉服务、Windows/macOS 原生能力尚未验收，详见 `docs/optimization-delivery.md`。
 - 容器后端（Docker/Podman 作为命令沙箱）仅有设计契约，未实现，见 `docs/platform-design.md`。
 
-[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/vukencc/Channel-Agent/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/vukencc/Channel-Agent/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/vukencc/Channel-Agent/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/vukencc/Channel-Agent/compare/v0.5.0...v0.6.0

@@ -154,7 +154,7 @@ COMMAND_TIMEOUT = env_float("COMMAND_TIMEOUT", 10.0)  # 单条命令最长执行
 COMMAND_EXECUTION_ENVIRONMENT = os.getenv('COMMAND_EXECUTION_ENVIRONMENT', 'sandbox').strip().lower()
 # Windows 原生界面的隔离命令由显式 WSL 发行版与 Linux Python 执行。
 WINDOWS_WSL_DISTRIBUTION = os.getenv('WINDOWS_WSL_DISTRIBUTION', 'Ubuntu').strip()
-WINDOWS_WSL_PYTHON = os.getenv('WINDOWS_WSL_PYTHON', 'python3').strip()
+WINDOWS_WSL_PYTHON = os.getenv('WINDOWS_WSL_PYTHON', 'auto').strip()
 if not WINDOWS_WSL_DISTRIBUTION or WINDOWS_WSL_DISTRIBUTION.startswith('-') or any(
         ord(char) < 32 for char in WINDOWS_WSL_DISTRIBUTION):
     raise ValueError('WINDOWS_WSL_DISTRIBUTION 必须为有效的 WSL 发行版名称')
