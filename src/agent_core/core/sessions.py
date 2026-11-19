@@ -1368,7 +1368,7 @@ class SessionManager:
                     raise asyncio.CancelledError
                 schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
                 tool_names = {schema['function']['name'] for schema in schemas}
-                file_guide = runtime_file_workflow_guide(tool_names)
+                file_guide = runtime_file_workflow_guide(tool_names, scoped=bool(session.record.get('flow_id')))
                 if 'rag_search' in tool_names:
                     protocol = rag_runtime_protocol(history[0].get('content', ''))
                     if protocol:

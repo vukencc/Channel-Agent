@@ -102,3 +102,56 @@ def test_configured_sources_follow_available_schemas(monkeypatch):
     assert '@docs' not in no_tools and 'knowledge' not in no_tools
     assert '@docs' in read and 'rag_search' not in read and 'knowledge' not in read
     assert '@docs' in rag and 'knowledge' in rag and 'read_file' not in rag
+
+
+@pytest.mark.parametrize("names", [
+    ("read_file", "list_files", "create_file"),
+    ("read_file", "list_files", "run_command"),
+    ("read_file", "list_files"),
+])
+@pytest.mark.parametrize("recover", [False, True])
+def test_flow_node_guidance_uses_selected_schema(tmp_path, sandbox_env, monkeypatch, names, recover):
+    monkeypatch.setattr(config, "FLOW_AUTO_ARCHIVE", False)
+    monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 1)
+    seen = []
+
+    async def model(history, **kwargs):
+        seen.append([dict(message) for message in history])
+        if recover and len(seen) == 1:
+            raise ModelResponseError("受控恢复")
+        return {"role": "assistant", "content": "完成"}
+
+    async def run():
+        store = SessionStore(tmp_path / "state", sandbox_env)
+        manager = SessionManager(store, model=model)
+        try:
+            session = manager.create(prompt="架构文档")
+            session.record["flow_id"] = "test-flow"
+            monkeypatch.setattr(manager, "flow_workspace_scope", lambda session: False)
+            monkeypatch.setattr(manager, "_session_schemas", lambda session: _schemas(*names))
+            monkeypatch.setattr(manager, "_effective_session_tools", lambda session, **kwargs: list(names))
+            manager.submit(session, "检查内容")
+            await session.task
+            assert len(seen) == (2 if recover else 1), session.record.get("error")
+            content = "\n".join(message.get("content", "") or "" for message in seen[-1])
+            assert "next_offset" in content and "search" in content
+            for name in ("create_file", "run_command", "append_file", "edit_file", "prepare_project_environment", "inspect_environment"):
+                assert (name in content) == (name in names)
+            if "create_file" in names:
+                assert "长文件" in content
+            if recover:
+                assert "[恢复要求]" in content and "不得重复已成功操作" in content
+        finally:
+            await manager.shutdown()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_flow_full_schema_retains_existing_guide():
+    names = {"create_file", "append_file", "edit_file", "update_file", "read_file", "list_files",
+             "run_command", "inspect_environment", "prepare_project_environment", "rag_search", "stat", "glob"}
+    assert runtime_file_workflow_guide(names, scoped=True) == FILE_WORKFLOW_GUIDE
+    guide = runtime_file_workflow_guide(names - {"append_file"}, scoped=True)
+    assert "append_file" not in guide
+    assert "edit_file" in guide and "prepare_project_environment" in guide

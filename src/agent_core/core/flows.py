@@ -759,6 +759,9 @@ class FlowService:
                                + ("" if same_prompt else handoff_output_instruction(node["handoff_contract"]))
                                if node["handoff_contract"] is not None else
                                "\n只执行当前节点的职责；后续任务留在交接中。最后总结已改动、验证、未完成事项和风险。")
+                            + "\n本岗位要求的产物和必要验收已有真实依据时，直接结束并按现有输出格式交接；"
+                            + "尚未轮到的下游集成检查明确交给相应岗位，无需等待其运行。"
+                            + "仍有具体缺项时只处理该项；无法验证则如实注明，不能仅凭成功回执认定任务通过。"
                         ), flow_id=value["id"], handoff_contract=node["handoff_contract"], handoff_span=span)
                 result["turn_id"] = session.record["last_run"]["turn_id"]
                 try:
