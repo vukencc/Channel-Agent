@@ -37,6 +37,7 @@ def _checkpoint_message(last_run: object) -> str | None:
         return None
     reasons = {
         'model_connection': '模型连接中断，节点已保存检查点',
+        'model_timeout': '模型响应超时，节点已保存检查点；已有产物和工具回执保留，请检查后再续跑',
         'cost_or_rate_budget': '费用或请求速率预算已达到限制，节点已保存检查点',
         'context_budget': '上下文预算已达到限制，节点已保存检查点',
         'plan_waiting': '任务计划受阻或等待必要信息，节点已保存检查点',

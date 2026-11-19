@@ -16,7 +16,7 @@ from typing import Callable
 
 from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, limits_scope, effective_limits, validate_limits, preset
-from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, runtime_file_workflow_guide, permission_mode_guide, rag_runtime_protocol
+from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, runtime_file_workflow_guide, runtime_recovery_notice, permission_mode_guide, rag_runtime_protocol
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
 from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
 from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
@@ -1373,6 +1373,8 @@ class SessionManager:
                 schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
                 tool_names = {schema['function']['name'] for schema in schemas}
                 file_guide = runtime_file_workflow_guide(tool_names, scoped=bool(session.record.get('flow_id')))
+                if session.record.get('flow_id') and file_guide == FILE_WORKFLOW_GUIDE:
+                    file_guide += '\n长测试先拆成独立测试组或模块，每次新增约 2000 字符，逐步覆盖完整业务断言。\n'
                 if 'rag_search' in tool_names:
                     protocol = rag_runtime_protocol(history[0].get('content', ''))
                     if protocol:
@@ -1458,6 +1460,13 @@ class SessionManager:
                         if recovered >= session_limit('MODEL_RECOVERY_LIMIT') or session.cancelled.is_set():
                             if review:
                                 session.record['last_run']['flow_progress_reviews'][-1]['status'] = 'model_error'
+                            if session.cancelled.is_set():
+                                raise asyncio.CancelledError
+                            if isinstance(exc, TimeoutError) and session.record.get('flow_id'):
+                                session.partial = session.partial_reasoning = ''
+                                checkpoint('model_timeout', '模型响应超时，已保存产物和工具回执；'
+                                           '本次未完成的工具调用没有执行。请检查已保存内容后再续跑。')
+                                break
                             raise
                         recovered += 1
                         if review:
@@ -1477,13 +1486,7 @@ class SessionManager:
                         session.phase = f'等待模型按小步骤恢复（{recovered}/{session_limit("MODEL_RECOVERY_LIMIT")}）'
                         self._observe_phase(session, 'recovery')
                         await self.save(session)
-                        if file_guide == FILE_WORKFLOW_GUIDE:
-                            recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
-                                '请基于当前工具结果继续：只输出一个小步骤，优先分页读取或 edit_file 局部替换；'
-                                '每次新增内容尽量不超过 2000 字符，不要输出整份文件，不得重复已成功操作。')
-                        else:
-                            recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
-                                '请基于当前工具结果继续，只输出一个小步骤，不得重复已成功操作。')
+                        recovery_notice = runtime_recovery_notice(tool_names, scoped=bool(session.record.get('flow_id')))
                         if history_context is not None:
                             # 从持久原文重新组装，不能将带标题的模型窗口再次作为原始历史归档。
                             history, recovery_context = await history_context.prepare(session,
@@ -1502,6 +1505,8 @@ class SessionManager:
                                 memory_chars=len(memory), extra_chars=extra_chars + len(recovery_notice),
                                 eligible_observations=delivered_observations)
                         session.record['last_run']['recovery_context'] = recovery_context
+                if session.record['status'] == 'checkpoint':
+                    break
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
                 if (workspace_frame is not None and not fitted_workspace

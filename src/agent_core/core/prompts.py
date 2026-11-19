@@ -76,15 +76,15 @@ def runtime_file_workflow_guide(tool_names: set[str], *, scoped: bool = False) -
         parts.append('- read_file 支持 offset/limit 字符分页；出现 next_offset 时内容不是全文，按 next_offset 获取需要的部分。定位内容时使用 search 查找并读取附近片段。')
     if scoped:
         if 'create_file' in tool_names:
-            parts.append('- 使用 create_file 新建文件；长文件拆分为较小的独立文件，不得一次重写整份长文件。')
+            parts.append('- 使用 create_file 新建文件；长文件和长测试先拆成小的独立测试组或模块，每份新增约 2000 字符，逐步覆盖完整业务断言。')
         if 'append_file' in tool_names:
-            parts.append(f'- append_file 每段不超过 {config.FILE_APPEND_CHARS} 字符，expected_chars 使用上次返回的 next_offset。')
+            parts.append(f'- append_file 每段尽量约 2000 字符且不超过 {config.FILE_APPEND_CHARS} 字符，expected_chars 使用上次返回的 next_offset。')
         if 'edit_file' in tool_names:
-            parts.append('- 使用 edit_file 前读取真实片段，old_text 必须唯一匹配，每次局部修改。')
+            parts.append('- 使用 edit_file 前读取真实片段，old_text 必须唯一匹配，每次局部新增约 2000 字符。')
         if 'update_file' in tool_names:
-            parts.append('- update_file 仅适合小文件全文更新，不得用分页内容覆盖长文件。')
+            parts.append('- update_file 仅适合约 2000 字符的小文件全文更新，不得用分页内容覆盖长文件。')
         if 'run_command' in tool_names:
-            parts.append('- 需要验证时使用 run_command 实际运行相关检查；如实报告失败和未运行的检查，不用长脚本绕过长文件保护。')
+            parts.append('- 长测试分成独立测试组或模块，每次生成约 2000 字符并覆盖完整业务断言；使用 run_command 实际运行检查，如实报告失败，不用长脚本绕过长文件保护。')
         if 'inspect_environment' in tool_names:
             parts.append('- 需要了解工程运行环境时使用 inspect_environment。')
         if 'prepare_project_environment' in tool_names:
@@ -102,6 +102,29 @@ def runtime_file_workflow_guide(tool_names: set[str], *, scoped: bool = False) -
     if config.RAG_SOURCES and 'rag_search' in tool_names:
         parts.append('可选知识库 source：' + ', '.join(config.RAG_SOURCES) + '；按用户任务选择，留空沿用默认库。')
     return '\n'.join(parts) + '\n'
+
+
+def runtime_recovery_notice(tool_names: set[str], *, scoped: bool) -> str:
+    """只描述实际可用工具，恢复时不执行未完成的工具参数。"""
+    if not scoped and runtime_file_workflow_guide(tool_names) == FILE_WORKFLOW_GUIDE:
+        return ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
+                '请基于当前工具结果继续：只输出一个小步骤，优先分页读取或 edit_file 局部替换；'
+                '每次新增内容尽量不超过 2000 字符，不要输出整份文件，不得重复已成功操作。')
+    notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
+              '请基于当前工具结果继续，只输出一个小步骤，不得重复已成功操作。')
+    if not scoped:
+        return notice
+    if tool_names & {'create_file', 'edit_file', 'append_file', 'update_file', 'run_command'}:
+        notice += '长测试先拆成独立测试组或模块，每次新增约 2000 字符，逐步覆盖完整业务断言。'
+        if 'create_file' in tool_names:
+            notice += '用 create_file 新建小文件。'
+        if 'edit_file' in tool_names:
+            notice += '用 edit_file 在已读取的唯一片段处局部增补。'
+        if 'append_file' in tool_names:
+            notice += '用 append_file 按回执偏移分段追加。'
+        if 'run_command' in tool_names:
+            notice += '用 run_command 运行检查，不用长脚本绕过分步修改。'
+    return notice
 
 
 def default_prompt():
