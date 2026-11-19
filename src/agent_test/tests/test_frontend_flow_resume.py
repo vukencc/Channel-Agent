@@ -52,3 +52,20 @@ def test_late_resume_ack_does_not_roll_back_completed_state():
     panel.accept_result("flow_resume", {**base, "run": {"id": "r", "resume_available": False, "status": "running"}})
     assert panel._flow["run"]["status"] == "completed"
     panel.close()
+
+
+def test_new_run_input_changes_resume_to_restart_and_preserves_text():
+    app = QApplication.instance() or QApplication([])
+    panel = FlowPanel()
+    panel.set_flow({"id": "f", "title": "Flow", "revision": 1, "project_id": "p", "project": {"id": "p"}, "nodes": [], "edges": [], "run": {"id": "r", "status": "checkpoint", "resume_available": True}})
+    commands = []
+    panel.command.connect(lambda action, payload: commands.append((action, payload)))
+    panel.run_input.setPlainText("新的输入")
+    assert panel.run_button.text() == "从头运行"
+    panel.run_button.click()
+    assert commands[-1][0] == "flow_run"
+    assert commands[-1][1]["input_text"] == "新的输入"
+    assert panel.run_input.toPlainText() == "新的输入"
+    panel.run_input.clear()
+    assert panel.run_button.text() == "从中断节点继续"
+    panel.close()

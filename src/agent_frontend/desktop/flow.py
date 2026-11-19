@@ -524,6 +524,7 @@ class FlowPanel(QWidget):
         self.add_button.clicked.connect(lambda: self.add_node())
         self.save_button.clicked.connect(lambda: self._submit('flow_save'))
         self.run_button.clicked.connect(self._run_or_stop)
+        self.run_input.textChanged.connect(self._refresh_state)
         self.fit_button.clicked.connect(self._fit)
         self.inspector_button.clicked.connect(self._toggle_inspector)
         self.canvas.scene().selectionChanged.connect(self._selection_changed)
@@ -1074,9 +1075,11 @@ class FlowPanel(QWidget):
         for form, field in self._project_rows.values():
             form.setRowVisible(field, bool(self._flow.get('project_id')))
         resume = (self._flow.get('run') or {}).get('resume_available') is True and bool((self._flow.get('run') or {}).get('id'))
+        restart_with_input = resume and bool(self.run_input.toPlainText().strip())
+        resume = resume and not restart_with_input
         self.run_button.setEnabled(self._resume_pending is None and ((bool(self._flow.get('project_id')) and not updating_project and not (resume and (self._dirty or self._project_dirty))) or running))
         retry_completion = (self._flow.get('run') or {}).get('status') == 'persistence_failed'
-        self.run_button.setText('停止' if running else '重试保存' if retry_completion else '从中断节点继续' if resume else '运行')
+        self.run_button.setText('停止' if running else '重试保存' if retry_completion else '从中断节点继续' if resume else '从头运行' if restart_with_input else '运行')
         self.run_button.setToolTip('请先保存 Flow 和项目的未保存修改。' if resume and (self._dirty or self._project_dirty) else '')
         has_project = bool(self._flow.get('project_id'))
         self.run_input.setVisible(has_project)
@@ -1235,7 +1238,8 @@ class FlowPanel(QWidget):
             self.command.emit('flow_cancel', {'flow_id': self._flow.get('id')})
         elif (self._flow.get('run') or {}).get('status') == 'persistence_failed':
             self.command.emit('flow_retry_completion', {'flow_id': self._flow.get('id')})
-        elif (self._flow.get('run') or {}).get('resume_available') is True:
+        elif ((self._flow.get('run') or {}).get('resume_available') is True
+              and not self.run_input.toPlainText().strip()):
             run_id = self._flow['run'].get('id')
             if run_id and not self._dirty and not self._project_dirty and self._resume_pending is None:
                 self._resume_pending = self._flow.get('id')

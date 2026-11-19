@@ -254,7 +254,7 @@ if (typeof window !== "undefined") (() => {
   async function perform(kind) {
     const id = active, f = current(); if (!f || pending) return;
     if ((kind === "run" || kind === "queue" || kind === "resume") && !f.project_id) return;
-    if (kind === "resume" && (f.run?.resume_available !== true || !f.run.id || dirty.has(id) || projectDirty.has(id))) return;
+    if (kind === "resume" && (f.run?.resume_available !== true || !f.run.id || (runInputs.get(id) || "").trim() || dirty.has(id) || projectDirty.has(id))) return;
     if ((kind === "save" || kind === "run") && flowContractInvalid(f)) { error("结构化交接契约无效，请修正或清空后重试。"); return; }
     if ((kind === "save" || kind === "run") && flowCustomToolsInvalid(f)) { error("动态工具定义无效，请修正或清空后重试。"); return; }
     const inputText = runInputs.get(id) || "";
@@ -425,8 +425,10 @@ if (typeof window !== "undefined") (() => {
     const header = el("header", "flow-header"), title = el("h1"); title.id = "flow-title";
     const actions = el("div", "flow-actions");
     const retryCompletion = f.run?.status === "persistence_failed";
-    const canResume = f.run?.resume_available === true && Boolean(f.run?.id) && !running(f) && !retryCompletion;
-    [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : retryCompletion ? "重试保存" : canResume ? "从中断节点继续" : "运行", () => perform(running(f) ? "cancel" : retryCompletion ? "retry-completion" : canResume ? "resume" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = ["运行", "停止", "重试保存", "从中断节点继续"].includes(label); const b = button(label, fn, isRun ? "button primary" : "button subtle"); if (label === "从中断节点继续") { b.dataset.flowResume = ""; if (dirty.has(active) || projectDirty.has(active)) b.title = "请先保存 Flow 和项目的未保存修改。"; } b.disabled = pending || (running(f) && !isRun) || (label === "从中断节点继续" && (dirty.has(active) || projectDirty.has(active))); actions.append(b); });
+    const resumeAvailable = f.run?.resume_available === true && Boolean(f.run?.id) && !running(f) && !retryCompletion;
+    const restartWithInput = resumeAvailable && Boolean((runInputs.get(active) || "").trim());
+    const canResume = resumeAvailable && !restartWithInput;
+    [["保存", () => perform("save")], ["导出", exportDraft], ...(f.project_id || running(f) ? [[running(f) ? "停止" : retryCompletion ? "重试保存" : canResume ? "从中断节点继续" : restartWithInput ? "从头运行" : "运行", () => perform(running(f) ? "cancel" : retryCompletion ? "retry-completion" : canResume ? "resume" : "run")]] : []), ["删除", () => perform("delete")]].forEach(([label, fn]) => { const isRun = ["运行", "停止", "重试保存", "从中断节点继续", "从头运行"].includes(label); const b = button(label, fn, isRun ? "button primary" : "button subtle"); if (label === "从中断节点继续") { b.dataset.flowResume = ""; if (dirty.has(active) || projectDirty.has(active)) b.title = "请先保存 Flow 和项目的未保存修改。"; } b.disabled = pending || (running(f) && !isRun) || (label === "从中断节点继续" && (dirty.has(active) || projectDirty.has(active))); actions.append(b); });
     const more = document.createElement("details"), moreSummary = el("summary", "button subtle", "更多"), moreActions = el("div", "flow-more-actions");
     more.className = "flow-more"; more.append(moreSummary, moreActions);
     if (canResume) { const restart = button("从头运行", () => perform("run")); restart.disabled = pending; moreActions.append(restart); }
@@ -442,7 +444,7 @@ if (typeof window !== "undefined") (() => {
     if (retryCompletion) header.append(el("p", "inline-error", "完成状态保存失败，请检查存储后重试保存；节点不会重跑。"));
     const runInputRow = el("div", "flow-run-input");
     if (f.project_id) {
-      const input = document.createElement("textarea"); input.rows = 1; input.maxLength = 16000; input.placeholder = "本次运行补充信息（可选）"; input.setAttribute("aria-label", "本次运行补充信息（可选）"); input.dataset.flowField = "run_input"; input.dataset.flowScope = "run"; input.value = runInputs.get(active) || ""; input.disabled = pending; input.addEventListener("input", () => runInputs.set(active, input.value)); runInputRow.append(input);
+      const input = document.createElement("textarea"); input.rows = 1; input.maxLength = 16000; input.placeholder = "本次运行补充信息（可选）"; input.setAttribute("aria-label", "本次运行补充信息（可选）"); input.dataset.flowField = "run_input"; input.dataset.flowScope = "run"; input.value = runInputs.get(active) || ""; input.disabled = pending; input.addEventListener("input", () => { const hadText = Boolean((runInputs.get(active) || "").trim()); runInputs.set(active, input.value); if (resumeAvailable && hadText !== Boolean(input.value.trim())) render(); }); runInputRow.append(input);
       if (["queued", "running"].includes(f.run?.status) && f.nodes.some((node) => node.reuse_session)) { const queue = button("排队", () => perform("queue"), "button subtle"); queue.disabled = pending; runInputRow.append(queue); }
       runInputRow.append(el("span", "field-hint", `排队：${(f.pending_runs || []).length}`));
     }

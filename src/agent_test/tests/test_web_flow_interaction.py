@@ -147,3 +147,22 @@ assert.equal(missing.value,'gone');assert.ok(missing.children.find(o=>o.value===
 ''', encoding="utf-8")
     result = subprocess.run([node, str(script), str(asset)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_resume_rejects_new_input_and_restart_sends_it(tmp_path):
+    node = shutil.which("node")
+    assert node
+    asset = Path(__file__).resolve().parents[2] / "agent_frontend/web/static/flow.js"
+    script = tmp_path / "resume.cjs"
+    script.write_text(r"""
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+let source=fs.readFileSync(process.argv[2],'utf8');
+source=source.replace('function render() {','function render() { return;');
+source=source.replace('window.FlowUI = {',`window.harness={setup(b){bridge=b;active='f';drafts.set(active,{id:'f',title:'F',revision:1,project_id:'p',project:{id:'p'},nodes:[],edges:[],run:{id:'r',resume_available:true,status:'checkpoint'}})},input(text){runInputs.set('f',text)},perform}; window.FlowUI = {`);
+global.window={};global.document={getElementById:()=>null};vm.runInThisContext(source);
+let calls=[];const h=window.harness;
+h.setup({api:async(path,options)=>{calls.push({path,body:options?.body});if(path==='/api/flows')return {flows:[],flows_revision:1};return {id:'f',nodes:[],edges:[],run:{}}},toast(){}});
+(async()=>{h.input('新输入');await h.perform('resume');assert.equal(calls.length,0);await h.perform('run');assert.equal(calls[0].path,'/api/flows/f/run');assert.equal(calls[0].body.input_text,'新输入');})().catch(e=>{console.error(e);process.exitCode=1});
+""", encoding="utf-8")
+    result = subprocess.run([node, str(script), str(asset)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
