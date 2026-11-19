@@ -31,6 +31,43 @@ MAX_PENDING_FLOW_RUNS = 16
 logger = get_logger(__name__)
 
 
+def _checkpoint_message(last_run: object) -> str | None:
+    """仅显示受控状态和可验证的预算数字，不能回显模型或供应商文本。"""
+    if not isinstance(last_run, dict):
+        return None
+    reasons = {
+        'model_connection': '模型连接中断，节点已保存检查点',
+        'cost_or_rate_budget': '费用或请求速率预算已达到限制，节点已保存检查点',
+        'context_budget': '上下文预算已达到限制，节点已保存检查点',
+        'plan_waiting': '任务计划受阻或等待必要信息，节点已保存检查点',
+        'no_execution_progress': '任务未取得执行进展，节点已保存检查点',
+        'plan_evidence_capacity': '任务计划证据容量已达到限制，节点已保存检查点',
+        'task_continuation_limit': '自动续跑次数已达到限制，节点已保存检查点',
+        'tool_budget': '模型交互次数已达到限制，节点已保存检查点',
+        'flow_progress_review_blocked': '进度判断发现阻塞，节点已保存检查点',
+        'flow_progress_review_invalid': '进度判断结果无效，节点已保存检查点',
+    }
+    reason = last_run.get('stop_reason')
+    if not isinstance(reason, str):
+        return None
+    message = reasons.get(reason)
+    if reason != 'context_budget':
+        return message
+    context = last_run.get('context')
+    details = []
+    if isinstance(context, dict):
+        for label, used, reserved, limit in (
+                ('token', 'sent_tokens', 'reserved_tokens', 'input_limit_tokens'),
+                ('字符', 'total_chars', 'reserved_chars', 'input_limit_chars')):
+            values = [context.get(key) for key in (used, reserved, limit)]
+            if (all(type(value) is int and 0 <= value <= 1_000_000_000 for value in values)
+                    and values[2] > 0 and values[0] + values[1] > values[2]):
+                details.append(f'{label} 需要 {values[0] + values[1]} / 上限 {values[2]}（含预留）')
+    if details:
+        message += '。' + '，'.join(details)
+    return message + '。已有产物保留。请在模型管理中核实上下文容量，或将后续工作拆小。'
+
+
 def _pinned_write(method):
     @wraps(method)
     def wrapped(self, *args, **kwargs):
@@ -775,19 +812,8 @@ class FlowService:
                     raise asyncio.CancelledError
                 if session.record["status"] != "idle" or session.tool_workers:
                     # 只映射受控状态码，不传播会话消息或服务商异常正文。
-                    reasons = {
-                        "model_connection": "模型连接中断，节点已保存检查点",
-                        "cost_or_rate_budget": "费用或请求速率预算已达到限制，节点已保存检查点",
-                        "context_budget": "上下文预算已达到限制，节点已保存检查点",
-                        "plan_waiting": "任务计划受阻或等待必要信息，节点已保存检查点",
-                        "no_execution_progress": "任务未取得执行进展，节点已保存检查点",
-                        "plan_evidence_capacity": "任务计划证据容量已达到限制，节点已保存检查点",
-                        "task_continuation_limit": "自动续跑次数已达到限制，节点已保存检查点",
-                        "tool_budget": "模型交互次数已达到限制，节点已保存检查点",
-                    }
                     last_run = session.record.get("last_run")
-                    reason = last_run.get("stop_reason") if isinstance(last_run, dict) else None
-                    message = reasons.get(reason) if isinstance(reason, str) and session.record["status"] == "checkpoint" else None
+                    message = _checkpoint_message(last_run) if session.record["status"] == "checkpoint" else None
                     raise RuntimeError(message or "节点未正常完成或工具尚未排空")
                 self._check_idle({identity}, value["id"])
                 messages = session.record["messages"]
