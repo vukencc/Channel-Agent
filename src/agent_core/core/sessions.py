@@ -63,6 +63,7 @@ class Session:
     tool_workers: set = field(default_factory=set)
     flow_task_ids: list[str] = field(default_factory=list)
     flow_review_task: str = ''
+    flow_required_task: str = ''
 
     @property
     def id(self):
@@ -420,6 +421,7 @@ class SessionManager:
             session.summary_task.cancel()
         session.record.pop('assessment', None)
         session.flow_review_task = flow_node_task[:8192] if flow_id else ''
+        session.flow_required_task = flow_node_task if flow_id else ''
         session.record['last_run'] = {'turn_id': uuid.uuid4().hex, 'model_calls': [], 'tools': []}
         session.record.update(status='queued', error='')
         session.record['last_run']['input_index'] = len(session.record['messages'])
@@ -1300,6 +1302,19 @@ class SessionManager:
         staged_actions = None
         receipt_index = None
         receipt_repair_used = False
+        required_read_names = set()
+        completed_reads = set()
+        seen_read_call_ids = set()
+        verified_read_calls = {}
+        required_read_retry = False
+        required_read_recovering = False
+        if self.flow_workspace_scope(session) and session.flow_required_task:
+            from agent_core.core.flow_required_reads import required_reads
+            required_read_names = required_reads(session.flow_required_task, session.record.get('custom_tools'))
+            if required_read_names:
+                session.record['last_run']['flow_required_reads'] = {
+                    'required': sorted(required_read_names), 'completed': [],
+                    'missing': sorted(required_read_names), 'status': 'pending'}
         if self.flow_workspace_scope(session):
             from agent_core.core.flow_draft_gate import FlowDraftGate
             from agent_core.core.flow_staged_actions import FlowStagedActions
@@ -1431,6 +1446,13 @@ class SessionManager:
                 if receipt_index is not None and offer is None:
                     # 只把经验证的字段名称和数量放入系统区；具体编号留在工具/引用数据里。
                     budget_text += receipt_index.guide()
+                recovery_request = required_read_recovering
+                if recovery_request and offer is None:
+                    allowed_recovery = set(required_read_names)
+                    if staged_actions:
+                        allowed_recovery.update(filter(None, (staged_actions.preflight.preview_for_original(name)
+                                                              for name in required_read_names)))
+                    schemas = [row for row in schemas if row['function']['name'] in allowed_recovery]
                 tool_names = {schema['function']['name'] for schema in schemas}
                 file_guide = runtime_file_workflow_guide(tool_names)
                 if 'rag_search' in tool_names:
@@ -1632,6 +1654,35 @@ class SessionManager:
                                 '继续当前可执行步骤；用 plan_get 核对并更新验收证据，'
                                 '用 wait_agent_task 等待自己创建的子任务并验证产物。不能仅用进度说明结束。')
                             continue
+                    missing_reads = required_read_names - completed_reads
+                    if missing_reads:
+                        if gate and gate.blocked:
+                            checkpoint('flow_source_review', gate.blocked)
+                            break
+                        if gate and gate.pending_tools:
+                            checkpoint('flow_source_review', '有被拒绝的草稿尚未成功提交，请核对已保存的工具回执。')
+                            break
+                        state = session.record['last_run']['flow_required_reads']
+                        allowed = self._effective_session_tools(session)
+                        available = set(self._session_custom_registry(session)) | set(TOOL_REGISTRY)
+                        unavailable = {name for name in missing_reads
+                                       if name not in available or (allowed is not None and name not in allowed)}
+                        if (not required_read_retry and not unavailable and not handoff_revisions
+                                and (policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds)):
+                            required_read_retry = True
+                            required_read_recovering = True
+                            state['status'] = 'retry'
+                            session.record['messages'].append({'role': 'user', '_context_reference': True,
+                                'content': '节点岗位指令中以下读取尚无本轮成功回执：' + ', '.join(sorted(missing_reads))
+                                           + '。请在现有权限和预算内自行完成原工具调用；保持原预审与确认，'
+                                             '不要重发写入或其他已执行操作。无法完成时如实说明阻断。'})
+                            await self.save(session)
+                            continue
+                        state['status'] = 'blocked'
+                        session.record['last_run']['handoff_validation_failed'] = True
+                        checkpoint('flow_required_reads', '岗位指令指定的读取尚无本轮成功回执：'
+                                   + ', '.join(sorted(missing_reads)) + '；请核对工具权限、失败原因及剩余预算。')
+                        break
                     unfinished, waiting = execution_state(self, session)
                     content = reply.get('content')
                     failure = (validate_handoff(content if isinstance(content, str) else '', handoff_contract)[1]
@@ -1789,6 +1840,8 @@ class SessionManager:
                     evidence = {'source': 'not_executed'}
                     if confirmation_rejected:
                         result = await staged_actions.reject_confirmation_call(call, evidence, draft_id=offer['draft_id'])
+                    elif recovery_request and name not in tool_names:
+                        result = '[已拒绝] 补读阶段只允许本节点指定读取及其预审，尚未执行。'
                     elif index >= session_limit('MAX_TOOL_CALLS_PER_ROUND'):
                         result = '[已拒绝] 单轮工具调用超过 MAX_TOOL_CALLS_PER_ROUND 上限，尚未执行。'
                     elif session.cancelled.is_set():
@@ -1802,18 +1855,29 @@ class SessionManager:
                                     result = await self._tool(session, call, evidence=evidence)
                         except Exception as exc:
                             result = f'工具执行失败: {type(exc).__name__}: {exc}'
+                    outcome = tool_outcome(result)
+                    if name in required_read_names and name in TOOL_REGISTRY and evidence['source'] == 'executed':
+                        from agent_core.core.flow_required_reads import successful_builtin_result
+                        if successful_builtin_result(name, result) and (outcome == 'completed' or name == 'read_file'):
+                            outcome = 'completed'
+                        elif outcome == 'completed':
+                            outcome = 'error'
+                    elif name in required_read_names and evidence['source'] == 'executed' and outcome == 'completed':
+                        from agent_core.core.flow_required_reads import successful_custom_result
+                        if not successful_custom_result(result):
+                            outcome = 'error'
                     if self.observer.enabled:
                         self.observer.event('tool.completed', session_id=session.id, batch_id=batch_id,
                             turn_id=session.record['last_run']['turn_id'], tool_call_id=call['id'],
-                            tool_name=observed_name, message_index=reply_index, state=tool_outcome(result),
+                            tool_name=observed_name, message_index=reply_index, state=outcome,
                             duration_ms=round((time.monotonic() - started) * 1000, 2))
                     return result, {'name': name, 'tool_call_id': call['id'], 'source': evidence['source'], 'event_id': uuid.uuid4().hex, 'turn_id': session.record['last_run']['turn_id'], 'wall_s_including_confirmation': round(time.monotonic() - started, 3),
                                     'output_chars': len(result),
-                                    'outcome': tool_outcome(result),
+                                    'outcome': outcome,
                                     **({'action_stage': evidence['action_stage'],
                                         'approval_progress': evidence.get('approval_progress', False)}
                                        if 'action_stage' in evidence else {}),
-                                    'execution_progress': evidence['source'] == 'executed' and tool_outcome(result) == 'completed'}
+                                    'execution_progress': evidence['source'] == 'executed' and outcome == 'completed'}
 
                 index = 0
                 evidence_capacity_reached = False
@@ -1866,6 +1930,30 @@ class SessionManager:
                             message['_context_observation'] = metadata
                             trusted_observations[call['id']] = metadata
                         session.record['messages'].append(message)
+                        if required_read_names:
+                            name = call['function']['name']
+                            call_id = call.get('id')
+                            duplicate_id = not isinstance(call_id, str) or not call_id or call_id in seen_read_call_ids
+                            if isinstance(call_id, str) and call_id:
+                                if duplicate_id:
+                                    verified_read_calls.pop(call_id, None)
+                                seen_read_call_ids.add(call_id)
+                            if (not duplicate_id and name in required_read_names and isinstance(result, str)
+                                    and '[输出已截断]' not in result and '已截断）' not in result
+                                    and metrics['tool_call_id'] == call['id'] and metrics['name'] == name
+                                    and metrics['turn_id'] == session.record['last_run']['turn_id']
+                                    and metrics['source'] == 'executed' and metrics['outcome'] == 'completed'
+                                    and metrics['execution_progress'] and not (gate and gate.blocked)
+                                    and (name in TOOL_REGISTRY or not staged_actions.requires_preview
+                                         or metrics.get('action_stage') == 'commit')):
+                                verified_read_calls[call_id] = name
+                            completed_reads = set(verified_read_calls.values())
+                            state = session.record['last_run']['flow_required_reads']
+                            state['completed'] = sorted(completed_reads)
+                            state['missing'] = sorted(required_read_names - completed_reads)
+                            state['status'] = 'completed' if not state['missing'] else 'pending'
+                            if required_read_retry:
+                                required_read_recovering = bool(state['missing'])
                         if call['function']['name'] == 'rag_search':
                             contexts.append(result)
                     await self.save(session)
@@ -1945,6 +2033,8 @@ class SessionManager:
             session.record['status'] = 'error'
             session.record['error'] = f'{type(exc).__name__}: {exc}'
         finally:
+            if required_read_names and required_read_names - completed_reads:
+                session.record['last_run']['flow_required_reads']['status'] = 'blocked'
             if staged_actions is not None and not await staged_actions.flush_audit():
                 if session.record['last_run'].get('stop_reason') != 'flow_action_audit':
                     finish_pending_tools(session.record['messages'])

@@ -1,6 +1,8 @@
 """为已观察来源生成有界、可复算的原文引用；不扩大来源权限。"""
 import json
 import re
+from collections import deque
+from bisect import bisect_left
 
 from agent_core.core.flow_review_records import parse_record_json, source_array_records
 
@@ -50,6 +52,83 @@ def _spans(text: str):
         yield from _sentences(text, 0)
 
 
+def _line_records(source: dict) -> list[tuple[dict, int, int]] | None:
+    if ((source.get("kind"), source.get("scope")) != ("read_file", "observed_span")
+            or not isinstance(source.get("path"), str)
+            or not source["path"].lower().endswith((".jsonl", ".ndjson"))):
+        return None
+    text = source["text"]
+    try:
+        parse_record_json(text)
+        return None
+    except (ValueError, RecursionError):
+        pass
+    records = []
+    identities = set()
+    offset = 0
+    try:
+        for line in text.split("\n"):
+            content = line[:-1] if line.endswith("\r") else line
+            if "\r" in content:
+                return []
+            raw = content.strip(" \t")
+            if raw:
+                if not raw.startswith("{") or not raw.endswith("}"):
+                    return []
+                value = parse_record_json(raw)
+                if not isinstance(value, dict):
+                    return []
+                identity = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+                if identity in identities:
+                    return []
+                identities.add(identity)
+                start = offset + len(line) - len(line.lstrip(" \t"))
+                records.append((value, start, start + len(raw)))
+            offset += len(line) + 1
+    except (ValueError, TypeError, RecursionError):
+        return []
+    return records if len(records) >= 2 else []
+
+
+def _round_robin(iterators):
+    pending = deque(iter(iterator) for iterator in iterators)
+    while pending:
+        iterator = pending.popleft()
+        try:
+            value = next(iterator)
+        except StopIteration:
+            continue
+        yield value
+        pending.append(iterator)
+
+
+def _record_spans(text: str, start: int, end: int):
+    for a, b, value in _spans(text[start:end]):
+        yield start + a, start + b, value
+
+
+def _fair_record_spans(text: str, records: list[tuple[dict, int, int]]):
+    pending = deque()
+    remaining = iter(records)
+    while True:
+        while len(pending) < MAX_PASSAGES:
+            try:
+                _, start, end = next(remaining)
+            except StopIteration:
+                break
+            iterator = iter(_record_spans(text, start, end))
+            first = next(iterator, None)
+            if first is not None:
+                pending.append((first, iterator))
+        if not pending:
+            return
+        value, iterator = pending.popleft()
+        yield value
+        following = next(iterator, None)
+        if following is not None:
+            pending.append((following, iterator))
+
+
 def review_passages(sources: list[dict]) -> list[dict]:
     """返回有限提示，不声称覆盖来源；重复或无效来源返回空列表。"""
     if not isinstance(sources, list) or len(sources) > 128:
@@ -67,15 +146,30 @@ def review_passages(sources: list[dict]) -> list[dict]:
             return []
     result = []
     total = 0
-    for row in sources:
-        if (row.get("kind"), row.get("scope")) not in _SCOPES:
-            continue
-        for start, end, value in _spans(row["text"]):
-            if len(result) >= MAX_PASSAGES or total + len(value) > MAX_PASSAGE_CHARS:
-                return result
-            result.append({"id": f"E{len(result) + 1}", "source_id": row["id"],
-                           "start": start, "end": end, "text": value})
-            total += len(value)
+    eligible = [row for row in sources if (row.get("kind"), row.get("scope")) in _SCOPES]
+    line_records = {row["id"]: _line_records(row) for row in eligible}
+    fair = len(eligible) > 1 and any(records for records in line_records.values())
+
+    def source_spans(row):
+        records = line_records[row["id"]]
+        if records is None:
+            spans = _spans(row["text"])
+        elif fair:
+            spans = _fair_record_spans(row["text"], records)
+        else:
+            spans = (span for _, start, end in records
+                     for span in _record_spans(row["text"], start, end))
+        for start, end, value in spans:
+            yield row["id"], start, end, value
+
+    streams = [source_spans(row) for row in eligible]
+    ordered = _round_robin(streams) if fair else (span for stream in streams for span in stream)
+    for source_id, start, end, value in ordered:
+        if len(result) >= MAX_PASSAGES or total + len(value) > MAX_PASSAGE_CHARS:
+            return result
+        result.append({"id": f"E{len(result) + 1}", "source_id": source_id,
+                       "start": start, "end": end, "text": value})
+        total += len(value)
     return result
 
 
@@ -129,6 +223,19 @@ def relevant_passages(sources: list[dict], targets: list[dict], draft: str) -> l
             if source["id"] not in indexed_sources:
                 continue
             try:
+                records = _line_records(source)
+                if records is not None:
+                    starts = sorted(p["start"] for p in passages if p["source_id"] == source["id"])
+                    spans = []
+                    for row, start, end in records:
+                        index = bisect_left(starts, start)
+                        if index == len(starts) or starts[index] >= end:
+                            continue
+                        ids = {row[k] for k in _ID_KEYS if isinstance(row.get(k), str) and row[k].strip()}
+                        matched = next(iter(ids)) == identifier if len(ids) == 1 else None
+                        spans.append((start, end, matched))
+                    ranges[source["id"]] = spans
+                    continue
                 data = parse_record_json(source["text"])
                 rows = data.get("items", data.get("records")) if isinstance(data, dict) else data
                 if not isinstance(rows, list) or len(rows) > MAX_PASSAGES:

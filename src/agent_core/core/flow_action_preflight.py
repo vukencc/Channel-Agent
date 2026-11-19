@@ -98,6 +98,11 @@ def _selection_only(schema: dict) -> bool:
                for key, value in properties.items() if key != "ids")
 
 
+def selection_only(schema: dict) -> bool:
+    """识别已知选择器结构，不判断工具是否安全或授予权限。"""
+    return _selection_only(schema)
+
+
 class FlowActionPreflight:
     """实例仅用于一个请求；调用者负责审批、审计及原有权限检查。"""
 

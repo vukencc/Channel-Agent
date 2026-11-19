@@ -789,6 +789,7 @@ class FlowService:
                         **ACTION_CHECKPOINT_MESSAGES,
                         "model_connection": "模型连接中断，节点已保存检查点",
                         "flow_source_review": "草稿的来源复核未完成，节点已保存检查点",
+                        "flow_required_reads": "岗位指定的读取工具缺少本轮成功回执，节点已保存检查点",
                         "flow_handoff_receipts": "交接与原工具回执或已核对的内容不符，节点已保存检查点",
                         "cost_or_rate_budget": "费用或请求速率预算已达到限制，节点已保存检查点",
                         "context_budget": "上下文预算已达到限制，节点已保存检查点",
@@ -799,6 +800,15 @@ class FlowService:
                         "tool_budget": "模型交互次数已达到限制，节点已保存检查点",
                     }
                     message = reasons.get(reason) if isinstance(reason, str) and session.record["status"] == "checkpoint" else None
+                    if reason == "flow_required_reads" and message:
+                        state = last_run.get("flow_required_reads")
+                        missing = state.get("missing") if isinstance(state, dict) else None
+                        if isinstance(missing, list):
+                            configured = set(node.get("tool_names") or ())
+                            configured.update(tool["name"] for tool in node.get("custom_tools") or ())
+                            names = sorted({name for name in missing if isinstance(name, str) and name in configured})
+                            if names:
+                                message += "（" + "、".join(names[:8]) + "）"
                     if reason == "flow_handoff_receipts":
                         result["handoff_validation"] = {"status": "failed", "code": "receipt_mismatch", "message": message}
                     raise RuntimeError(message or "节点未正常完成或工具尚未排空")

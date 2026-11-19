@@ -256,3 +256,92 @@ def test_actual_flow_blocks_downstream_after_later_batch_rejection(runtime_store
             await manager.shutdown()
 
     asyncio.run(run())
+
+
+def test_whole_batch_places_complete_targets_and_evidence_before_full_context(monkeypatch):
+    from agent_core.core.flow_review_claims import prepare_claim_request
+
+    draft = json.dumps({"items": ["客户明确要求" + ("核对原始记录" * 20) + str(i) + "。" for i in range(5)]}, ensure_ascii=False)
+    targets = claim_targets(draft)[:4]
+    sources = [{"id": "s1", "kind": "read_file", "scope": "observed_span", "path": "source.txt", "text": "客户明确要求核对原始记录。"}]
+    history, passages = prepare_claim_request(draft, sources, targets=targets, node_task="职责", char_limit=100000, token_limit=100000, whole_batch=True)
+    payload = json.loads(history[1]["content"])
+    assert list(payload)[0] == "targets"
+    assert [row["excerpt"] for row in payload["targets"]] == [row["text"] for row in targets]
+    assert "claim_texts" not in payload
+    assert payload["draft"] == draft and payload["sources"] == sources
+    assert passages and list(payload)[1] == "evidence_passages"
+    assert payload["evidence_passages"] == [{k: p[k] for k in ("id", "source_id", "text")} for p in passages]
+
+
+def test_long_batches_preserve_28_ids_and_resolve_exact_indexed_citation():
+    from agent_core.core.flow_review_claims import claim_assessment, prepare_claim_request
+
+    draft = json.dumps(["客户明确要求" + "核对原始记录" * 15 + str(i) + "。" for i in range(28)], ensure_ascii=False)
+    targets = claim_targets(draft)
+    sources = [{"id": "s1", "kind": "read_file", "scope": "observed_span", "text": "客户明确要求核对原始记录。"}]
+    assert len(targets) == 28
+    shown = []
+    for offset in range(0, 28, 4):
+        batch = targets[offset:offset + 4]
+        history, passages = prepare_claim_request(draft, sources, targets=batch, char_limit=100000,
+                                                  token_limit=100000, whole_batch=True)
+        payload = json.loads(history[1]["content"])
+        shown.extend(row["id"] for row in payload["targets"])
+        assert payload["draft"] == draft and payload["sources"] == sources
+        verdict = {"status": "revise", "issues": [{"target_id": batch[0]["id"],
+                   "evidence_id": passages[0]["id"], "reason": "具体差异"}]}
+        feedback, invalid = claim_assessment(verdict, sources, batch, passages)
+        assert invalid is None and batch[0]["text"] in feedback and passages[0]["text"] in feedback
+    assert shown == [row["id"] for row in targets]
+
+
+def test_full_focus_over_budget_falls_back_to_complete_legacy_request():
+    from agent_core.core.flow_review_claims import prepare_claim_request
+
+    draft = json.dumps(["客户明确要求" + "核对资料" * 100 + str(i) + "。" for i in range(5)], ensure_ascii=False)
+    targets = claim_targets(draft)[:4]
+    sources = [{"id": "s1", "kind": "read_file", "text": "原始证据"}]
+    history, passages = prepare_claim_request(draft, sources, targets=targets, char_limit=0,
+                                              token_limit=100000, whole_batch=True)
+    payload = json.loads(history[1]["content"])
+    assert payload["draft"] == draft and payload["sources"] == sources
+    assert [row["id"] for row in payload["targets"]] == [row["id"] for row in targets]
+    assert all(len(row["excerpt"]) == 64 for row in payload["targets"])
+    assert passages == []
+
+
+@pytest.mark.parametrize("reject_all_receipts", [False, True])
+def test_whole_receipt_budget_omits_optional_index_or_blocks(monkeypatch, reject_all_receipts):
+    from agent_core.core import flow_review_claims
+
+    gate, index, histories = make_gate(monkeypatch)
+    source = {"id": "s1", "kind": "read_file", "scope": "observed_span",
+              "text": "客户明确要求核对原始记录。"}
+    monkeypatch.setattr(gate_module, "review_sources", lambda *a, **kw: [source])
+    original_size = flow_review_claims.history_size
+    rejected_index = []
+
+    def bounded_size(history):
+        payload = json.loads(history[1]["content"])
+        if "action_receipt_summary" in payload and (reject_all_receipts or "evidence_passages" in payload):
+            rejected_index.append("evidence_passages" in payload)
+            return 1000000
+        return original_size(history)
+
+    monkeypatch.setattr(flow_review_claims, "history_size", bounded_size)
+    monkeypatch.setattr(gate_module, "history_size", bounded_size)
+    draft = json.dumps(["客户明确要求核对原始记录" + str(i) + "。" for i in range(5)], ensure_ascii=False)
+    feedback = asyncio.run(gate.check(draft, stage="handoff"))
+    if reject_all_receipts:
+        assert feedback and histories == []
+        assert gate.session.record["last_run"]["draft_reviews"][-1]["status"] == "context_budget"
+    else:
+        assert feedback is None and histories
+        for history in histories:
+            payload = json.loads(history[1]["content"])
+            assert json.loads(payload["draft"]) == json.loads(draft) and payload["sources"] == [source]
+            assert payload["action_receipt_summary"] == index.facts
+            assert "evidence_passages" not in payload
+            assert "不能证实客户意愿" in history[0]["content"]
+        assert any(rejected_index)

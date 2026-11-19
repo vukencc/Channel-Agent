@@ -12,7 +12,7 @@ from agent_core.core.flow_draft_review import (
     AmbiguousDraft, needs_review, normalised_draft, parse_review_reply, review_feedback, review_messages,
 )
 from agent_core.core.flow_review_claims import (
-    INVALID_REVIEW, action_review_context, claim_assessment, claim_targets, focal_targets,
+    INVALID_REVIEW, RECEIPT_GUIDANCE, action_review_context, claim_assessment, claim_targets, focal_targets,
     prepare_claim_request, shared_targets,
 )
 from agent_core.core.flow_review_sources import review_sources
@@ -306,21 +306,24 @@ class FlowDraftGate:
             return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
         if stage == 'handoff' and unit_kind != 'item' and receipt_index is not None:
             facts = receipt_index.review_facts()
-            if facts:
+            if facts and batch_targets is not None:
+                history, passages = prepare_claim_request(
+                    draft, sources, targets=targets, node_task=task, whole_batch=True, receipt_facts=facts,
+                    char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'))
+                event['passage_count'] = len(passages)
+                if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
+                    event['status'] = 'context_budget'
+                    return '草稿、来源与回执超过当前复核窗口，草稿尚未批准。'
+            elif facts:
                 payload = json.loads(history[1]['content'])
                 payload['action_receipt_summary'] = facts
                 augmented = [
-                    {**history[0], 'content': history[0]['content'] + (
-                        ' action_receipt_summary 只证明原工具所报告的模拟办理数量、标志或查询字段，'
-                        '不能证实客户意愿、权限、规则或外部送达。')},
-                    {**history[1], 'content': json.dumps(payload, ensure_ascii=False)},
+                    {**history[0], 'content': history[0]['content'] + RECEIPT_GUIDANCE},
+                    {**history[1], 'content': json.dumps(payload, ensure_ascii=False, separators=(',', ':'))},
                 ]
                 if (history_size(augmented) <= char_limit
                         and request_tokens(augmented) <= session_limit('MODEL_INPUT_TOKENS')):
                     history = augmented
-                elif batch_targets is not None:
-                    event['status'] = 'context_budget'
-                    return '草稿、来源与回执超过当前复核窗口，草稿尚未批准。'
         if not self.reserve_round():
             event['status'] = 'round_budget'
             self.blocked = '原模型交互轮次已用完，未获来源复核批准。'
