@@ -92,7 +92,7 @@ def create_router(services: DebugWebServices) -> APIRouter:
                 'agents': [{'id': value.id, 'parent_id': value.record.get('delegated_from'),
                             'status': value.record.get('status'), 'busy': value.busy,
                             'confirmation': value.confirmation is not None,
-                            'context_status': context_status(value, manager.history_context)}
+                            'context_status': context_status(value, manager.context_for_session(value))}
                            for value in visible]}
 
     @router.get('/api/debug/events/{event_seq}/detail')

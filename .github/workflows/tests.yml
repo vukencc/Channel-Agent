@@ -119,6 +119,7 @@ jobs:
             'src/agent_test/tests/test_web_flow_ui.py',
             'src/agent_test/tests/test_flow_handoff_contract.py',
             'src/agent_test/tests/test_flow_handoff_context.py',
+            'src/agent_test/tests/test_flow_auto_context.py',
             'src/agent_test/tests/test_flow_handoff_reference.py',
             'src/agent_test/tests/test_runtime_loop.py',
             'src/agent_test/tests/test_history_input_reference.py',

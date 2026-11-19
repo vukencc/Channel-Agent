@@ -128,6 +128,7 @@ class SessionManager:
         if config.ENABLE_STRUCTURED_CONTEXT:
             from agent_core.core.history_context import HistoryContext
             self.history_context = HistoryContext(self)
+        self._flow_history_context = None
         self.communication = SessionCommunication(self)
         from agent_core.core.command_jobs import CommandJobs
         self.command_jobs = CommandJobs(store) if config.ENABLE_COMMAND_JOBS else None
@@ -250,6 +251,21 @@ class SessionManager:
         if value not in {'sandbox', 'local'}:
             raise ValueError('会话执行环境无效，请在设置中重新选择')
         return value
+
+    def context_for_session(self, session: Session):
+        """按会话选择归档，自动 Flow 不改变全局工具集。"""
+        if self.history_context is not None:
+            return self.history_context
+        if (config.STRUCTURED_CONTEXT_EXPLICIT or config.FLOW_STRUCTURED_CONTEXT is False
+                or not session.record.get('flow_id')):
+            return None
+        if self._flow_history_context is None:
+            from agent_core.core.history_context import HistoryContext
+            from agent_core.core.context_supervisor import SupervisorAgent, SupervisorSettings
+            # 自动归档只在本地摘取要点；外部监督器需要用户显式启用全局模式。
+            supervisor = SupervisorAgent(SupervisorSettings(), manager=self)
+            self._flow_history_context = HistoryContext(self, supervisor=supervisor)
+        return self._flow_history_context
 
     def flow_workspace_scope(self, session: Session) -> bool:
         """持久继承 Flow 边界；旧子会话沿可信父链追溯。"""
@@ -1109,8 +1125,9 @@ class SessionManager:
                 self.communication.latest.pop(target.id, None)
                 if self.task_plans is not None:
                     self.task_plans.forget(target.id)
-                if self.history_context is not None:
-                    self.history_context.forget(target.id)
+                for context in (self.history_context, self._flow_history_context):
+                    if context is not None:
+                        context.forget(target.id)
             self.notify()
             return moved
         finally:
@@ -1241,6 +1258,7 @@ class SessionManager:
         await self.save(session)
 
     async def _run(self, session, handoff_contract=None):
+        history_context = self.context_for_session(session)
         contexts = []
         # 仅在此运行中产生并完整交付的观察可用于后续工作窗口。
         trusted_observations = {}
@@ -1344,7 +1362,7 @@ class SessionManager:
                 from agent_core.core.execution_guidance import repeated_read_notice, work_progress_context
                 custom_names = set(self._session_custom_registry(session))
                 budget_text += repeated_read_notice(session.record, custom_names)
-                if self.history_context is not None:
+                if history_context is not None:
                     budget_text += work_progress_context(session.record, custom_names)
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
@@ -1365,7 +1383,7 @@ class SessionManager:
                             and self.workspace_memory.can_reread(session, workspace_frame, schemas))
 
                 fitted_workspace = False
-                if self.history_context is not None:
+                if history_context is not None:
                     previous_context = session.record['last_run'].get('context', {})
                     if (previous_context.get('compacted') or previous_context.get('archived_chunks', 0) > 0) and can_fit_workspace():
                         memory = private_memory + workspace_frame.floor
@@ -1373,7 +1391,7 @@ class SessionManager:
                     session.phase = '准备模型上下文'
                     self._observe_phase(session, 'context_prepare')
                     self.notify()
-                    history, context_metrics = await self.history_context.prepare(session, history,
+                    history, context_metrics = await history_context.prepare(session, history,
                         schemas=schemas, runtime='\n' + file_guide + budget_text, memory=memory)
                     if fitted_workspace:
                         context_metrics['workspace_memory_fitted'] = True
@@ -1438,9 +1456,9 @@ class SessionManager:
                         else:
                             recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
                                 '请基于当前工具结果继续，只输出一个小步骤，不得重复已成功操作。')
-                        if self.history_context is not None:
+                        if history_context is not None:
                             # 从持久原文重新组装，不能将带标题的模型窗口再次作为原始历史归档。
-                            history, recovery_context = await self.history_context.prepare(session,
+                            history, recovery_context = await history_context.prepare(session,
                                 [dict(message) for message in session.record['messages']], schemas=schemas,
                                 runtime='\n' + file_guide + budget_text + recovery_notice, memory=memory)
                             if fitted_workspace:
@@ -1459,8 +1477,8 @@ class SessionManager:
                 if (workspace_frame is not None and not fitted_workspace
                         and not session.cancelled.is_set()):
                     delivered_workspace_frames.add(workspace_frame.key)
-                if self.history_context is not None and not session.cancelled.is_set():
-                    self.history_context.mark_delivered(session, history)
+                if history_context is not None and not session.cancelled.is_set():
+                    history_context.mark_delivered(session, history)
                 from agent_core.core.tool_observations import validate_observation
                 for sent in history:
                     ident = sent.get('tool_call_id')
@@ -1549,8 +1567,8 @@ class SessionManager:
                                     turn_id=session.record['last_run']['turn_id'], metrics={'tokens_source': 'unknown'})
                             if session.cancelled.is_set():
                                 raise asyncio.CancelledError
-                            if self.history_context is not None:
-                                self.history_context.mark_delivered(session, repair_history)
+                            if history_context is not None:
+                                history_context.mark_delivered(session, repair_history)
                             session.record['messages'].append(reply)
                             reply_index = len(session.record['messages']) - 1
                             session.partial = session.partial_reasoning = ''
@@ -1813,5 +1831,6 @@ class SessionManager:
         if self.rag_executor:
             self.rag_executor.shutdown(wait=True)
         await self.flush()
-        if self.history_context is not None:
-            await self.history_context.close()
+        for context in (self.history_context, self._flow_history_context):
+            if context is not None:
+                await context.close()

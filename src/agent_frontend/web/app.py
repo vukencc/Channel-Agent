@@ -335,7 +335,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                 'unread': app.state.manager.communication.pending_count(value),
                 'confirmation': copy.deepcopy(value.confirmation),
                 'partial': value.partial, 'partial_reasoning': value.partial_reasoning, 'total_messages': count,
-                'context_status': context_status(value, app.state.manager.history_context),
+                'context_status': context_status(value, app.state.manager.context_for_session(value)),
                 'error': (public_run_error(record['error']) if record.get('error') and record['status'] == 'error'
                           else '任务已停止；已执行的文件操作不会自动回滚。' if record['status'] == 'cancelled' else '')}
         if app.state.manager.task_plans is not None:
