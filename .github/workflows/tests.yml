@@ -38,6 +38,26 @@ jobs:
           enable-cache: true
       - uses: ./.github/actions/setup-linux-system
       - run: uv sync --locked --extra web --extra desktop
+      - name: 从构建的 Frontend wheel 导入三个入口
+        run: |
+          wheel_dir=$(mktemp -d)
+          uv build --package ai-agent-frontend --wheel --out-dir "$wheel_dir"
+          uv run --no-sync python -I - "$wheel_dir" <<'PY'
+          import sys
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          output = Path(sys.argv[1])
+          (wheel,) = output.glob("*.whl")
+          with ZipFile(wheel) as archive:
+              archive.extractall(output)
+          sys.path.insert(0, str(output))
+          from agent_frontend import runtime_loop
+          from agent_frontend.cli import app
+          from agent_frontend.desktop import app as desktop
+          from agent_frontend.web import server
+          assert Path(runtime_loop.__file__).is_relative_to(output)
+          PY
       - name: 验证真实隔离能力，不静默跳过
         run: uv run python -m agent_test.scripts.ci_sandbox_probe
       - run: uv run pytest -m 'not integration' -q

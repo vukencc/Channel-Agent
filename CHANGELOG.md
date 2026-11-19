@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-19
+
+- 修正前端 Python 包遗漏 `runtime_loop.py` 导致安装后启动失败的问题，统一 Core 对外报告的版本号。
+- [快速上手](docs/getting-started.md) 增加 Windows 单文件、Linux 下载包的校验、离线自检和源码启动步骤，发布页链接到同一标签的文档。
+
 - Windows 应用自行创建的默认事件循环在旧版粗时钟环境使用精确计时，保留自定义 policy 和调用方已有循环；Windows 原生 CI 与成品构建使用 Python 3.13，Linux 保持 3.12。验证及有限样本边界见 [跟进记录](docs/flow-wording-queue-validation-2026-11-17.md)。
 - 未知容量模型可由进程显式启用有界输入预算覆盖；默认关闭并保留 16k，容量元数据、输出预留及模型 API 参数不因此改变。历史页导航元数据压缩，原始记录与重读能力保留。
 - Flow 设计助手指导新节点明确区分模拟操作、真实外部回执、来源自述和独立核实，避免误称外部已接手或客户未提供已有信息。
@@ -176,7 +181,9 @@
 - 全量模型推理峰值内存、RAG p95/吞吐权衡、真实视觉服务、Windows/macOS 原生能力尚未验收，详见 `docs/optimization-delivery.md`。
 - 容器后端（Docker/Podman 作为命令沙箱）仅有设计契约，未实现，见 `docs/platform-design.md`。
 
-[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/vukencc/Channel-Agent/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/vukencc/Channel-Agent/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/vukencc/Channel-Agent/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vukencc/Channel-Agent/compare/v0.4.1...v0.5.0
 [0.2.1]: https://github.com/vukencc/Channel-Agent/compare/v0.2.0...v0.2.1

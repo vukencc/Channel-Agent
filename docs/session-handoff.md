@@ -2,6 +2,12 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
+## 0.6.2 稳定版本
+
+本版基于 [主线提交 a199420](https://github.com/vukencc/Channel-Agent/commit/a1994202bee272e1ebdd1970c113c2d2453113a9) 及其[双平台回归](https://github.com/vukencc/Channel-Agent/actions/runs/44052153866)，更新了分发清单、版本标识与使用文档。Windows 和 Linux 成品均从 `v0.6.2` 标签构建。[发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.2) 提供下载包与 SHA256，[快速上手](getting-started.md) 给出本机离线自检及通过条件。本次发布验收采用离线回归和成品自检。[PR #62](https://github.com/vukencc/Channel-Agent/pull/62) 的实验性改动另行评估。
+
+## 以往交付记录
+
 [0.6.1 已正式发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.1)，[PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 合并提交和注解标签指向 `55472e91ae19c5fbfd6421dca5c2bcfcf985dfeb`。[发布运行 43857331513](https://github.com/vukencc/Channel-Agent/actions/runs/43857331513) 六项任务成功；Release 于 2026-11-16 11:34:46 UTC 正式发布，共六项资产。Windows 正式资产独立审计和实际单 exe 离线自检 16/16、退出码 0；Linux 正式 tar 的摘要、清单和源码审计通过，实际离线自检 17/17、退出码 0。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git

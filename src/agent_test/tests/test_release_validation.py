@@ -1,8 +1,16 @@
 """Release metadata must agree before a tag can be published."""
 
+from importlib.metadata import version
+
 import pytest
 
+import agent_core
+
 from agent_test.scripts.check_release import validate_release
+
+
+def test_core_public_version_matches_installed_distribution():
+    assert agent_core.__version__ == version("ai-agent-core")
 
 
 @pytest.fixture

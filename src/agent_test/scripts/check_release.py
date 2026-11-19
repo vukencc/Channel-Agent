@@ -43,12 +43,13 @@ def main() -> None:
         raise SystemExit("Usage: python src/agent_test/scripts/check_release.py v<major>.<minor>.<patch>")
     try:
         root = _workspace_root()
-        validate_release(
-            sys.argv[1],
-            tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")),
-            tomllib.loads((root / "uv.lock").read_text(encoding="utf-8")),
-            (root / "CHANGELOG.md").read_text(encoding="utf-8"),
-        )
+        project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+        changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        validate_release(sys.argv[1], project, lock, changelog)
+        for member in project["tool"]["uv"]["workspace"]["members"]:
+            manifest = root / member / "pyproject.toml"
+            validate_release(sys.argv[1], tomllib.loads(manifest.read_text(encoding="utf-8")), lock, changelog)
     except (ValueError, KeyError, OSError) as exc:
         raise SystemExit(str(exc)) from None
     print(f"Release metadata matches {sys.argv[1]}.")
