@@ -148,8 +148,10 @@ def test_review_handoff_keeps_business_contract_and_reaches_downstream(offline_f
     asyncio.run(run())
 
 
-def test_continue_restores_tools_without_reviewing_the_same_stall(offline_flow):
+@pytest.mark.parametrize('automatic', [False, True])
+def test_continue_restores_tools_without_reviewing_the_same_stall(offline_flow, monkeypatch, automatic):
     store, workspace = offline_flow
+    monkeypatch.setattr(config, 'AUTO_CONTINUE_TASKS', automatic)
     goal = '补查 result.txt 的末页后再交接'
     model = OfflineModel(_answer(json.dumps({'decision': 'continue', 'output': goal})))
     model.continue_tool = True
@@ -166,6 +168,9 @@ def test_continue_restores_tools_without_reviewing_the_same_stall(offline_flow):
             assert reviews[0]['next_step'] == goal
             following = [h for sid, h, names, _ in model.calls[5:] if sid == model.source]
             assert len(following) == 2 and any(goal in (m.get('content') or '') for m in following[0])
+            for history in following:
+                assert any(m.get('role') == 'assistant' and m.get('content') == goal for m in history)
+                assert all(goal not in (m.get('content') or '') for m in history if m.get('role') == 'system')
             _assert_receipts(source, 4)
             continued = next(m for m in source.record['messages'] if m.get('tool_call_id') == 'continue-read')
             assert 'offset=8' in continued['content'] and continued['_provenance'] == 'executed'
