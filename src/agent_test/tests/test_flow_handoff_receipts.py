@@ -115,3 +115,20 @@ def test_oversized_full_reference_has_no_constraints():
         observe(receipts, str(i), {"ok": True, "ticket": {"feedback_id": str(i) + "x" * 100}})
     assert receipts.guide(include_values=True) == ""
     assert receipts.expectations() == {}
+
+
+def test_model_display_bounds_canonical_expansion(monkeypatch):
+    """有效中文按原文预算展示，越过最大可能转义长度的旧数据不再次解析。"""
+    from agent_core.core import flow_handoff
+
+    body = "资" * 16000
+    contract = {"fields": {"notes": {"type": "string"}}}
+    readable = json.dumps({"notes": body}, ensure_ascii=False, separators=(",", ":"))
+    canonical, error = flow_handoff.validate_handoff(readable, contract)
+    assert error is None and len(canonical) > flow_handoff.MAX_HANDOFF_CHARS
+    assert flow_handoff.handoff_for_model(canonical, contract) == readable
+    oversized = "x" * (12 * flow_handoff.MAX_HANDOFF_CHARS + 1)
+    def forbid_decode(*args, **kwargs):
+        raise AssertionError("超出有效交接可能转义长度时应在 JSON 解析前返回")
+    monkeypatch.setattr(flow_handoff.json, "loads", forbid_decode)
+    assert flow_handoff.handoff_for_model(oversized, contract) is oversized
