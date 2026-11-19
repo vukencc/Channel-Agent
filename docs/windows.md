@@ -126,6 +126,8 @@ COMMAND_EXECUTION_ENVIRONMENT=sandbox
 uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe
 ```
 
+Windows 文件工具保留传入的 LF、CRLF 或混合换行。在本机创建文件再交给 WSL 命令或其他节点读取时，分页偏移和精确编辑使用实际保存的字符。
+
 ## 路径与功能边界
 
 选择本地盘已有的项目目录，建议使用 NTFS。文件访问会拒绝重解析点（包括 junction）、备用数据流、UNC 和设备路径；路径或工作区身份不符合要求时操作会被拒绝。隔离执行还要求 Windows 路径能映射到所选 WSL 发行版并映射回原路径。
