@@ -2,6 +2,10 @@
 
 > 文档类型：当前维护交接 · [文档导航](README.md) · [历史交接](session-history.md)
 
+## 设计助手格式修复
+
+基线是 0.6.2 的主线提交 `93d3e97`。设计助手识别标准 JSON、单一代码块与简单说明；完整草稿语法出错时可以同模型修正一次。Windows 隔离命令支持发现当前 WSL 用户按发行指南安装的解释器。两项均在独立工作区开发。[设计与恢复规则](agent-flow.md) · [Windows 运行环境](windows.md)
+
 ## 0.6.2 稳定版本
 
 本版基于 [主线提交 a199420](https://github.com/vukencc/Channel-Agent/commit/a1994202bee272e1ebdd1970c113c2d2453113a9) 及其[双平台回归](https://github.com/vukencc/Channel-Agent/actions/runs/44052153866)，更新了分发清单、版本标识与使用文档。Windows 和 Linux 成品均从 `v0.6.2` 标签构建。[发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.2) 提供下载包与 SHA256，[快速上手](getting-started.md) 给出本机离线自检及通过条件。本次发布验收采用离线回归和成品自检。[PR #62](https://github.com/vukencc/Channel-Agent/pull/62) 的实验性改动另行评估。
@@ -11,6 +15,8 @@
 [0.6.1 已正式发布](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.1)，[PR #54](https://github.com/vukencc/Channel-Agent/pull/54) 合并提交和注解标签指向 `55472e91ae19c5fbfd6421dca5c2bcfcf985dfeb`。[发布运行 43857331513](https://github.com/vukencc/Channel-Agent/actions/runs/43857331513) 六项任务成功；Release 于 2026-11-16 11:34:46 UTC 正式发布，共六项资产。Windows 正式资产独立审计和实际单 exe 离线自检 16/16、退出码 0；Linux 正式 tar 的摘要、清单和源码审计通过，实际离线自检 17/17、退出码 0。入口见 [快速上手](getting-started.md)、[Windows](windows.md)与 [Linux](linux.md)。先阅读根 [AGENTS.md](../AGENTS.md)，检查 Git 状态并保留已有改动。
 
 ## 当前工作与 Git
+
+- 2026-11-20，已配置模型完成同一模板的七节点网站项目，99 次请求，2,416.485 秒。保留网站后的新实例补齐了测试入口和业务断言。Windows、Linux 各通过 29 项网站测试与 48 项 HTTP 验收，Chrome 双视口通过 25 项。早期失败、原 30 分钟观测点、同实例恢复以及 Windows Qt 偶发访问违规均记录在[本轮报告](flow-designer-fullstack-validation-2026-11-19.md)。
 
 - 2026-11-17 P3 / 队列跟进：源码 `0dfe8e8` 的第六轮真实业务在用户授权的独立 32k 输入进程完成，716.299726 秒正常排空，五节点严格完成，原 QA 20/20、两项原 P3 经独立复核通过；普通默认仍为 16k。前五轮未通过全部业务验收或取消，及第五轮 CF007 捏造描述（B-03 / P2）保留，第六轮未再现不证明一般性修复。另有检索次数归属错误 B-04 / P3 和转交理由夸大客户表述 B-05 / P3；原 QA 全通过不等于全部语义通过。原模型、模板、数据、QA、强度及时限保持，详细证据与边界见[跟进报告](flow-wording-queue-validation-2026-11-17.md)。交付入口为 [PR #61](https://github.com/vukencc/Channel-Agent/pull/61)，最终状态以 PR 页面为准。
 - 队列保留原 5 秒及全部断言；`209b3c6` 和 `7ad0b87` 的实验已由 `0c9c60d` 完整撤回。`0dfe8e8` 原生 stock 3.13.3 队列单独 3/3、当前 27 项恢复测试后 3/3 通过，有限样本不保证所有负载。Linux 全量 2926 passed、74 skipped、5 deselected（238.16 秒），真实隔离探针退出 0、97 Core 和 HEAD 不变；[CI 44045174352](https://github.com/vukencc/Channel-Agent/actions/runs/44045174352) Linux 2921 passed、Windows 1484 passed。本机 Native 扩展集 190 passed、2 skipped、7 failed，七项为旧源码同样失败的 `env_sync` 换行、权限和符号链接兼容问题，该文件未纳入 Windows CI；此前 `75e96da` 受支持选择集 1400 passed、104 skipped。受控 F07 两平台轮询及 SSE 各 64/64 及时且持久，详细条件与失败见[跟进报告](flow-wording-queue-validation-2026-11-17.md)。本轮无 UI 改动、未做可见验收，也未请求新发布或 exe 构建；用户现有数据保留，变更记于 Unreleased。

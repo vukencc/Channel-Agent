@@ -63,6 +63,10 @@ class FlowRun(Arguments):
     queue_only: bool = False
 
 
+class FlowResume(Arguments):
+    run_id: str = Field(min_length=1, max_length=256)
+
+
 class FlowImport(Arguments):
     template: dict
     missing_models: Literal['error', 'inherit'] = 'error'
@@ -335,7 +339,7 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
                 'unread': app.state.manager.communication.pending_count(value),
                 'confirmation': copy.deepcopy(value.confirmation),
                 'partial': value.partial, 'partial_reasoning': value.partial_reasoning, 'total_messages': count,
-                'context_status': context_status(value, app.state.manager.history_context),
+                'context_status': context_status(value, app.state.manager.context_for_session(value)),
                 'error': (public_run_error(record['error']) if record.get('error') and record['status'] == 'error'
                           else '任务已停止；已执行的文件操作不会自动回滚。' if record['status'] == 'cancelled' else '')}
         if app.state.manager.task_plans is not None:
@@ -746,6 +750,13 @@ def create_app(*, store: SessionStore | None = None, state_dir: Path | None = No
         result = app.state.flows.start(identifier, arguments.definition.model_dump() if arguments.definition else None, input_text=arguments.input_text, queue_only=arguments.queue_only)
         await flow_audit('flow_run', identifier)
         return public_flow(result)
+
+    @app.post('/api/flows/{identifier}/resume')
+    async def resume_flow(identifier: str, arguments: FlowResume):
+        flow(identifier)
+        app.state.flows.resume(identifier, run_id=arguments.run_id)
+        await flow_audit('flow_resume', identifier)
+        return public_flow(flow(identifier))
 
     @app.post('/api/flows/{identifier}/cancel')
     async def cancel_flow(identifier: str):

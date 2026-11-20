@@ -2,7 +2,7 @@
 
 > 文档类型：当前使用指南 · [文档导航](README.md) · [快速上手](getting-started.md)
 
-本指南面向 v0.6.2。选择 [v0.6.2 发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.2)上的成品，或从对应标签运行源码。桌面需要图形会话；WSL 中运行 Linux GUI 需要 WSLg。
+本指南面向 v0.6.3。选择 [v0.6.3 发布页](https://github.com/vukencc/Channel-Agent/releases/tag/v0.6.3)上的成品，或从对应标签运行源码。桌面需要图形会话；WSL 中运行 Linux GUI 需要 WSLg。
 
 ## 下载桌面成品
 
@@ -10,11 +10,11 @@
 
 ### Windows 10/11 x64
 
-下载 `ChannelAgent-0.6.2-windows-x64.exe` 和 `ChannelAgent-0.6.2-windows-x64.exe.sha256` 到同一目录。在该目录打开 PowerShell，核对输出为 `True`：
+下载 `ChannelAgent-0.6.3-windows-x64.exe` 和 `ChannelAgent-0.6.3-windows-x64.exe.sha256` 到同一目录。在该目录打开 PowerShell，核对输出为 `True`：
 
 ```powershell
-$expected = (Get-Content .\ChannelAgent-0.6.2-windows-x64.exe.sha256 -Raw).Trim().Split(' ')[0]
-(Get-FileHash .\ChannelAgent-0.6.2-windows-x64.exe -Algorithm SHA256).Hash -eq $expected
+$expected = (Get-Content .\ChannelAgent-0.6.3-windows-x64.exe.sha256 -Raw).Trim().Split(' ')[0]
+(Get-FileHash .\ChannelAgent-0.6.3-windows-x64.exe -Algorithm SHA256).Hash -eq $expected
 ```
 
 将 exe 放到本地可写 NTFS 目录并双击，无需改名或安装 Python。默认数据保存在 exe 所在目录；已有文件不会覆盖。也可下载带构建时间的 ZIP 及其校验文件，解压后运行内部目录的 `ChannelAgent.exe`。
@@ -23,7 +23,7 @@ $expected = (Get-Content .\ChannelAgent-0.6.2-windows-x64.exe.sha256 -Raw).Trim(
 
 ```powershell
 $report = Join-Path $env:TEMP ("ChannelAgent-check-" + [guid]::NewGuid().ToString() + ".json")
-$process = Start-Process -FilePath .\ChannelAgent-0.6.2-windows-x64.exe -ArgumentList '--self-check', ('"' + $report + '"') -Wait -PassThru
+$process = Start-Process -FilePath .\ChannelAgent-0.6.3-windows-x64.exe -ArgumentList '--self-check', ('"' + $report + '"') -Wait -PassThru
 $process.ExitCode
 Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
 ```
@@ -32,10 +32,10 @@ Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
 
 ### Linux x86_64
 
-下载 `ChannelAgent-0.6.2-linux-x64-<构建时间>.tar.gz` 及其同名 `.sha256` 到同一目录，将下面的文件名替换为实际名称：
+下载 `ChannelAgent-0.6.3-linux-x64-<构建时间>.tar.gz` 及其同名 `.sha256` 到同一目录，将下面的文件名替换为实际名称：
 
 ```bash
-archive='ChannelAgent-0.6.2-linux-x64-<构建时间>.tar.gz'
+archive='ChannelAgent-0.6.3-linux-x64-<构建时间>.tar.gz'
 sha256sum -c "$archive.sha256"
 tar -xzf "$archive"
 cd "${archive%.tar.gz}"
@@ -60,7 +60,7 @@ cat "$report"
 Linux 或 WSL 需要 Git、Python 3.12 以上和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。从指定标签克隆：
 
 ```bash
-git clone --branch v0.6.2 https://github.com/vukencc/Channel-Agent.git
+git clone --branch v0.6.3 https://github.com/vukencc/Channel-Agent.git
 cd Channel-Agent
 uv sync --locked --extra desktop --extra web
 ```
@@ -97,6 +97,16 @@ if [ ! -f .env ]; then cp .env.example .env; fi
 4. 查看运行状态、交接和产物并自行验收。节点完成不保证业务结果正确；权限、确认和部署工具上限仍生效。
 
 可导出便携 JSON 并导入为新的未绑定模板；文件不包含项目目录、凭据或知识库内容。节点配置、停止和恢复等详见 [Agent Flow](agent-flow.md)。
+
+### 用设计助手创建一个网站开发流程
+
+在设计助手选择已配置的模型，输入“设计一个网站开发 Flow，先定架构，再分别实现前端和后端，最后测试、修订并复测”。生成后，在画布核对两个实现节点都连到测试节点。Flow 按连线顺序执行，修订和复测各自占一个节点。需要继续迭代时，可在同一项目发起下一轮。
+
+把模板导入新项目，选择一个空的工作区。运行前确认前后端节点有文件写入工具、测试节点有命令工具。Windows 用户可先按指南准备 WSL 隔离环境。进入 Working 查看每个节点的结果，最后在工作区启动网站并实际操作一次，确认前端能读写后端数据。[Windows 配置](windows.md) · [Flow 节点与交接](agent-flow.md)
+
+如果模型断线或超时，打开项目，确认工作区和节点设置后点击「从中断节点继续」。已交接的节点会保留其结果。在补充信息框输入新的需求时，主按钮会切换为「从头运行」。
+
+若 Working 显示输入窗口不足，可在节点详情查看本轮所需 token 数及上限。复杂任务可按模型服务的实际容量配置预算。此次实例采用单独进程的 32k 窗口。具体设置和实测数据见[输入预算配置](configuration.md)与[网站 Flow 验证记录](flow-designer-fullstack-validation-2026-11-19.md)。
 
 ## 知识库与环境
 

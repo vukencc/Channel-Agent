@@ -29,6 +29,40 @@ def test_full_crud_flow(sandbox_env):
     assert not (sandbox_env / "notes/a.txt").exists()
 
 
+@pytest.mark.parametrize('content', ['一\n二\n', '一\r\n二\r\n', '一\r\n二\n三\r四'])
+def test_created_and_updated_text_round_trips_exact_newlines(sandbox_env, monkeypatch, content):
+    from agent_core.tools.file_crud import edit_file
+    monkeypatch.setattr(config, 'FILE_READ_CHARS', 3)
+    target = sandbox_env / 'newlines.txt'
+    assert '[完成]' in create_file('newlines.txt', content)
+    assert target.read_bytes() == content.encode('utf-8')
+    assert '[完成]' in edit_file('newlines.txt', content, 'abc')
+    assert '[完成]' in update_file('newlines.txt', content)
+    assert target.read_bytes() == content.encode('utf-8')
+    pages, offset = [], 0
+    while True:
+        page = read_file('newlines.txt', offset=offset, limit=3)
+        body = page.split('[内容开始]\n', 1)[1].rsplit('\n[内容结束]', 1)[0]
+        pages.append(body)
+        offset += len(body)
+        if ' EOF\n' in page:
+            break
+    assert ''.join(pages) == content
+    assert '[完成]' in edit_file('newlines.txt', content, 'done')
+    assert target.read_bytes() == b'done'
+
+
+def test_update_detects_newline_only_change_during_confirmation(sandbox_env, monkeypatch):
+    target = sandbox_env / 'newlines.txt'
+    target.write_bytes(b'one\r\ntwo')
+    def confirm(*args):
+        target.write_bytes(b'one\ntwo')
+        return True
+    monkeypatch.setattr(sandbox, 'confirmer', confirm)
+    assert '发生变化' in update_file('newlines.txt', 'replacement')
+    assert target.read_bytes() == b'one\ntwo'
+
+
 def test_create_refuses_to_overwrite(sandbox_env):
     create_file("a.txt", "v1")
     assert "[失败]" in create_file("a.txt", "v2")

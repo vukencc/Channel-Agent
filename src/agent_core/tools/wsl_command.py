@@ -108,10 +108,13 @@ def execute_wsl_tool(operation: str, arguments: dict) -> str:
                    'paths': {key: translated[str(path)] for key, path in protected_paths.items()},
                    'execution_environment': 'sandbox',
                    'flow_workspace_scope': bool(context and context.flow_workspace_scope)}
+        auto_python = config.WINDOWS_WSL_PYTHON == 'auto'
+        python = 'python3' if auto_python else config.WINDOWS_WSL_PYTHON
         argv = [*_launcher(), '/usr/bin/env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin',
                 'LANG=C.UTF-8', 'PYTHONIOENCODING=utf-8', 'PYTHON_DOTENV_DISABLED=1',
                 'AI_AGENT_PROJECT_ROOT=/tmp/channel-agent-wsl-worker',
-                config.WINDOWS_WSL_PYTHON, '-B', '-u', script]
+                python, *(['-I'] if auto_python else []), '-B', '-u', script,
+                *(['--auto-python'] if auto_python else [])]
         audit('wsl_tool_started', strict=True, operation=operation, request_id=identifier)
         from agent_core.core.command_review import bound_review
         command = arguments.get('command') if operation == 'run_command' else None

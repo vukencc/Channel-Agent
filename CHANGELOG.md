@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-20
+
+- Flow 设计器可导入附简单说明或 Markdown 围栏的单份完整模板。完整草稿出现 JSON 语法错误时，可在预算内向同一模型请求一次格式修正。停止、图结构、权限及工具校验仍生效。测试反馈工作流采用分支汇合、修订及复验的有限步骤。
+- Flow 节点在默认配置下从首轮归档已交付的工具历史，保留最新未读结果，长节点能在原有输入预算内继续。自动摘要在本地生成，节点原有的工具授权继续生效。
+- 节点进度索引保留已完成的操作以及后续失败或取消的回执，帮助节点按真实验收结果交接。设计助手说明分支按拓扑顺序串行运行。
+- Flow 节点反复重读已有产物时，可依据真实工具回执和本岗位职责判断交接、继续或暂停。判断使用原有模型轮次及预算。详见[网站开发验证记录](docs/flow-designer-fullstack-validation-2026-11-19.md)。
+- 实现与测试节点可按已启用的工具拆小文件写入。模型生成超时且恢复次数耗尽时，Flow 保留已完成的工作，并在详情中说明停止原因。
+- Windows 文件工具创建和更新文件时保留传入的换行符。随后分页读取、精确编辑和确认期间的内容检查使用相同的字符边界。
+- 项目 Flow 的模型连接中断或超时后，可从原节点和会话手动继续，保留已完成节点与真实交接。
+- 桌面 Flow 导入和导出从可写的数据目录开始，记住本次使用中上次成功选择的位置。窗口预算不足时，运行详情显示实际超出的用量和处理办法。
+- Windows 隔离命令默认发现当前 WSL 用户按指南安装的独立 Python 环境。显式指定的解释器继续生效。
+
 ## [0.6.2] - 2026-11-19
 
 - 修正前端 Python 包遗漏 `runtime_loop.py` 导致安装后启动失败的问题，统一 Core 对外报告的版本号。
@@ -181,7 +193,8 @@
 - 全量模型推理峰值内存、RAG p95/吞吐权衡、真实视觉服务、Windows/macOS 原生能力尚未验收，详见 `docs/optimization-delivery.md`。
 - 容器后端（Docker/Podman 作为命令沙箱）仅有设计契约，未实现，见 `docs/platform-design.md`。
 
-[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/vukencc/Channel-Agent/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/vukencc/Channel-Agent/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/vukencc/Channel-Agent/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/vukencc/Channel-Agent/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/vukencc/Channel-Agent/compare/v0.5.0...v0.6.0
