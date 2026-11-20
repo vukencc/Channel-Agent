@@ -10,7 +10,7 @@ Windows 和 Linux 桌面成品通过 [v0.6.3 发布页](https://github.com/vuken
 
 Windows 成品默认构建为免安装单 exe：放入本地可写 NTFS 目录后双击 `ChannelAgent-0.6.3-windows-x64.exe`（ZIP 内为 `ChannelAgent.exe`），无需安装 Windows Python。首次使用在「模型管理」添加连接；配置和数据默认保存在 exe 所在目录。成品构建、WSL 命令准备与自检见 [Windows 指南](docs/windows.md)。
 
-0.6.3 修复了设计助手将带 Markdown 代码块或简短说明的模板报为“无效 JSON”的问题。创建网站时，可以让助手设计「架构 → 前端和后端 → 测试 → 修订 → 复测」的交接流程。Windows 隔离命令会查找按指南安装的 WSL Python。[设计与运行指南](docs/agent-flow.md) · [更新日志](CHANGELOG.md)
+0.6.3 修复了设计助手将带 Markdown 代码块或简短说明的模板报为“无效 JSON”的问题。创建网站时，可以让助手设计「架构 → 前端和后端 → 测试 → 修订 → 复测」的交接流程。项目执行期间若模型断线或超时，可从保存的节点继续。Windows 隔离命令会查找按指南安装的 WSL Python。[设计与运行指南](docs/agent-flow.md) · [网站项目实测](docs/flow-designer-fullstack-validation-2026-11-19.md) · [更新日志](CHANGELOG.md)
 
 ```bash
 uv sync --locked --extra desktop --extra web

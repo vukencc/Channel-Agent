@@ -16,6 +16,8 @@
 
 ## 当前工作与 Git
 
+- 2026-11-20：设计助手和全栈 Flow 续验及中断情况见[本轮报告](flow-designer-fullstack-validation-2026-11-19.md)。七节点同实例手动续跑后主机重启，最终测试结果尚未确认。
+
 - 2026-11-17 P3 / 队列跟进：源码 `0dfe8e8` 的第六轮真实业务在用户授权的独立 32k 输入进程完成，716.299726 秒正常排空，五节点严格完成，原 QA 20/20、两项原 P3 经独立复核通过；普通默认仍为 16k。前五轮未通过全部业务验收或取消，及第五轮 CF007 捏造描述（B-03 / P2）保留，第六轮未再现不证明一般性修复。另有检索次数归属错误 B-04 / P3 和转交理由夸大客户表述 B-05 / P3；原 QA 全通过不等于全部语义通过。原模型、模板、数据、QA、强度及时限保持，详细证据与边界见[跟进报告](flow-wording-queue-validation-2026-11-17.md)。交付入口为 [PR #61](https://github.com/vukencc/Channel-Agent/pull/61)，最终状态以 PR 页面为准。
 - 队列保留原 5 秒及全部断言；`209b3c6` 和 `7ad0b87` 的实验已由 `0c9c60d` 完整撤回。`0dfe8e8` 原生 stock 3.13.3 队列单独 3/3、当前 27 项恢复测试后 3/3 通过，有限样本不保证所有负载。Linux 全量 2926 passed、74 skipped、5 deselected（238.16 秒），真实隔离探针退出 0、97 Core 和 HEAD 不变；[CI 44045174352](https://github.com/vukencc/Channel-Agent/actions/runs/44045174352) Linux 2921 passed、Windows 1484 passed。本机 Native 扩展集 190 passed、2 skipped、7 failed，七项为旧源码同样失败的 `env_sync` 换行、权限和符号链接兼容问题，该文件未纳入 Windows CI；此前 `75e96da` 受支持选择集 1400 passed、104 skipped。受控 F07 两平台轮询及 SSE 各 64/64 及时且持久，详细条件与失败见[跟进报告](flow-wording-queue-validation-2026-11-17.md)。本轮无 UI 改动、未做可见验收，也未请求新发布或 exe 构建；用户现有数据保留，变更记于 Unreleased。
 
