@@ -165,7 +165,16 @@ if (typeof window !== "undefined") (() => {
   const running = (flow = current()) => ["queued", "running", "cancelling"].includes(flow?.run?.status);
   const locked = () => pending || running();
   const error = (message) => { lastError = message || ""; const target = $("flow-error"); if (target) { target.textContent = lastError; target.hidden = !lastError; } };
-  const mark = () => { dirty.add(active); renderList(); updateHeader(); const resume = document.querySelector("[data-flow-resume]"); if (resume) { resume.disabled = true; resume.title = "请先保存 Flow 和项目的未保存修改。"; } };
+  function mark() {
+    dirty.add(active);
+    renderList();
+    updateHeader();
+    const resume = $("flow-view")?.querySelector("[data-flow-resume]");
+    if (resume) {
+      resume.disabled = true;
+      resume.title = "请先保存 Flow 和项目的未保存修改。";
+    }
+  }
   function updateHeader() {
     const f = current(); if (!f || !$("flow-title")) return;
     $("flow-title").textContent = flowDisplayTitle(f) + (dirty.has(active) ? " *" : "");
