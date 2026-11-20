@@ -48,7 +48,7 @@
 
 ## 进行中的验证
 
-- [设计助手全栈验证（2026-11-19，续至 11-20）](flow-designer-fullstack-validation-2026-11-19.md)：真实设计、运行、浏览器检查及中断边界。
+- [设计助手全栈验证（2026-11-19，续至 11-20）](flow-designer-fullstack-validation-2026-11-19.md)：真实七节点项目、Windows 和 Linux 运行、双视口浏览器验收及中断恢复。
 
 - [Flow 话术与 Windows 队列（2026-11-17）](flow-wording-queue-validation-2026-11-17.md)：两项 P3、原 5 秒队列、真实配置模型五节点复验与双平台回归。
 
