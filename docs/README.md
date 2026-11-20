@@ -2,14 +2,14 @@
 
 > 文档导航 · [项目首页](../README.md) · [快速上手](getting-started.md) · [阶段状态](project-status.md)
 
-文档分为现行使用指南、实现与设计边界、历史交付记录。历史报告保留当时测量和问题描述，不作为当前使用规范；使用命令与配置前请以现行指南和源码为准。新会话接手入口见[会话交接说明](session-handoff.md)。
+首次使用请从[快速上手](getting-started.md)开始。准备面试可结合[三模块架构](architecture.md)和[七节点网站实测](flow-designer-fullstack-validation-2026-11-19.md)阅读。新对话从[维护交接](session-handoff.md)进入，里面有代码入口、验收命令和待定位的问题。
 
 ## 开始使用与现行指南
 
 - [快速上手](getting-started.md)：安装、模型连接、首个会话与 Flow 项目。
 - [Windows 指南](windows.md)：单 exe 首启、数据目录、依赖、独立 WSL 隔离命令环境与当前限制。
 - [Linux 成品指南](linux.md)：免安装桌面、系统依赖、XDG 数据目录与构建验证。
-- [项目阶段状态](project-status.md)：交付、验证类型与当前边界。
+- [2026-11-03 阶段快照](project-status.md)记录当时的功能与验证范围。
 
 - [原生桌面 GUI](desktop.md)：不依赖浏览器的窗口、模型设置与会话操作。
 - [Agent Flow](agent-flow.md)：原生及 Web 画布、项目继承、交接和运行状态。
@@ -46,7 +46,7 @@
 - [Codex 多代理](codex-multiagent.md)：本地代理配置和协作约定；技术配置以当前 Codex 配置和官方 schema 为准。
 - [当前会话交接](session-handoff.md)：维护者接手时的状态、环境与 Git 边界；[历史会话交接](session-history.md)保留各阶段记录。
 
-## 进行中的验证
+## 近期验证记录
 
 - [设计助手全栈验证（2026-11-19，续至 11-20）](flow-designer-fullstack-validation-2026-11-19.md)：真实七节点项目、Windows 和 Linux 运行、双视口浏览器验收及中断恢复。
 

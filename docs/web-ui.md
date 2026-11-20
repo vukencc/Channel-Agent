@@ -10,6 +10,12 @@ WebUI 可运行在 Linux、WSL 或 Windows 原生环境。以下命令在 Linux 
 
 ```bash
 uv sync --locked --extra web
+if [ ! -f .env ]; then cp .env.example .env; fi
+```
+
+在仓库根目录的 `.env` 中填好 `OPENCODE_API_KEY`、`BASE_URL` 和 `MODEL`，或通过进程环境变量提供这三项。服务启动时会先校验它们。启动后可在「模型管理」添加其他连接。[首次配置](getting-started.md#从源码运行)
+
+```bash
 uv run --no-sync ai-agent-web
 ```
 

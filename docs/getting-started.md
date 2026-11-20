@@ -63,9 +63,12 @@ Linux 或 WSL 需要 Git、Python 3.12 以上和 [uv](https://docs.astral.sh/uv/
 git clone --branch v0.6.3 https://github.com/vukencc/Channel-Agent.git
 cd Channel-Agent
 uv sync --locked --extra desktop --extra web
+if [ ! -f .env ]; then cp .env.example .env; fi
 ```
 
-以上同时安装桌面和 Web 依赖；只用桌面可省略 `--extra web`，只用 Web 可省略 `--extra desktop`，只用 CLI 可省略两个 extra。在仓库根目录选择入口：
+只用桌面可省略 `--extra web`，只用 Web 可省略 `--extra desktop`，只用 CLI 可省略两个 extra。**从源码启动 Web 前**，在根目录的 `.env` 填好服务密钥 `OPENCODE_API_KEY`、接口地址 `BASE_URL` 和模型名 `MODEL`，也可以通过进程环境变量提供这三项。Web 在打开端口前检查配置。桌面成品可直接在「模型管理」添加服务。
+
+在仓库根目录启动所选界面。
 
 ```bash
 uv run --no-sync ai-agent-gui      # 原生窗口
@@ -79,13 +82,7 @@ Web 默认地址为 `http://127.0.0.1:8765`，仅供本机访问，无需 Node �
 
 在 GUI 或 Web 的“模型管理”添加 OpenAI-compatible 模型连接，填写服务地址、模型名和服务所需密钥；在会话设置中选择连接。上下文容量请根据服务商实际容量填写，留空采用保守预算。模型服务须自行提供，调用可能产生费用。
 
-也可在仓库根目录仅当 `.env` 不存在时创建配置，然后编辑其中的 `OPENCODE_API_KEY`、`BASE_URL` 和 `MODEL`：
-
-```bash
-if [ ! -f .env ]; then cp .env.example .env; fi
-```
-
-已有 `.env` 不会被此命令覆盖。进程环境变量优先于 `.env`；不要把密钥提交或粘贴到问题报告中。完整设置和优先级见[配置说明](configuration.md)。
+从源码启动时，上一步配置的连接可作为默认模型，进程环境变量优先于 `.env`。请将密钥保存在本机。[配置说明](configuration.md)
 
 创建经典 Agent 会话，选择模型并发送简单任务，例如“介绍你能使用的工具”。操作文件前检查项目目录和权限，并按提示处理确认。CLI 的 `/models` 可选择模型，`/project /绝对路径` 可选择已有项目目录；详见 [CLI 指南](cli.md)。
 
