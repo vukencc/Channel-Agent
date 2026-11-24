@@ -3,7 +3,9 @@ import copy
 import json
 import re
 
-from agent_core.core.custom_tool_results import custom_result_is_business_error, custom_stdout_body
+from agent_core.core.custom_tool_results import (
+    custom_result_is_business_error, custom_result_outcome, custom_stdout_body,
+)
 from agent_core.core.flow_handoff import _depth, _exact_float, _unique
 
 _FIELD = re.compile(r"(?:submitted|created|issued|processed|registered|opened)_([a-z][a-z0-9_]*)_ids\Z")
@@ -81,14 +83,17 @@ class FlowHandoffReceipts:
                 or function.get("name") != metrics.get("name")
                 or metrics.get("tool_call_id") != identifier
                 or metrics.get("source") != "executed" or metrics.get("outcome") != "completed"
-                or metrics.get("execution_progress") is not True or len(self._rows) >= _MAX_RECEIPTS):
+                or metrics.get("execution_progress") is not True):
             self._uncertain = True
             return
         name = function.get("name")
         matching = {field: entity for field, entity in self._fields.items()
                     if isinstance(name, str)
                     and name.startswith(_ACTIONS[field.split("_", 1)[0]] + "_")}
-        if not matching:
+        # 只跳过框架执行并核对的本地读取，工具自报、失败或未知动作仍按潜在写入处理。
+        if not matching and metrics.get("receipt_reader") is True and custom_result_outcome(result) == "completed":
+            return
+        if not matching or len(self._rows) >= _MAX_RECEIPTS:
             self._uncertain = True
             return
         try:

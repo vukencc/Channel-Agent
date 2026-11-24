@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import os
 import re
 import uuid
 
@@ -75,6 +76,28 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
     if repeat_after_source:
         approved = {"item_ref": "case-1", "reason": "记录页面故障。"}
     if repeated_selector:
+        approved = {"path": "query.json"}
+        spec["description"] = "读取工作区内的查询结果。"
+        spec["parameters"] = {"type": "object", "properties": {"path": {"type": "string"}},
+                              "required": ["path"], "additionalProperties": False}
+        spec["code"] = chr(10).join(("def main(arguments):", "    import json", "    from pathlib import Path",
+                                   "    rows = json.loads(Path(arguments['path']).read_text(encoding='utf-8'))",
+                                   "    return rows"))
+        (project / "query.json").write_text('{"items":[]}', encoding="utf-8")
+        if os.name == "nt" and os.environ.get("RUN_WINDOWS_WSL_TESTS") != "1":
+            from agent_core.core.custom_tools import CustomTool
+
+            original_run = CustomTool.run
+
+            def controlled_query(tool, arguments):
+                if tool.name != "record_case":
+                    return original_run(tool, arguments)
+                assert json.loads(arguments) == approved and tool.definition["code"] == spec["code"]
+                result = (project / "query.json").read_text(encoding="utf-8")
+                return chr(10).join(("[退出码] 0", "[stdout]", result))
+
+            monkeypatch.setattr(CustomTool, "run", controlled_query)
+    elif mode == "repeat_after_source_selector_write":
         approved = {"id": "case-1"}
         spec["parameters"] = {"type": "object", "properties": {"id": {"type": "string"}},
                               "required": ["id"], "additionalProperties": False}
@@ -331,8 +354,11 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
             evidence["source"] = "executed"
             return chr(10).join(("[退出码] 0", "[stdout]", json.dumps(business_result, ensure_ascii=False)))
         if repeated_selector:
+            return await original_tool(session, tool_call, evidence=evidence)
+        if mode == "repeat_after_source_selector_write":
+            (project / "staged-record.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
             evidence["source"] = "executed"
-            return '[退出码] 0\n[stdout]\n{"items":[]}'
+            return "已记录：" + arguments["id"]
         (project / "staged-record.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
         if mode == "formal_failure" or (mode == "two_unidentified_failure" and arguments == approved):
             evidence["source"] = "executed"
@@ -824,21 +850,22 @@ def test_confirmation_return_can_explicitly_replace_unidentified_draft(runtime_s
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("operation", ["duplicate", "distinct", "selector"])
+@pytest.mark.parametrize("operation", ["duplicate", "distinct", "selector", "selector_write"])
 def test_completed_write_cannot_be_repeat_approved_after_source_refresh(runtime_store, monkeypatch, operation):
     record, run, _, schemas, invocations, _, _ = asyncio.run(
         staged_scenario(runtime_store, monkeypatch, "repeat_after_source_" + operation))
     assert run["status"] == "completed", run["error"]
     assert_paired(record)
-    assert len(invocations) == (1 if operation == "duplicate" else 2)
+    duplicate_write = operation in {"duplicate", "selector_write"}
+    assert len(invocations) == (1 if duplicate_write else 2)
     if operation == "selector":
-        assert invocations == [{"id": "case-1"}] * 2
+        assert invocations == [{"path": "query.json"}] * 2
         assert not (runtime_store[1] / "staged-record.json").exists()
     elif operation == "distinct":
         assert invocations[0]["item_ref"] == invocations[1]["item_ref"]
         assert invocations[0]["reason"] != invocations[1]["reason"]
     events = {row["tool_call_id"]: row for row in record["last_run"]["action_preflights"]}
-    if operation == "duplicate":
+    if duplicate_write:
         assert all("record_case" not in names for names in schemas[3:])
         assert events["draft-after-read"]["status"] == "already_completed"
         assert "formal-after-read" not in events

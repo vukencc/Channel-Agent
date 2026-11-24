@@ -670,6 +670,8 @@ class SessionManager:
                     if evidence is not None:
                         evidence['worker_source'] = 'executed'
                         evidence['worker_outcome'] = span.outcome
+                        if name not in TOOL_REGISTRY and getattr(tool, 'is_receipt_reader', False) is True:
+                            evidence['receipt_reader'] = True
                     return result
                 # Reads must not race commands that replace a validated parent with a symlink.
                 if tool.concurrency == 'serial' or tool.workspace_access:
@@ -2022,6 +2024,7 @@ class SessionManager:
                                     **({'action_stage': evidence['action_stage'],
                                         'approval_progress': evidence.get('approval_progress', False)}
                                        if 'action_stage' in evidence else {}),
+                                    **({'receipt_reader': True} if evidence.get('receipt_reader') is True else {}),
                                     'execution_progress': evidence['source'] == 'executed' and outcome == 'completed'}
 
                 index = 0

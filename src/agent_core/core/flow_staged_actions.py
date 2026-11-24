@@ -10,7 +10,7 @@ from agent_core import config
 from agent_core.core.audit_writer import append_audit
 from agent_core.core.custom_tools import MAX_ARGUMENT_BYTES
 from agent_core.core.flow_action_preflight import (
-    FlowActionPreflight, _argument_digest, _object, selection_only,
+    FlowActionPreflight, _argument_digest, _object,
 )
 from agent_core.core.flow_review_claims import action_review_context
 from agent_core.core.flow_review_sources import review_sources
@@ -622,7 +622,7 @@ class FlowStagedActions:
             self.invalidated.discard(key)
             self.unsuccessful.discard(key)
             self.gate.pending_tools.discard(key)
-            if not selection_only(definition['parameters']):
+            if evidence.get('receipt_reader') is not True:
                 signature = (name, _argument_digest(_object(fn['arguments'], definition['parameters'])))
                 self._completed_commits.add(signature)
         else:

@@ -3,6 +3,8 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -144,6 +146,10 @@ def test_start_releases_reservation_if_run_metadata_fails(tmp_path, monkeypatch,
     ('signed', 'blocked'),
     ('signed', 'verified'),
     ('signed', 'duplicate'),
+    ('signed_selector', 'duplicate'),
+    ('signed', 'reader_verified'),
+    ('signed', 'reader_wrong'),
+    ('signed', 'unknown_writer'),
 ])
 def test_resume_keeps_dynamic_action_handoff_constraints(
         runtime_store, monkeypatch, failure, checkpoint_stage, outcome):
@@ -157,11 +163,47 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
     resumed = False
     action = {'feedback_id': 'CF-01', 'diagnosis': '页面显示空白'}
     definition = ticket_tool()
+    signed = checkpoint_stage in {'signed', 'signed_selector'}
+    if checkpoint_stage == 'signed_selector':
+        action = {'id': 'CF-01'}
+        definition['parameters'] = {'type': 'object', 'properties': {'id': {'type': 'string'}},
+                                    'required': ['id'], 'additionalProperties': False}
     if checkpoint_stage == 'unidentified':
         action = {'customer': 'CF-01', 'diagnosis': '页面显示空白'}
         definition['parameters']['properties']['customer'] = definition['parameters']['properties'].pop('feedback_id')
         definition['parameters']['required'] = ['customer', 'diagnosis']
     contract = {'fields': {'submitted_ticket_ids': {'type': 'array'}}}
+    readers = []
+    if outcome in {'reader_verified', 'reader_wrong', 'unknown_writer'}:
+        path = Path(__file__).resolve().parents[1] / 'scripts/cases/customer_feedback_dynamic.template.json'
+        template = json.loads(path.read_text(encoding='utf-8'))
+        configured_reader = next(tool for node in template['nodes'] for tool in node.get('custom_tools', ())
+                                 if tool['name'] == 'read_feedback')
+        if outcome == 'unknown_writer':
+            configured_reader['code'] = ('def main(arguments):' + chr(10)
+                + "    with open('read-marker.txt', 'w') as stream:" + chr(10)
+                + "        stream.write('side effect')" + chr(10) + "    return {'items': []}" + chr(10))
+        readers.append(configured_reader)
+        (project / 'feedback.json').write_text('{"items":[]}', encoding='utf-8')
+        if outcome in {'reader_verified', 'reader_wrong'}:
+            (project / 'json.py').write_text("open('shadow-marker.txt', 'w').close()" + chr(10)
+                                            + "raise RuntimeError('unexpected workspace import')" + chr(10),
+                                            encoding='utf-8')
+        if os.name == 'nt' and os.environ.get('RUN_WINDOWS_WSL_TESTS') != '1':
+            from agent_core.core.custom_tools import CustomTool
+
+            original_run = CustomTool.run
+
+            def controlled_native_run(tool, arguments):
+                if tool.name != 'read_feedback':
+                    return original_run(tool, arguments)
+                assert tool.definition == configured_reader and arguments == '{}'
+                if outcome == 'unknown_writer':
+                    (project / 'read-marker.txt').write_text('side effect', encoding='utf-8')
+                feedback = (project / 'feedback.json').read_text(encoding='utf-8')
+                return chr(10).join(('[退出码] 0', '[stdout]', feedback))
+
+            monkeypatch.setattr(CustomTool, 'run', controlled_native_run)
 
     async def model(history, *, session_id, emit):
         nonlocal resume_calls
@@ -178,7 +220,7 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             preview = next(row['function']['name'] for row in schemas
                            if 'submit_ticket' in row['function'].get('description', ''))
             return assistant(calls=[call('preview', preview, **action)])
-        if len(phases) == 2 and checkpoint_stage == 'signed':
+        if len(phases) == 2 and signed:
             assert names == {'submit_ticket'}
             return assistant(calls=[call('commit', 'submit_ticket', **action)])
         if not resumed:
@@ -194,10 +236,16 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             assert names == {'submit_ticket'}
             reordered = dict(reversed(action.items()))
             return assistant(calls=[call('new-commit', 'submit_ticket', **reordered)])
-        if outcome == 'duplicate':
-            assert names != {'submit_ticket'}
-        if outcome == 'blocked':
-            if not names and checkpoint_stage == 'signed':
+        if readers and resume_calls == 1:
+            assert 'draft_read_feedback' in names and 'read_feedback' not in names
+            return assistant(calls=[call('read-preview', 'draft_read_feedback')])
+        if readers and resume_calls == 2:
+            assert names == {'read_feedback'}
+            return assistant(calls=[call('read-commit', 'read_feedback')])
+        if outcome == 'duplicate' and names == {'submit_ticket'}:
+            return assistant(calls=[call('duplicate-commit', 'submit_ticket', **action)])
+        if outcome in {'blocked', 'reader_wrong'}:
+            if not names and signed:
                 return assistant('{"set":{"submitted_ticket_ids":["WRONG"]}}')
             return assistant('{"submitted_ticket_ids":["WRONG"]}')
         return assistant('{"submitted_ticket_ids":["ISSUED-1"]}')
@@ -228,8 +276,10 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             fid = record['flow_id']
             flow = flows.get(fid)
             flow.update(nodes=[
-                {'id': 'work', 'title': '办理', 'prompt': '提交工单，输出签发编号。', 'y': 0.0,
-                 'tool_names': ['submit_ticket'], 'custom_tools': [definition],
+                {'id': 'work', 'title': '办理',
+                 'prompt': ('调用 read_feedback 读取反馈。' + chr(10) if readers else '') + '提交工单，输出签发编号。',
+                 'y': 0.0, 'tool_names': ['submit_ticket', *(tool['name'] for tool in readers)],
+                 'custom_tools': [definition, *readers],
                  'handoff_contract': contract},
                 {'id': 'next', 'title': '下游', 'prompt': '核对交接', 'x': 120.0, 'y': 0.0, 'tool_names': []},
             ], edges=[{'source': 'work', 'target': 'next'}])
@@ -240,7 +290,7 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             await asyncio.wait_for(flows.tasks[fid], 5)
             before = flows.get(fid)['run']
             assert before['resume_available'], before['error']
-            assert len(writes) == (checkpoint_stage == 'signed')
+            assert len(writes) == (signed)
             sid = before['nodes']['work']['session_id']
             session = manager.sessions[sid]
             expected_checkpoint = copy.deepcopy(session.record['_flow_action_checkpoint'])
@@ -274,11 +324,21 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             assert after['nodes']['work']['session_id'] == sid
             session = manager.sessions[sid]
             assert '_flow_action_checkpoint' not in session.record
-            if outcome == 'blocked':
+            if readers:
+                reads = session.record['last_run']['flow_required_reads']
+                assert reads['completed'] == ['read_feedback']
+                metric = next(row for row in session.record['last_run']['tools'] if row['tool_call_id'] == 'read-commit')
+                assert (metric.get('receipt_reader') is True) == (outcome != 'unknown_writer')
+                assert not (project / 'shadow-marker.txt').exists()
+            if outcome in {'blocked', 'reader_wrong', 'unknown_writer'}:
                 assert after['nodes']['next']['status'] == 'blocked'
-                expected = 'flow_handoff_receipts' if checkpoint_stage == 'signed' else 'flow_action_expired'
+                if outcome == 'reader_wrong':
+                    assert resume_calls == 4, '保留已签发回执后，错误编号仍应触发一次真实编号修正请求'
+                if outcome == 'unknown_writer':
+                    assert (project / 'read-marker.txt').exists()
+                expected = 'flow_handoff_receipts' if signed else 'flow_action_expired'
                 assert session.record['last_run']['stop_reason'] == expected
-                assert len(writes) == (checkpoint_stage == 'signed')
+                assert len(writes) == (signed)
             else:
                 assert after['nodes']['next']['status'] == 'completed', after['nodes']['work']['error']
                 assert len(writes) == 1

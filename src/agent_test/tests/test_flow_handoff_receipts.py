@@ -132,3 +132,33 @@ def test_model_display_bounds_canonical_expansion(monkeypatch):
         raise AssertionError("超出有效交接可能转义长度时应在 JSON 解析前返回")
     monkeypatch.setattr(flow_handoff.json, "loads", forbid_decode)
     assert flow_handoff.handoff_for_model(oversized, contract) is oversized
+
+
+def test_resumed_receipt_reader_exemption_requires_trusted_successful_pair():
+    receipts = FlowHandoffReceipts(CONTRACT)
+    observe(receipts, "issued", {"ok": True, "ticket": {"id": "T1"}})
+    state = receipts.checkpoint_state()
+    for changes, preserved in [
+        ({"receipt_reader": True}, True),
+        ({"receipt_reader": True, "source": "not_executed", "outcome": "rejected",
+          "execution_progress": False}, True),
+        ({"receipt_reader": True, "outcome": "error", "execution_progress": False}, False),
+        ({"receipt_reader": True, "source": "result_unknown"}, False),
+        ({"receipt_reader": True, "tool_call_id": "different"}, False),
+        ({}, False),
+    ]:
+        resumed = FlowHandoffReceipts(CONTRACT)
+        resumed.restore_checkpoint(state)
+        observe(resumed, "read", {"items": [], "receipt_reader": True}, tool_name="read_feedback", **changes)
+        assert resumed.lost_checkpoint_evidence() is not preserved
+        assert resumed.expectations() == ({"submitted_ticket_ids": ["T1"]} if preserved else {})
+
+
+def test_receipt_reader_backend_is_limited_to_linux_and_windows_sandbox():
+    from agent_core.core.flow_receipt_readers import receipt_reader_backend
+
+    assert receipt_reader_backend("linux", "sandbox")
+    assert receipt_reader_backend("win32", "sandbox")
+    for platform in ("linux", "win32", "darwin"):
+        assert not receipt_reader_backend(platform, "local")
+    assert not receipt_reader_backend("darwin", "sandbox")
