@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 spec = importlib.util.spec_from_file_location("codex_automerge", Path(__file__).resolve().parents[3] / ".github/scripts/codex_automerge.py")
 gate = importlib.util.module_from_spec(spec)
@@ -121,3 +123,148 @@ def test_main_rechecks_before_merge_and_requires_confirmation(monkeypatch):
     monkeypatch.setattr(gate, "check", lambda *_: "head")
     assert gate.main() == 1
     assert api.merged
+
+
+HEAD = "a" * 40
+OLDER = "b" * 40
+EARLIEST = "c" * 40
+
+
+class HistoryAPI:
+    def __init__(self):
+        state = summary(HEAD)
+        state["body"] = state["body"].replace('"has_any_findings": false', '"has_any_findings": true', 1)
+        receipt = {**summary(), "id": 2,
+                   "body": "<!-- codex-review-receipt:v1 -->\n\n"
+                           "Codex Review: Didn't find any major issues. Chef's kiss.\n\n"
+                           f"**Reviewed commit:** `{HEAD[:10]}`\n"}
+        self.issue_comments = [state, receipt]
+        self.pr = {"number": 7, "node_id": "pr-7", "state": "open", "draft": False,
+                   "mergeable": True, "mergeable_state": "clean", "labels": [], "changed_files": 1,
+                   "head": {"sha": HEAD, "ref": "branch", "repo": {"id": 5}},
+                   "base": {"sha": "base", "ref": "main"}}
+        user = state["user"]
+        self.inline = [{"id": 11, "node_id": "root-1", "user": user, "original_commit_id": OLDER,
+                        "commit_id": HEAD, "pull_request_review_id": 21},
+                       {"id": 12, "node_id": "root-2", "user": user, "original_commit_id": EARLIEST,
+                        "commit_id": HEAD, "pull_request_review_id": 22}]
+        self.reviews = [{"id": 21, "user": user, "commit_id": OLDER}, {"id": 22, "user": user, "commit_id": EARLIEST}]
+        self.compare_ok = True
+        self.ref_sha = HEAD
+        self.graph_calls = []
+        self.graph, self.more = [self.thread_page("root-1", "page2"), self.thread_page("root-2")]
+
+    def thread_page(self, node_id, following=None):
+        return {"data": {"node": {"id": self.pr["node_id"], "headRefOid": HEAD, "reviewThreads": {
+            "totalCount": 2, "pageInfo": {"hasNextPage": following is not None, "endCursor": following},
+            "nodes": [{"id": "thread-" + node_id, "isResolved": True, "comments": {"nodes": [{"id": node_id}]}}],
+        }}}}
+
+    def graphql(self, query, variables):
+        assert "reviewThreads" in query and variables["id"] == self.pr["node_id"]
+        self.graph_calls.append(variables["cursor"])
+        return self.more if variables["cursor"] else self.graph
+
+    def request(self, path, data=None):
+        if path == "":
+            return {"default_branch": "main"}
+        if path == "/branches/main":
+            return {"protected": True}
+        if path == "/pulls/7":
+            return self.pr
+        if path == f"/commits/{HEAD[:10]}":
+            return {"sha": self.ref_sha}
+        if path.startswith("/compare/"):
+            older = path.split("/compare/")[1].split("...")[0]
+            return {"status": "ahead" if self.compare_ok else "diverged", "behind_by": 0, "ahead_by": 1,
+                    "merge_base_commit": {"sha": older}}
+        if path.startswith("/contents/"):
+            return {"sha": "same"}
+        raise AssertionError(path)
+
+    def pages(self, path, key=None):
+        if path == "/pulls/7/files":
+            return [{"filename": "docs/readme.md"}]
+        if path == "/issues/7/comments":
+            return self.issue_comments
+        if path == "/pulls/7/comments":
+            return self.inline
+        if path == "/pulls/7/reviews":
+            return self.reviews
+        if "/runs?" in path:
+            return [{"id": 3, "workflow_id": 4, "event": "pull_request", "head_sha": HEAD, "head_branch": "branch",
+                     "head_repository": {"id": 5}, "pull_requests": [{"number": 7, "base": {"sha": "base"},
+                                                                        "head": {"sha": HEAD}}],
+                     "status": "completed", "conclusion": "success"}]
+        return [{"name": name, "status": "completed", "conclusion": "success"} for name in ("offline", "windows")]
+
+
+def thread_conn(page):
+    return page["data"]["node"]["reviewThreads"]
+
+
+def test_verified_old_resolved_findings_allow_merge_after_exact_clean_receipt():
+    api = HistoryAPI()
+    assert gate.check(api, 7, 4) == HEAD
+    assert api.graph_calls == [None, "page2"]
+    api.pr["labels"] = [{"name": "hold"}]
+    assert gate.check(api, 7, 4) is None
+
+
+@pytest.mark.parametrize("case", [
+    "same-head-inline", "same-head-review-without-inline", "old-review-without-inline", "no-inline", "unresolved",
+    "incomplete-page", "no-receipt", "truncated-sha-mismatch", "non-ancestor", "unknown-original",
+    "threads-missing-root", "ambiguous-graphql", "changed-head", "security-findings", "summary-unresolved",
+    "unknown-author", "receipt-identity", "receipt-findings", "same-head-reply", "missing-inline-page",
+])
+def test_historical_exception_fails_closed(case):
+    api = HistoryAPI()
+    if case == "same-head-inline":
+        api.inline[-1]["original_commit_id"] = HEAD
+        api.reviews[-1]["commit_id"] = HEAD
+    elif case == "same-head-review-without-inline":
+        api.reviews.append({**api.reviews[-1], "id": 23, "commit_id": HEAD})
+    elif case == "old-review-without-inline":
+        api.reviews.append({**api.reviews[-1], "id": 23, "commit_id": OLDER})
+    elif case == "no-inline":
+        api.inline = []
+    elif case == "unresolved":
+        thread_conn(api.more)["nodes"][0]["isResolved"] = False
+    elif case == "incomplete-page":
+        thread_conn(api.more)["pageInfo"] = {"hasNextPage": True, "endCursor": "page2"}
+    elif case == "no-receipt":
+        api.issue_comments.pop()
+    elif case == "truncated-sha-mismatch":
+        api.ref_sha = OLDER
+    elif case == "non-ancestor":
+        api.compare_ok = False
+    elif case == "unknown-original":
+        api.inline[-1].pop("original_commit_id")
+    elif case == "threads-missing-root":
+        thread_conn(api.more)["nodes"][0]["comments"]["nodes"] = []
+    elif case == "ambiguous-graphql":
+        api.more["errors"] = [{"message": "partial"}]
+    elif case == "changed-head":
+        api.more["data"]["node"]["headRefOid"] = OLDER
+    elif case == "security-findings":
+        clean_security = {"commit_sha": HEAD, "status": "completed", "has_any_findings": True,
+                          "has_unresolved_findings": False}
+        body = api.issue_comments[0]["body"].splitlines()
+        state = json.loads(body[1][len(gate.PREFIX):-4])
+        state["security_review"] = clean_security
+        api.issue_comments[0]["body"] = gate.MARKER + "\n" + gate.PREFIX + json.dumps(state) + " -->"
+    elif case == "summary-unresolved":
+        body = api.issue_comments[0]["body"]
+        api.issue_comments[0]["body"] = body.replace('"has_unresolved_findings": false', '"has_unresolved_findings": true', 1)
+    elif case == "unknown-author":
+        api.inline[-1]["user"] = {}
+    elif case == "receipt-identity":
+        api.issue_comments[-1]["performed_via_github_app"] = {"id": 12345}
+    elif case == "receipt-findings":
+        api.issue_comments[-1]["body"] = api.issue_comments[-1]["body"].replace(
+            "Didn't find any major issues.", "Found suggestions.")
+    elif case == "same-head-reply":
+        api.inline.append({**api.inline[-1], "id": 13, "in_reply_to_id": 11, "original_commit_id": HEAD})
+    elif case == "missing-inline-page":
+        api.inline.pop()
+    assert gate.check(api, 7, 4) is None
