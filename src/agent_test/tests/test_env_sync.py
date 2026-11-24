@@ -34,8 +34,8 @@ def test_cli_can_check_environment_with_invalid_application_configuration(tmp_pa
 def _paths(tmp_path, template_text, target_text):
     template = tmp_path / '.env.example'
     target = tmp_path / '.env'
-    template.write_text(template_text, encoding='utf-8')
-    target.write_text(target_text, encoding='utf-8')
+    template.write_bytes(template_text.encode('utf-8'))
+    target.write_bytes(target_text.encode('utf-8'))
     return template, target
 
 
@@ -200,6 +200,70 @@ def test_symbolic_link_input_is_rejected_without_touching_referent(tmp_path, lin
     assert referent.read_bytes() == before
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows junction')
+def test_windows_reparse_parent_is_rejected_without_touching_referent(tmp_path):
+    referent = tmp_path / 'referent'
+    referent.mkdir()
+    template, target = _paths(referent, 'A=one\n', 'A=local\n')
+    junction = tmp_path / 'junction'
+    result = subprocess.run(
+        ['cmd.exe', '/d', '/c', 'mklink', '/j', str(junction), str(referent)],
+        capture_output=True, timeout=5,
+    )
+    assert result.returncode == 0
+    try:
+        before = target.read_bytes()
+        with pytest.raises(PermissionError):
+            _sync(junction / template.name, target, write=True)
+        assert target.read_bytes() == before
+    finally:
+        junction.rmdir()
+
+
+def _assert_private(target):
+    if os.name == 'nt':
+        from agent_core.core.windows_security import verify_private_path
+        verify_private_path(target)
+    else:
+        assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_crlf_content_is_preserved_and_second_write_is_noop(tmp_path):
+    template, target = _paths(tmp_path, 'A=default\r\nB=default\r\n',
+                              'A=local\r\n')
+    _sync(template, target, write=True)
+    assert target.read_bytes() == b'A=local\r\nB=default\r\n'
+    assert _sync(template, target, write=True)['changed'] is False
+
+
+def test_mixed_template_and_target_newlines_are_idempotent(tmp_path):
+    template, target = _paths(tmp_path, '# group\r\nA=default\r\n\r\nB=default\r\n',
+                              'A=local\n')
+    _sync(template, target, write=True)
+    first = target.read_bytes()
+    assert _sync(template, target, write=True)['changed'] is False
+    assert target.read_bytes() == first
+
+
+def test_multiline_value_crlf_does_not_change_record_newline(tmp_path):
+    template, target = _paths(tmp_path,
+        'A=default\r\nMULTI="first\r\nsecond"\r\n', 'A=local\n')
+    _sync(template, target, write=True)
+    first = target.read_bytes()
+    assert first == b'A=local\nMULTI="first\r\nsecond"\n'
+    assert _sync(template, target, write=True)['changed'] is False
+    assert target.read_bytes() == first
+
+
+def test_private_unchanged_target_is_not_replaced(tmp_path, monkeypatch):
+    template, target = _paths(tmp_path, 'A=local\n', 'A=local\n')
+    _sync(template, target, write=True)
+    def fail_replace(*args):
+        raise AssertionError('unchanged private target was replaced')
+    monkeypatch.setattr(os, 'replace', fail_replace)
+    assert _sync(template, target, write=True)['changed'] is False
+
+
 def test_write_creates_missing_target_atomically_with_private_permissions(tmp_path):
     template = tmp_path / '.env.example'
     target = tmp_path / '.env'
@@ -208,14 +272,14 @@ def test_write_creates_missing_target_atomically_with_private_permissions(tmp_pa
     assert report['changed'] is True
     assert report['added'] == ['A', 'B']
     assert target.read_text(encoding='utf-8').count('A=default') == 1
-    assert target.stat().st_mode & 0o777 == 0o600
+    _assert_private(target)
 
 
 def test_existing_target_permissions_are_tightened_to_0600(tmp_path):
     template, target = _paths(tmp_path, 'A=default\nB=default\n', 'A=local\n')
     target.chmod(0o644)
     _sync(template, target, write=True)
-    assert target.stat().st_mode & 0o777 == 0o600
+    _assert_private(target)
 
 
 def test_write_tightens_existing_permissions_even_when_content_is_unchanged(tmp_path):
@@ -226,7 +290,40 @@ def test_write_tightens_existing_permissions_even_when_content_is_unchanged(tmp_
     report = _sync(template, target, write=True)
     assert report == {'changed': False, 'added': [], 'preserved': 1, 'local_only': []}
     assert target.read_bytes() == before
-    assert target.stat().st_mode & 0o777 == 0o600
+    _assert_private(target)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows DACL')
+def test_windows_foreign_acl_is_replaced_even_for_unchanged_content(tmp_path):
+    from agent_core.core.windows_security import verify_private_path
+
+    template, target = _paths(tmp_path, 'A=local\n', 'A=local\n')
+    result = subprocess.run(['icacls', str(target), '/grant', '*S-1-1-0:(R)'],
+                            capture_output=True, timeout=5)
+    assert result.returncode == 0
+    with pytest.raises(PermissionError):
+        verify_private_path(target)
+    before = target.read_bytes()
+    report = _sync(template, target, write=True)
+    assert report['changed'] is False
+    assert target.read_bytes() == before
+    verify_private_path(target)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows DACL')
+def test_permission_failure_preserves_original_and_removes_temporary(tmp_path, monkeypatch):
+    import agent_test.scripts.sync_env as sync_module
+
+    template, target = _paths(tmp_path, 'A=default\nB=default\n', 'A=local\n')
+    before = target.read_bytes()
+    names = {entry.name for entry in tmp_path.iterdir()}
+    def fail_protection(path):
+        raise PermissionError('simulated ACL failure')
+    monkeypatch.setattr(sync_module, '_windows_private_temp', fail_protection)
+    with pytest.raises(PermissionError, match='simulated ACL failure'):
+        _sync(template, target, write=True)
+    assert target.read_bytes() == before
+    assert {entry.name for entry in tmp_path.iterdir()} == names
 
 
 @pytest.mark.parametrize('bad_side', ['template', 'target'])
