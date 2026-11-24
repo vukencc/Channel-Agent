@@ -26,9 +26,12 @@ def windows_files(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "Path", PureWindowsPath)
-    monkeypatch.setattr(os, "O_BINARY", 0, raising=False)
-    monkeypatch.setattr(os, "fstat", lambda fd: types.SimpleNamespace(st_mode=stat.S_IFREG))
-    monkeypatch.setattr(os, "close", lambda fd: None)
+    # 仅伪造受控模块中的句柄操作，pytest 捕获层仍需真实文件描述符。
+    controlled_os = types.SimpleNamespace(**vars(os))
+    controlled_os.O_BINARY = 0
+    controlled_os.fstat = lambda fd: types.SimpleNamespace(st_mode=stat.S_IFREG)
+    controlled_os.close = lambda fd: None
+    monkeypatch.setattr(module, "os", controlled_os)
     return module
 
 
