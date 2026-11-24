@@ -89,9 +89,13 @@ class ProjectService:
         stored = self._read(project_id)
         flow = self.flows.records[flow_id]
         if (stored["flow_id"] != flow_id or project["flow_id"] != flow_id
-                or flow["project_id"] != project_id or not self.flows._path(flow_id).exists()):
+                or flow["project_id"] != project_id):
             raise ValueError("项目与 Flow 的关联无效")
-        self.flows._verify_link_file(flow_id)
+        try:
+            self.flows._verify_link_file(flow_id)
+        except FileNotFoundError:
+            raise ValueError("项目与 Flow 的关联无效") from None
+        return stored
 
     def _path(self, identifier):
         if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
@@ -119,10 +123,13 @@ class ProjectService:
 
     def _write(self, value):
         path = self._path(value["id"])
-        if not path.exists() and value["id"] in self.records:
-            raise PermissionError("项目文件已在外部删除")
-        if path.exists():
+        try:
             self._read(value["id"])
+        except FileNotFoundError:
+            if path.exists():
+                raise
+            if value["id"] in self.records:
+                raise PermissionError("项目文件已在外部删除") from None
         self.manager.store.atomic_write(path, json.dumps(value, ensure_ascii=False, allow_nan=False))
         info = path.stat(follow_symlinks=False)
         self.file_identities[value["id"]] = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
@@ -138,14 +145,10 @@ class ProjectService:
                 continue
         return values
 
-    @_pinned_read
     def get(self, project_id):
-        self.records[project_id]  # 只允许已加载的项目身份
-        value = self._read(project_id)
-        if value["flow_id"] != self.records[project_id]["flow_id"]:
-            raise PermissionError("项目流程身份已变化")
-        self._check_link(project_id, value["flow_id"])
-        return copy.deepcopy(value)
+        project = self.records[project_id]
+        stored = self._check_link(project_id, project["flow_id"])
+        return copy.deepcopy(stored)
 
     def _workspace(self, value):
         if not value["workspace_path"]:

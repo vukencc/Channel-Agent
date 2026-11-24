@@ -11,7 +11,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from agent_core import config
-from agent_core.core.storage import SessionStore
+from agent_core.core.storage import SessionStore, wait_for_io_completion
 
 
 class BudgetExceeded(RuntimeError):
@@ -88,10 +88,26 @@ async def reserve_request(cost):
     if value is None:
         return None
     ledger, session_id = value
-    return ledger, await asyncio.to_thread(ledger.reserve, session_id, cost)
+    write = asyncio.create_task(asyncio.to_thread(ledger.reserve, session_id, cost))
+    try:
+        return ledger, await asyncio.shield(write)
+    except asyncio.CancelledError as cancellation:
+        # 取消时线程可能已经提交预留，但尚未向调用方交付票据，能确定还没有发请求。
+        try:
+            identifier = await wait_for_io_completion(write)
+        except Exception as failed_reservation:
+            raise cancellation from failed_reservation
+        refund = asyncio.create_task(asyncio.to_thread(ledger.settle, identifier, 0.0))
+        await wait_for_io_completion(refund)
+        raise
 
 
 async def settle_request(ticket, cost):
     if ticket is not None:
         ledger, identifier = ticket
-        await asyncio.to_thread(ledger.settle, identifier, cost)
+        write = asyncio.create_task(asyncio.to_thread(ledger.settle, identifier, cost))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            await wait_for_io_completion(write)
+            raise

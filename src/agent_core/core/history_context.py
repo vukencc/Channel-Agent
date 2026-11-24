@@ -587,6 +587,13 @@ class HistoryContext:
                 'utilization': max((chars + reserved_chars) / session_limit('MODEL_INPUT_CHARS'),
                                    (tokens + reserved_tokens) / session_limit('MODEL_INPUT_TOKENS'))}, schemas)
 
+    def fixed_window_metrics(self, history: list[dict], schemas: list[dict]) -> dict:
+        """校验不可裁剪的单次请求，沿用普通窗口的预留和容量估算。"""
+        metrics = self._metrics(history, schemas, history[-1], history)
+        if metrics['utilization'] > 1:
+            raise ContextBudgetError(metrics)
+        return metrics
+
     @traced('supervisor.summary')
     async def _summary(self, session, previous, messages, *, kind, deadline):
         maximum = config.CONTEXT_SUMMARY_CHARS

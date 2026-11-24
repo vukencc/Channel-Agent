@@ -1,5 +1,6 @@
 """Real local cross-encoder inference; load/inference errors are never hidden."""
 from functools import lru_cache
+from threading import Lock
 from agent_core.rag.cancellation import check_cancelled
 import json
 import hashlib
@@ -88,17 +89,33 @@ class Reranker:
         return output.tolist()
 
 
+_reranker_load_lock = Lock()
+
+
 @lru_cache(maxsize=1)
 def _get_reranker(key):
     return Reranker()
 
 
-def get_reranker():
+def get_reranker() -> Reranker:
     from agent_core.rag.embedding import artifact_signature
-    return _get_reranker((config.RERANK_MODEL, config.RERANK_REVISION,
-                          config.RERANK_LOCAL_PATH, config.RAG_CACHE_DIR,
-                          config.RAG_THREADS, config.RAG_RERANK_DEVICE, config.RAG_RERANK_DTYPE,
-                          artifact_signature(local_reranker_path())))
+
+    check_cancelled()
+    key = (config.RERANK_MODEL, config.RERANK_REVISION,
+           config.RERANK_LOCAL_PATH, config.RAG_CACHE_DIR,
+           config.RAG_THREADS, config.RAG_RERANK_DEVICE, config.RAG_RERANK_DTYPE,
+           artifact_signature(local_reranker_path()))
+    # 锁覆盖缓存查询和构造，避免并发缓存未命中重复加载模型。
+    while not _reranker_load_lock.acquire(timeout=.05):
+        check_cancelled()
+    try:
+        check_cancelled()
+        reranker = _get_reranker(key)
+    finally:
+        _reranker_load_lock.release()
+    # 构造途中取消的请求仍可留下已成功加载的模型，供下一次检索复用。
+    check_cancelled()
+    return reranker
 
 
 def local_reranker_path():

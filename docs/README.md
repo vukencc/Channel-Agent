@@ -50,6 +50,8 @@
 
 - [设计助手全栈验证（2026-11-19，续至 11-20）](flow-designer-fullstack-validation-2026-11-19.md)：真实七节点项目、Windows 和 Linux 运行、双视口浏览器验收及中断恢复。
 
+- [0.6.2 证据归属与双平台验证](flow-evidence-release-0.6.2.md)记录了原客服流程、Windows 配置同步、回归与成品交付。
+
 - [Flow 话术与 Windows 队列（2026-11-17）](flow-wording-queue-validation-2026-11-17.md)：两项 P3、原 5 秒队列、真实配置模型五节点复验与双平台回归。
 
 - [Windows 设计助手端到端验证（2026-11-15）](designer-windows-e2e-validation-2026-11-15.md)：真实连接诊断与模板生成、修复及待验边界。

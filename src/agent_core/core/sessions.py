@@ -9,7 +9,7 @@ import threading
 import time
 import sys
 from contextvars import copy_context
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from dataclasses import dataclass, field
 from typing import Callable
@@ -19,7 +19,9 @@ from agent_core.core.session_limits import limit as session_limit, limits_scope,
 from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, runtime_file_workflow_guide, runtime_recovery_notice, permission_mode_guide, rag_runtime_protocol
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
 from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
-from agent_core.core.flow_handoff import HandoffContract, validate_handoff, handoff_output_instruction
+from agent_core.core.flow_confirmation import FlowConfirmationChanged, confirmation_history, confirmation_decision
+from agent_core.core.flow_handoff import (HandoffContract, validate_handoff, handoff_output_instruction,
+                                          receipt_field_correction, preserves_handoff_fields, apply_receipt_patch, handoff_digest, receipt_patch_instruction)
 from agent_core.core.storage import SessionStore, finish_pending_tools, wait_for_io_completion
 from agent_core.core.session_service import session_service_context
 from agent_core.core.communication import SessionCommunication
@@ -29,7 +31,8 @@ from agent_core.core.task_plans import EvidenceCapacityError
 from agent_core.core.delegation_guidance import delegation_guide
 from agent_core.core.log import get_logger
 from agent_core.core.instrumentation import NullObserver, RuntimeObserver, observation_context, operation_span, traced, trace_function, tool_outcome
-from agent_core.core.model_settings import model_profile, model_thinking, active_profile, active_endpoint
+from agent_core.core.model_settings import (model_profile, model_thinking, model_fallbacks, active_profile,
+                                            active_endpoint, check_model_dispatch)
 from agent_core.core.tool_settings import filter_schemas, bounded_schemas, model_tools, effective_tool_names
 from agent_core.core.budgets import BudgetLedger, BudgetExceeded, budget_scope
 from agent_core.rag.assess import assess_rag
@@ -37,6 +40,8 @@ from agent_core.tools import TOOL_REGISTRY
 from agent_core.tools.sandbox import ToolContext, tool_context, CancellationFlag, audit, SandboxError, execution_authority
 
 logger = get_logger(__name__)
+
+RestoredUserInput = Callable[[], tuple[str, str] | None]
 
 
 @dataclass
@@ -60,6 +65,8 @@ class Session:
     deleting: bool = False
     tool_workers: set = field(default_factory=set)
     flow_task_ids: list[str] = field(default_factory=list)
+    flow_review_task: str = ''
+    flow_required_task: str = ''
 
     @property
     def id(self):
@@ -400,7 +407,9 @@ class SessionManager:
 
     def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
                completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None,
-               handoff_span: tuple[int, int] | None = None):
+               handoff_span: tuple[int, int] | None = None, user_input_span: tuple[int, int] | None = None,
+               flow_node_task: str = '', resume_flow_turn: str | None = None,
+               resume_user_input: tuple[str, str] | None = None):
         contract = (HandoffContract.model_validate(handoff_contract).model_dump(exclude_none=True)
                     if handoff_contract is not None else None)
         if self.sessions.get(session.id) is not session:
@@ -410,6 +419,13 @@ class SessionManager:
         if session.busy:
             raise ValueError('此会话正在运行，请等待、停止，或切换到其他会话')
         self.assert_project_available(session, submitting=True, flow_id=flow_id)
+        if resume_flow_turn is not None:
+            previous = session.record.get('last_run', {})
+            if (not flow_id or flow_id != session.record.get('flow_id')
+                    or session.record.get('status') != 'checkpoint'
+                    or previous.get('turn_id') != resume_flow_turn
+                    or previous.get('stop_reason') not in {'model_connection', 'model_timeout'}):
+                raise ValueError('原会话检查点已变化')
         if not text.strip():
             raise ValueError('消息不能为空')
         if self.store.session_bytes(session.id) + len(text.encode('utf-8')) > config.SESSION_MAX_MB * 1024 * 1024:
@@ -430,31 +446,46 @@ class SessionManager:
         if session.summary_task and not session.summary_task.done():
             session.summary_task.cancel()
         session.record.pop('assessment', None)
+        if resume_flow_turn is None:
+            session.record.pop('_flow_action_checkpoint', None)
+        session.flow_review_task = flow_node_task[:8192] if flow_id else ''
+        session.flow_required_task = flow_node_task if flow_id else ''
         session.record['last_run'] = {'turn_id': uuid.uuid4().hex, 'model_calls': [], 'tools': []}
         session.record.update(status='queued', error='')
         session.record['last_run']['input_index'] = len(session.record['messages'])
         message = {'role': 'user', 'content': text}
-        if handoff_span is not None:
-            start, end = handoff_span
-            message['_flow_handoff'] = {'owner': session.id, 'turn': session.record['last_run']['turn_id'],
-                'start': start, 'end': end, 'full_digest': hashlib.sha256(text.encode('utf-8')).hexdigest(),
-                'span_digest': hashlib.sha256(text[start:end].encode('utf-8')).hexdigest()}
+        for key, span in (('_flow_handoff', handoff_span), ('_flow_user_input', user_input_span)):
+            if span is not None:
+                start, end = span
+                message[key] = {'owner': session.id, 'turn': session.record['last_run']['turn_id'],
+                    'start': start, 'end': end, 'full_digest': hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                    'span_digest': hashlib.sha256(text[start:end].encode('utf-8')).hexdigest()}
         if attachments:
             message['_attachments'] = copy.deepcopy(attachments)
         session.record['messages'].append(message)
+        restored_input: RestoredUserInput | None = None
+        if resume_flow_turn is not None and resume_user_input is not None:
+            same_authority = self._restored_workspace_scope(session)
+
+            def scoped_input() -> tuple[str, str] | None:
+                return resume_user_input if same_authority() else None
+
+            restored_input = scoped_input
         queued_save = self.save(session)
         if self.observer.enabled:
             self.observer.event('turn.started', session_id=session.id,
                 turn_id=session.record['last_run']['turn_id'],
                 parent_session_id=session.record.get('delegated_from'), state='queued')
-        session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error, contract))
+        session.task = asyncio.create_task(
+            self._run_submitted(session, queued_save, completion_error, contract, restored_input))
 
         def finish(task: asyncio.Task) -> None:
             if task is session.task and task.cancelled() and session.turn_active:
                 # 直接取消未启动的任务时，由同一轮继续排空保存。
                 session.cancelled.set()
                 session.record['status'] = 'stopping'
-                session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error, contract))
+                session.task = asyncio.create_task(
+                    self._run_submitted(session, queued_save, completion_error, contract, restored_input))
                 session.task.add_done_callback(finish)
             self.notify()
 
@@ -645,13 +676,16 @@ class SessionManager:
                     try:
                         with operation_span('tool.execute', name=name) as span:
                             result = tool.run(call['function']['arguments'])
-                            span.outcome = tool_outcome(result)
+                            span.outcome = tool_outcome(result, tool_name=name, custom_tool=name not in TOOL_REGISTRY)
                     except Exception:
                         if evidence is not None:
                             evidence['worker_source'] = 'execution_error'
                         raise
                     if evidence is not None:
                         evidence['worker_source'] = 'executed'
+                        evidence['worker_outcome'] = span.outcome
+                        if name not in TOOL_REGISTRY and getattr(tool, 'is_receipt_reader', False) is True:
+                            evidence['receipt_reader'] = True
                     return result
                 # Reads must not race commands that replace a validated parent with a symlink.
                 if tool.concurrency == 'serial' or tool.workspace_access:
@@ -709,6 +743,7 @@ class SessionManager:
             result = await asyncio.wait_for(asyncio.shield(worker), timeout)
             if evidence is not None:
                 evidence['source'] = evidence.get('worker_source', 'not_executed')
+                evidence['outcome'] = evidence.get('worker_outcome')
             return result
         except TimeoutError:
             if evidence is not None:
@@ -840,11 +875,16 @@ class SessionManager:
         session.summary_task.add_done_callback(self.summary_tasks.discard)
 
     @traced('model.total')
-    async def _call_model(self, history, *, disable_tools=False, **kwargs):
+    async def _call_model(self, history, *, disable_tools=False, source_reads=False, staged_actions=None,
+                          flow_confirmation=None, recovery_tools: set[str] | None = None,
+                          flow_review_thinking_disabled: bool = False, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
+            check_model_dispatch()
             session = self.sessions.get(kwargs.get('session_id'))
             names = [] if disable_tools else (self._effective_session_tools(session) if session else config.MODEL_TOOL_NAMES)
+            if source_reads:
+                names = [name for name in ('read_file', 'rag_search') if names is None or name in names]
             with self._concurrency_lock:
                 self._active_model_calls += 1
                 identifier = kwargs.get('session_id')
@@ -862,9 +902,37 @@ class SessionManager:
                 endpoint = (active_endpoint.get() if active_profile.get() == profile
                             else self.model_registry.resolve(profile))
                 schemas = [] if disable_tools else (self._session_schemas(session) if session else None)
-                with model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
-                    with operation_span('model.request'):
-                        return await self.model(history, **kwargs)
+                if source_reads:
+                    schemas = filter_schemas(schemas or [], names)
+                elif staged_actions is not None and not disable_tools:
+                    allowed = bounded_schemas(schemas or [], names)
+                    if flow_confirmation is None:
+                        schemas = staged_actions.drafting_schemas(allowed)
+                        staged_actions.begin_drafting()
+                    else:
+                        # 模型槽位可能排队；在披露私有参数之前再次核对同一笔及相同授权。
+                        staged_actions.model_schemas(allowed)
+                        current = await staged_actions.confirmation_offer()
+                        if current != flow_confirmation:
+                            raise FlowConfirmationChanged
+                        schemas = bounded_schemas([current['schema']], [current['tool_name']])
+                    if not await staged_actions.flush_audit():
+                        raise RuntimeError(staged_actions.gate.blocked)
+                    if recovery_tools is not None:
+                        # 排队期间重新核对权限后，再与补读轮已计入上下文的工具取交集。
+                        schemas = [row for row in schemas if row['function']['name'] in recovery_tools]
+                    names = [row['function']['name'] for row in schemas]
+                if session is not None and session.cancelled.is_set():
+                    raise asyncio.CancelledError
+                fallback_scope = nullcontext()
+                if flow_review_thinking_disabled:
+                    # 显式关闭独立复核思考时，仅向原服务发送该选项。失败沿用原返回路径。
+                    mode = 'disabled'
+                    fallback_scope = model_fallbacks(False)
+                with (model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode),
+                      fallback_scope, limits_scope(session.record if session else {}, endpoint=endpoint),
+                      operation_span('model.request')):
+                    return await self.model(history, **kwargs)
             finally:
                 with self._concurrency_lock:
                     self._active_model_calls -= 1
@@ -1202,7 +1270,8 @@ class SessionManager:
     @traced('agent.run')
     async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None],
                              completion_error: asyncio.Future[str] | None = None,
-                             handoff_contract: dict | None = None) -> None:
+                             handoff_contract: dict | None = None,
+                             restored_input: RestoredUserInput | None = None) -> None:
         input_committed = False
         try:
             # 已提交的 queued 快照包含本轮输入。先验证写入结果，再允许任何模型调用或工具副作用。
@@ -1214,9 +1283,10 @@ class SessionManager:
             input_committed = True
             if session.cancelled.is_set():
                 raise asyncio.CancelledError
-            await self._run_with_budget(session, handoff_contract)
+            await self._run_with_budget(session, handoff_contract, restored_input)
         except asyncio.CancelledError:
-            session.record.update(status='cancelled', error='任务已停止；已执行的文件操作不会自动回滚。')
+            if session.record['last_run'].get('stop_reason') != 'flow_action_audit':
+                session.record.update(status='cancelled', error='任务已停止；已执行的文件操作不会自动回滚。')
         except Exception as exc:
             if input_committed:
                 error = f'{type(exc).__name__}: 模型或会话预算初始化失败，请检查设置。'
@@ -1229,13 +1299,15 @@ class SessionManager:
         if completion_error is not None and not completion_error.done():
             completion_error.set_result(session.record.get('error', ''))
 
-    async def _run_with_budget(self, session, handoff_contract=None):
+    async def _run_with_budget(self, session, handoff_contract=None, restored_input: RestoredUserInput | None = None):
         from agent_core.core.images import image_scope
         profile = session.record.get('model_profile')
         endpoint = self.model_registry.resolve(profile)
         with model_profile(profile, endpoint), budget_scope(self.budget_ledger, session.record.get('budget_owner_id', session.id)), limits_scope(session.record, endpoint=endpoint), image_scope(self.store.directory(session.id) / 'attachments'):
             with observation_context(turn_id=session.record.get('last_run', {}).get('turn_id')):
-                if handoff_contract is None:
+                if restored_input is not None:
+                    await self._run(session, handoff_contract, restored_input=restored_input)
+                elif handoff_contract is None:
                     await self._run(session)
                 else:
                     await self._run(session, handoff_contract)
@@ -1256,7 +1328,51 @@ class SessionManager:
         session.record['inbox_cursor'] = page['next_seq']
         await self.save(session)
 
-    async def _run(self, session, handoff_contract=None):
+    def _restored_workspace_scope(self, session: Session) -> Callable[[], bool]:
+        """只在同一恢复轮与工作区、权限范围内向审查提供原来源。"""
+        def authority():
+            record = session.record
+            binding = self.workspaces.owner_binding(session)
+            return (record.get('flow_id'), record.get('flow_node_id'), record.get('flow_run_id'),
+                    record.get('flow_project_id'), record['last_run'].get('turn_id'), session.flow_required_task,
+                    binding, self.workspaces.path(session), self.execution_environment(session),
+                    self.permission_override or record.get('permission_policy') or config.TOOL_PERMISSION_POLICY)
+
+        try:
+            original = authority()
+        except (OSError, ValueError):
+            return lambda: False
+
+        def same_authority() -> bool:
+            try:
+                return authority() == original
+            except (OSError, ValueError):
+                return False
+
+        return same_authority
+
+    def _restored_read_scope(self, session: Session, verified: dict[str, dict]) -> Callable[[], dict[str, dict]]:
+        same_authority = self._restored_workspace_scope(session)
+        restored_ids = frozenset(verified)
+        definitions = {name: copy.deepcopy(tool.definition)
+                       for name, tool in self._session_custom_registry(session).items()}
+
+        def sources() -> dict[str, dict]:
+            if not same_authority():
+                return {}
+            try:
+                allowed = self._effective_session_tools(session)
+                current = self._session_custom_registry(session)
+            except (OSError, ValueError):
+                return {}
+            return {identifier: reference for identifier, reference in verified.items()
+                    if identifier in restored_ids and (allowed is None or reference['name'] in allowed)
+                    and (reference['name'] in TOOL_REGISTRY or
+                         reference['name'] in current and current[reference['name']].definition == definitions.get(reference['name']))}
+
+        return sources
+
+    async def _run(self, session, handoff_contract=None, *, restored_input: RestoredUserInput | None = None):
         contexts = []
         # 仅在此运行中产生并完整交付的观察可用于后续工作窗口。
         trusted_observations = {}
@@ -1264,6 +1380,71 @@ class SessionManager:
         delivered_workspace_frames = set()
         reviewed_progress = set()
         policy = TaskExecutionPolicy.for_session(session.record, session_limit('MAX_TOOL_ROUNDS'))
+
+        rounds = iter(policy.rounds())
+        next_stage = policy.progress_window
+        handoff_revisions = 0
+        recover_sources = False
+        return_to_drafting = False
+        retried_confirmation = None
+        confirmation_correction_due = False
+
+        def reserve_review_round() -> bool:
+            index = next(rounds, None)
+            if index is None:
+                return False
+            run = session.record['last_run']
+            run['model_rounds'] = index + 1
+            if config.ENABLE_SESSION_BUDGETS:
+                run['budget']['rounds_remaining'] = (
+                    None if policy.maximum_rounds is None else policy.maximum_rounds - index - 1)
+            return True
+
+        gate = None
+        staged_actions = None
+        receipt_index = None
+        receipt_repair_used = False
+        required_read_names = set()
+        completed_reads = set()
+        seen_read_call_ids = set()
+        verified_read_calls = {}
+        required_read_retry = False
+        required_read_recovering = False
+        if self.flow_workspace_scope(session) and session.flow_required_task:
+            from agent_core.core.flow_required_reads import required_reads
+            required_read_names = required_reads(session.flow_required_task, session.record.get('custom_tools'))
+        if self.flow_workspace_scope(session):
+            from agent_core.core.flow_draft_gate import FlowDraftGate
+            from agent_core.core.flow_staged_actions import FlowStagedActions
+            if handoff_contract is not None:
+                from agent_core.core.flow_handoff_receipts import FlowHandoffReceipts
+                receipt_index = FlowHandoffReceipts(handoff_contract)
+            gate = FlowDraftGate(self, session, reserve_review_round, receipt_index=receipt_index)
+            gate.restored_input = restored_input
+            staged_actions = FlowStagedActions(gate)
+            saved = session.record.get('_flow_action_checkpoint')
+            if saved is not None:
+                staged_actions.restore_checkpoint(saved['actions'])
+                if receipt_index is not None:
+                    receipt_index.restore_checkpoint(saved['receipts'])
+                if required_read_names:
+                    from agent_core.core.flow_required_reads import resume_required_reads
+
+                    allowed = self._effective_session_tools(session)
+                    custom = set(self._session_custom_registry(session))
+                    eligible = required_read_names & (set(TOOL_REGISTRY) | custom)
+                    if allowed is not None:
+                        eligible.intersection_update(allowed)
+                    seen_read_call_ids, verified_read_calls = resume_required_reads(
+                        session.record, saved, eligible, custom, require_commit=staged_actions.requires_preview)
+                    completed_reads = {reference['name'] for reference in verified_read_calls.values()}
+                    if verified_read_calls:
+                        gate.restored_reads = self._restored_read_scope(session, verified_read_calls)
+        if required_read_names:
+            missing = required_read_names - completed_reads
+            session.record['last_run']['flow_required_reads'] = {
+                'required': sorted(required_read_names), 'completed': sorted(completed_reads),
+                'missing': sorted(missing), 'status': 'pending' if missing else 'completed'}
 
         def checkpoint(reason, message):
             session.record['status'] = 'checkpoint'
@@ -1274,10 +1455,11 @@ class SessionManager:
             session.record['status'] = 'running'
             session.record['last_run']['automatic_continuations'] = 0
             session.record['last_run']['recovery_attempts'] = 0
-            for round_index in policy.rounds():
+            for round_index in rounds:
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
-                if round_index and round_index % policy.progress_window == 0:
+                if round_index >= next_stage:
+                    next_stage = (round_index // policy.progress_window + 1) * policy.progress_window
                     _, waiting = execution_state(self, session)
                     tools = session.record['last_run']['tools']
                     progressed = any(item.get('execution_progress', item['source'] == 'executed')
@@ -1285,7 +1467,9 @@ class SessionManager:
                     if waiting:
                         checkpoint('plan_waiting', '计划受阻或等待必要信息，请解除阻塞后继续。')
                         break
-                    if not progressed:
+                    approved = any(item.get('approval_progress') for item in tools[policy.stage_tool_start:])
+                    awaiting_confirmation = staged_actions and staged_actions.pending and (approved or confirmation_correction_due)
+                    if not progressed and not awaiting_confirmation:
                         checkpoint('no_execution_progress', '连续执行未取得工具进展，已保存当前状态，请检查失败原因。')
                         break
                     policy.stage_tool_start = len(tools)
@@ -1301,6 +1485,7 @@ class SessionManager:
                             audit('task_auto_continued', stage=session.record['last_run']['automatic_continuations'] + 1)
                         await self.save(session)
                         self.notify()
+                confirmation_correction_due = False
                 session.record['last_run']['model_rounds'] = round_index + 1
                 session.record['last_run']['rounds_limit'] = policy.maximum_rounds
                 if config.ENABLE_SESSION_BUDGETS:
@@ -1349,6 +1534,9 @@ class SessionManager:
                             '隔离能力不足时停止并报告，不能绕过工作区保护。')
                 else:
                     budget_text += '\n当前执行环境为隔离沙箱，工作区映射 /workspace；隔离失败时不能回退本机。'
+                if self.flow_workspace_scope(session):
+                    from agent_core.core.execution_guidance import flow_source_guidance
+                    budget_text += flow_source_guidance()
                 if self.task_plans is not None:
                     budget_text += ('\n复杂任务用 plan_create/revise 记录步骤与验收，开始前 plan_update，'
                         '外部执行用 plan_bind 等待，结果用 plan_get 提供的证据 ID 记录；'
@@ -1371,6 +1559,31 @@ class SessionManager:
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
                 schemas = bounded_schemas(self._session_schemas(session), self._effective_session_tools(session))
+                offer = None
+                if staged_actions is not None and not handoff_revisions:
+                    schemas = staged_actions.drafting_schemas(schemas)
+                    if not return_to_drafting:
+                        offer = await staged_actions.confirmation_offer()
+                    return_to_drafting = False
+                    if (offer is None and staged_actions.pending
+                            and session.record.get('_flow_action_checkpoint') is not None):
+                        budget_text += ('\n续跑前有待办草稿。请核对已保存的工具回执；旧批准已经失效，'
+                                        '未提交的草稿需要重新预审，已有成功回执的操作无需再提交。')
+                    if not await staged_actions.flush_audit():
+                        checkpoint('flow_action_audit', gate.blocked)
+                        break
+                    if offer is not None:
+                        schemas = bounded_schemas([offer['schema']], [offer['tool_name']])
+                if receipt_index is not None and offer is None:
+                    # 只把经验证的字段名称和数量放入系统区；具体编号留在工具/引用数据里。
+                    budget_text += receipt_index.guide()
+                recovery_request = required_read_recovering
+                if recovery_request and offer is None:
+                    allowed_recovery = set(required_read_names)
+                    if staged_actions:
+                        allowed_recovery.update(filter(None, (staged_actions.preflight.preview_for_original(name)
+                                                              for name in required_read_names)))
+                    schemas = [row for row in schemas if row['function']['name'] in allowed_recovery]
                 tool_names = {schema['function']['name'] for schema in schemas}
                 file_guide = runtime_file_workflow_guide(tool_names, scoped=bool(session.record.get('flow_id')))
                 if session.record.get('flow_id') and file_guide == FILE_WORKFLOW_GUIDE:
@@ -1389,7 +1602,10 @@ class SessionManager:
                             and self.workspace_memory.can_reread(session, workspace_frame, schemas))
 
                 fitted_workspace = False
-                if history_context is not None:
+                if offer is not None:
+                    history, context_metrics = confirmation_history(offer, schemas, history_context,
+                        node_task=session.flow_review_task, retry=retried_confirmation == offer['draft_id'])
+                elif history_context is not None:
                     previous_context = session.record['last_run'].get('context', {})
                     if (previous_context.get('compacted') or previous_context.get('archived_chunks', 0) > 0) and can_fit_workspace():
                         memory = private_memory + workspace_frame.floor
@@ -1428,7 +1644,8 @@ class SessionManager:
                 session.record['last_run']['context'] = context_metrics
                 self._observe_context_sample(session, context_metrics)
                 session.record['last_run'].pop('recovery_context', None)
-                if progress_key and progress_key not in reviewed_progress:
+                if (offer is None and not handoff_revisions and not recovery_request
+                        and progress_key and progress_key not in reviewed_progress):
                     candidate = review_history(history, context_metrics, session_limit('MODEL_INPUT_CHARS'),
                                                session_limit('MODEL_INPUT_TOKENS'))
                     if candidate is not None:
@@ -1440,7 +1657,7 @@ class SessionManager:
                             'sent_chars': history_size(history), 'sent_tokens': request_tokens(history),
                             'reserved_chars': context_metrics.get('reserved_chars', 0),
                             'reserved_tokens': context_metrics.get('reserved_tokens', 0)})
-                session.phase = '等待模型响应'
+                session.phase = '确认已批准的动作' if offer is not None else '等待模型响应'
                 self._observe_phase(session, 'model_wait')
                 self.notify()
                 model_metrics_start = len(session.record['last_run']['model_calls'])
@@ -1448,8 +1665,15 @@ class SessionManager:
                 recovered = 0
                 while True:
                     try:
-                        reply = await self._call_model(history, **({'disable_tools': True} if review else {}), session_id=session.id,
-                                                 emit=lambda kind, text: self.emit(session, kind, text))
+                        model_options = {'staged_actions': staged_actions, 'flow_confirmation': offer} if staged_actions else {}
+                        if recovery_request and offer is None:
+                            model_options['recovery_tools'] = tool_names
+                        if handoff_revisions:
+                            model_options = {'source_reads': True} if recover_sources else {'disable_tools': True}
+                        if review:
+                            model_options = {'disable_tools': True}
+                        reply = await self._call_model(history, session_id=session.id, **model_options,
+                            emit=lambda kind, text: self.emit(session, kind, text))
                         break
                     except (asyncio.CancelledError, BudgetExceeded):
                         if review:
@@ -1487,7 +1711,10 @@ class SessionManager:
                         self._observe_phase(session, 'recovery')
                         await self.save(session)
                         recovery_notice = runtime_recovery_notice(tool_names, scoped=bool(session.record.get('flow_id')))
-                        if history_context is not None:
+                        if offer is not None:
+                            history, recovery_context = confirmation_history(offer, schemas, history_context,
+                                node_task=session.flow_review_task, retry=True)
+                        elif history_context is not None:
                             # 从持久原文重新组装，不能将带标题的模型窗口再次作为原始历史归档。
                             history, recovery_context = await history_context.prepare(session,
                                 [dict(message) for message in session.record['messages']], schemas=schemas,
@@ -1509,10 +1736,10 @@ class SessionManager:
                     break
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
-                if (workspace_frame is not None and not fitted_workspace
+                if (offer is None and workspace_frame is not None and not fitted_workspace
                         and not session.cancelled.is_set()):
                     delivered_workspace_frames.add(workspace_frame.key)
-                if history_context is not None and not session.cancelled.is_set():
+                if offer is None and history_context is not None and not session.cancelled.is_set():
                     history_context.mark_delivered(session, history)
                 from agent_core.core.tool_observations import validate_observation
                 for sent in history:
@@ -1563,7 +1790,55 @@ class SessionManager:
                 session.partial_reasoning = ''
                 await self.save(session)
                 calls = reply.get('tool_calls', [])
+                confirmation_rejected = False
+                if offer is not None:
+                    if calls:
+                        authorized = await staged_actions.confirmation_validate(calls)
+                        # 正式提交与文字决定互斥；独立 reasoning_content 不属于最终决定。
+                        content = reply.get('content')
+                        has_text = content is not None and (not isinstance(content, str) or bool(content.strip()))
+                        confirmation_rejected = not authorized or has_text
+                    else:
+                        # 即使模型用文字作答，期间新到的来源也必须让旧确认失效。
+                        if await staged_actions.confirmation_offer() != offer:
+                            checkpoint(*staged_actions.handoff_checkpoint())
+                            break
+                        decision = confirmation_decision(reply.get('content'))
+                        if decision in ('revise', 'stop'):
+                            recorded = await staged_actions.confirmation_reject('returned' if decision == 'revise' else 'stopped')
+                            if not recorded:
+                                checkpoint(*staged_actions.handoff_checkpoint())
+                                break
+                            if decision == 'stop':
+                                checkpoint('flow_action_stopped', '节点决定停止，当前草稿没有执行，已保留此前的正式回执。')
+                                break
+                            return_to_drafting = True
+                            session.record['messages'].append({'role': 'user', '_context_reference': True,
+                                'content': ('这笔草稿已退回，业务尚未执行。请按原任务核对来源、修订并重新预审。'
+                                            + staged_actions.revision_hint(offer['draft_id']))})
+                            await self.save(session)
+                            continue
+                        if retried_confirmation != offer['draft_id'] and (
+                                policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds):
+                            retried_confirmation = offer['draft_id']
+                            confirmation_correction_due = True
+                            continue
+                        checkpoint(*staged_actions.handoff_checkpoint())
+                        break
+                allowed_reads = recover_sources and all(call['function']['name'] in {'read_file', 'rag_search'}
+                                                        for call in calls)
+                recover_sources = False
+                if calls and handoff_revisions and not allowed_reads:
+                    for call in calls:
+                        session.record['messages'].append({'role': 'tool', 'tool_call_id': call['id'],
+                            'content': '[已拒绝] 交接修订不允许执行工具，尚未执行。', '_provenance': 'not_executed'})
+                    checkpoint('flow_source_review', '交接修订请求了工具，已保留此前结果。')
+                    break
                 if not calls:
+                    if staged_actions and staged_actions.pending:
+                        # 先解决未提交业务，再进入只允许文本的交接格式修正或下游验收。
+                        checkpoint(*staged_actions.handoff_checkpoint())
+                        break
                     if policy.automatic:
                         unfinished, waiting = execution_state(self, session)
                         if waiting:
@@ -1578,21 +1853,72 @@ class SessionManager:
                                 '继续当前可执行步骤；用 plan_get 核对并更新验收证据，'
                                 '用 wait_agent_task 等待自己创建的子任务并验证产物。不能仅用进度说明结束。')
                             continue
+                    missing_reads = required_read_names - completed_reads
+                    if missing_reads:
+                        if gate and gate.blocked:
+                            checkpoint('flow_source_review', gate.blocked)
+                            break
+                        if gate and gate.pending_tools:
+                            checkpoint('flow_source_review', '有被拒绝的草稿尚未成功提交，请核对已保存的工具回执。')
+                            break
+                        state = session.record['last_run']['flow_required_reads']
+                        allowed = self._effective_session_tools(session)
+                        available = set(self._session_custom_registry(session)) | set(TOOL_REGISTRY)
+                        unavailable = {name for name in missing_reads
+                                       if name not in available or (allowed is not None and name not in allowed)}
+                        if (not required_read_retry and not unavailable and not handoff_revisions
+                                and (policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds)):
+                            required_read_retry = True
+                            required_read_recovering = True
+                            state['status'] = 'retry'
+                            session.record['messages'].append({'role': 'user', '_context_reference': True,
+                                'content': '节点岗位指令中以下读取尚无本轮成功回执：' + ', '.join(sorted(missing_reads))
+                                           + '。请在现有权限和预算内自行完成原工具调用；保持原预审与确认，'
+                                             '不要重发写入或其他已执行操作。无法完成时如实说明阻断。'})
+                            await self.save(session)
+                            continue
+                        state['status'] = 'blocked'
+                        session.record['last_run']['handoff_validation_failed'] = True
+                        checkpoint('flow_required_reads', '岗位指令指定的读取尚无本轮成功回执：'
+                                   + ', '.join(sorted(missing_reads)) + '；请核对工具权限、失败原因及剩余预算。')
+                        break
                     unfinished, waiting = execution_state(self, session)
                     content = reply.get('content')
                     failure = (validate_handoff(content if isinstance(content, str) else '', handoff_contract)[1]
                                if handoff_contract is not None else None)
+                    if receipt_index is not None and receipt_index.lost_checkpoint_evidence():
+                        session.record['last_run']['handoff_validation_failed'] = True
+                        checkpoint('flow_handoff_receipts', '续跑后的回执无法与此前签发编号一并核对，请检查已保存的正式回执。')
+                        break
+                    expected_ids = receipt_index.expectations() if receipt_index is not None else {}
+                    correction = (receipt_field_correction(content, handoff_contract, expected_ids)
+                                  if expected_ids and isinstance(content, str) else None)
+                    receipt_error = '交接中的签发编号与本轮办理回执不符，请核对原工具回执。'
+                    if correction and failure is None:
+                        failure = {'status': 'failed', 'code': 'receipt_mismatch', 'message': receipt_error}
+                    derived = None
                     if failure:
                         session.record['last_run']['handoff_validation_failed'] = True
-                    if (failure and failure['code'] == 'invalid_json' and isinstance(content, str) and content.strip()
-                            and not unfinished and not waiting
+                    repairable = failure and (failure['code'] == 'invalid_json' or (correction and not receipt_repair_used))
+                    if (repairable and isinstance(content, str) and content.strip() and not unfinished and not waiting
                             and (policy.maximum_rounds is None or round_index + 1 < policy.maximum_rounds)):
                         # 格式修正属于同一轮，只允许一次，且不开放工具。
-                        instruction = ('请只修正上一条回答的输出格式，保留已有业务内容，不新增事实、操作或工具调用。'
-                                       '只输出符合交接契约的单个 JSON 对象，不要代码围栏或附加文字。'
-                                       + handoff_output_instruction(handoff_contract))
+                        if correction:
+                            original_index = reply_index
+                            receipt_repair_used = True
+                            instruction = ('请按本次局部格式自行提交签发编号。可在已有 notes 末尾追加已办笔数、'
+                                           '是否为模拟以及关联键的查询方式。无单独签发号时填写空数组。'
+                                           '下面是本轮原工具回执数据。' + receipt_index.guide(include_values=True))
+                        else:
+                            instruction = ('请只修正上一条回答的输出格式，保留已有业务内容，不新增事实、操作或工具调用。'
+                                           '只输出符合交接契约的单个 JSON 对象，不要代码围栏或附加文字。'
+                                           + handoff_output_instruction(handoff_contract))
                         repair_message = {'role': 'user', 'content': instruction, '_context_reference': True}
                         repair_history = history + [reply, repair_message]
+                        if correction:
+                            # 原岗位系统提示约束最终交接，当前调用只生成编辑对象。保留原始会话消息。
+                            phase = receipt_patch_instruction(correction[1], can_append_notes=isinstance(correction[0].get('notes'), str))
+                            repair_history[0] = {**history[0], 'content': history[0]['content'] + '\n' + phase}
                         metrics = {'sent_chars': history_size(repair_history),
                                    'sent_tokens': request_tokens(repair_history)}
                         session.record['last_run']['handoff_finalization'] = {'status': 'attempted'}
@@ -1617,10 +1943,9 @@ class SessionManager:
                             self.observer.event('handoff.finalization', session_id=session.id,
                                 turn_id=session.record['last_run']['turn_id'], state='cancelled')
                             raise asyncio.CancelledError
-                        session.record['last_run']['model_rounds'] = round_index + 2
-                        if config.ENABLE_SESSION_BUDGETS:
-                            session.record['last_run']['budget']['rounds_remaining'] = (
-                                None if policy.maximum_rounds is None else policy.maximum_rounds - round_index - 2)
+                        if not reserve_review_round():
+                            checkpoint('tool_budget', '原模型交互轮次已用完，交接格式尚未修正。')
+                            break
                         session.phase = '修正交接格式'
                         self._observe_phase(session, 'handoff_finalization')
                         self.notify()
@@ -1644,8 +1969,28 @@ class SessionManager:
                                         'content': '[已拒绝] 格式修正请求不允许工具调用，尚未执行。'})
                                 session.record['last_run']['handoff_finalization']['status'] = 'tool_calls_rejected'
                                 raise ValueError('交接格式修正请求不能调用工具')
-                            repair_failure = validate_handoff(reply.get('content') or '', handoff_contract)[1]
+                            repaired_text = reply.get('content') or ''
+                            normalized, repair_failure = validate_handoff(repaired_text, handoff_contract)
+                            patch_used = False
+                            if correction and repair_failure:
+                                normalized, repair_failure = apply_receipt_patch(correction[0], repaired_text, correction[1], handoff_contract)
+                                patch_used = repair_failure is None
+                            if not repair_failure and patch_used:
+                                derived_text = json.dumps(json.loads(normalized), ensure_ascii=False, separators=(',', ':'))
+                            if not repair_failure and expected_ids:
+                                if receipt_field_correction(derived_text if patch_used else repaired_text, handoff_contract, expected_ids):
+                                    repair_failure = {'status': 'failed', 'code': 'receipt_mismatch', 'message': receipt_error}
+                                elif correction and not preserves_handoff_fields(correction[0], json.loads(normalized), correction[1]):
+                                    repair_failure = {'status': 'failed', 'code': 'receipt_mismatch',
+                                                      'message': '签发编号修正改变了原有业务内容，交接未通过。'}
                             failure = repair_failure
+                            if failure is None and patch_used:
+                                derived = {'turn_id': session.record['last_run']['turn_id'],
+                                           'original_index': original_index, 'reply_index': reply_index,
+                                           'editable': sorted(correction[1]),
+                                           'original_digest': handoff_digest(session.record['messages'][original_index]['content']),
+                                           'patch_digest': handoff_digest(repaired_text),
+                                           'result_digest': handoff_digest(derived_text)}
                             if failure is None:
                                 session.record['last_run'].pop('handoff_validation_failed', None)
                             session.record['last_run']['handoff_finalization']['status'] = (
@@ -1664,16 +2009,48 @@ class SessionManager:
                                 state=session.record['last_run']['handoff_finalization']['status'])
                     if failure:
                         session.record['last_run']['handoff_validation_failed'] = True
+                        if failure['code'] == 'receipt_mismatch':
+                            checkpoint('flow_handoff_receipts', failure['message'])
+                            break
+                    if gate and (gate.pending_tools or staged_actions.pending):
+                        checkpoint('flow_source_review', '有被拒绝的草稿尚未成功提交，请核对已保存的工具回执。')
+                        break
+                    if gate and not failure:
+                        feedback = await gate.check(derived_text if derived else (reply.get('content') or ''), stage='handoff',
+                                                    force=bool(handoff_revisions))
+                        if feedback:
+                            if gate.blocked or handoff_revisions >= 2:
+                                checkpoint('flow_source_review', gate.blocked or '交接修订后仍缺少来源支持。')
+                                # 仅保存经校验的复核判定；基础设施故障的通用反馈不是语义结论。
+                                if gate.handoff_feedback_valid and not gate.blocked:
+                                    session.record.setdefault('_flow_review_checkpoints', {})[
+                                        session.record['last_run']['turn_id']] = {
+                                            'message_index': len(session.record['messages']) - 1,
+                                            'source': 'independent_handoff_review', 'content': feedback}
+                                break
+                            handoff_revisions += 1
+                            recover_sources = gate.needs_sources and handoff_revisions == 1
+                            restriction = ('可先用本节点已有的只读来源工具核对原资料，禁止写入或重发。' if recover_sources else
+                                           '禁止调用工具或重复提交。')
+                            session.record['messages'].append({'role': 'user', '_context_reference': True,
+                                'content': ('已组装的完整交接：' + derived_text + '\n' if derived else '')
+                                           + '仅修订上一份交接，保留已有操作、回执和输出格式。'
+                                           + '面向下游填写业务结论。仅在契约要求时说明本次编辑范围或修订经过。' + restriction
+                                           + '以下是来源审查反馈数据：' + json.dumps(feedback, ensure_ascii=False)})
+                            await self.save(session)
+                            continue
+                    if not failure and derived:
+                        session.record['last_run']['handoff_derived'] = derived
                     self.observer.event('model.final', session_id=session.id,
                         turn_id=session.record['last_run']['turn_id'], message_index=reply_index,
                         state='failed' if failure else 'completed')
                     if not failure and config.MEMORY_AUTO_EXTRACT:
                         self._start_memory_candidates(session,
-                            next(m['content'] for m in reversed(history) if is_user_request(m)), reply.get('content', ''))
+                            next(m['content'] for m in reversed(history) if is_user_request(m)), derived_text if derived else reply.get('content', ''))
                     if not failure and config.RAG_ASSESS and contexts:
                         self._start_assessment(session,
                             next(m['content'] for m in reversed(history) if is_user_request(m)),
-                            contexts, reply.get('content', ''))
+                            contexts, derived_text if derived else reply.get('content', ''))
                     break
                 policy.empty_replies = 0
                 policy.guidance = ''
@@ -1683,31 +2060,56 @@ class SessionManager:
                 async def execute_call(call, index):
                     name = call['function']['name']
                     started = time.monotonic()
-                    observed_name = name if name in TOOL_REGISTRY or name in self._session_custom_registry(session) else 'unknown_tool'
+                    custom_tool = name not in TOOL_REGISTRY and name in self._session_custom_registry(session)
+                    observed_name = name if name in TOOL_REGISTRY or custom_tool else 'unknown_tool'
+                    if staged_actions and staged_actions.is_preview(name):
+                        observed_name = name
                     if self.observer.enabled:
                         self.observer.event('tool.started', session_id=session.id, batch_id=batch_id,
                             turn_id=session.record['last_run']['turn_id'], tool_call_id=call['id'],
                             tool_name=observed_name, message_index=reply_index, state='running')
                     evidence = {'source': 'not_executed'}
-                    if index >= session_limit('MAX_TOOL_CALLS_PER_ROUND'):
+                    if confirmation_rejected:
+                        result = await staged_actions.reject_confirmation_call(call, evidence, draft_id=offer['draft_id'])
+                    elif recovery_request and name not in tool_names:
+                        result = '[已拒绝] 补读阶段只允许本节点指定读取及其预审，尚未执行。'
+                    elif index >= session_limit('MAX_TOOL_CALLS_PER_ROUND'):
                         result = '[已拒绝] 单轮工具调用超过 MAX_TOOL_CALLS_PER_ROUND 上限，尚未执行。'
                     elif session.cancelled.is_set():
                         result = '[已取消] 工具尚未执行。'
                     else:
                         try:
                             with observation_context(batch_id=batch_id, tool_call_id=call['id']):
-                                result = await self._tool(session, call, evidence=evidence)
+                                if staged_actions:
+                                    result = await staged_actions.execute(call, evidence)
+                                else:
+                                    result = await self._tool(session, call, evidence=evidence)
                         except Exception as exc:
                             result = f'工具执行失败: {type(exc).__name__}: {exc}'
+                    outcome = tool_outcome(
+                        result, tool_name=name if evidence['source'] == 'executed' else None,
+                        custom_tool=custom_tool and evidence['source'] == 'executed')
+                    if name in required_read_names and name in TOOL_REGISTRY and evidence['source'] == 'executed':
+                        from agent_core.core.flow_required_reads import successful_builtin_result
+                        if outcome == 'completed' and not successful_builtin_result(name, result):
+                            outcome = 'error'
+                    elif name in required_read_names and evidence['source'] == 'executed' and outcome == 'completed':
+                        from agent_core.core.flow_required_reads import successful_custom_result
+                        if not successful_custom_result(result):
+                            outcome = 'error'
                     if self.observer.enabled:
                         self.observer.event('tool.completed', session_id=session.id, batch_id=batch_id,
                             turn_id=session.record['last_run']['turn_id'], tool_call_id=call['id'],
-                            tool_name=observed_name, message_index=reply_index, state=tool_outcome(result),
+                            tool_name=observed_name, message_index=reply_index, state=outcome,
                             duration_ms=round((time.monotonic() - started) * 1000, 2))
                     return result, {'name': name, 'tool_call_id': call['id'], 'source': evidence['source'], 'event_id': uuid.uuid4().hex, 'turn_id': session.record['last_run']['turn_id'], 'wall_s_including_confirmation': round(time.monotonic() - started, 3),
                                     'output_chars': len(result),
-                                    'outcome': tool_outcome(result),
-                                    'execution_progress': evidence['source'] == 'executed' and tool_outcome(result) == 'completed'}
+                                    'outcome': outcome,
+                                    **({'action_stage': evidence['action_stage'],
+                                        'approval_progress': evidence.get('approval_progress', False)}
+                                       if 'action_stage' in evidence else {}),
+                                    **({'receipt_reader': True} if evidence.get('receipt_reader') is True else {}),
+                                    'execution_progress': evidence['source'] == 'executed' and outcome == 'completed'}
 
                 index = 0
                 evidence_capacity_reached = False
@@ -1733,18 +2135,62 @@ class SessionManager:
                         # 等待批次收尾，禁止在旧写线程仍活动时开放下一轮。
                         await pending
                         raise
-                    for call, (result, metrics) in zip(batch, results):
+                    receipts = [''] * len(batch)
+                    if self.flow_workspace_scope(session) and any(call['function']['name'] == 'rag_search' for call in batch):
+                        from agent_core.core.execution_guidance import retrieval_batch_receipts
+                        receipts = retrieval_batch_receipts(session.record, batch, results)
+                    for call, (result, metrics), receipt in zip(batch, results, receipts):
                         session.record['last_run']['tools'].append(metrics)
+                        if receipt_index is not None:
+                            receipt_index.observe(call, result, metrics)
                         logger.info('tool_metrics session=%s %s', session.id, metrics)
                         from agent_core.core.tool_observations import extract_observation
                         metadata = extract_observation(result) if metrics['source'] == 'executed' else None
-                        message = {'role': 'tool', 'tool_call_id': call['id'], 'content': str(result)}
+                        content = str(result)
+                        if receipt:
+                            content += receipt
+                            if metadata is not None:
+                                from agent_core.core.tool_observations import observe_text
+                                content = observe_text(content, reader_tool=metadata['reader_tool'],
+                                    body_spans=tuple(tuple(span) for span in metadata['body_spans']),
+                                    recovery_notice=metadata['recovery_notice'])
+                                metadata = extract_observation(content)
+                        message = {'role': 'tool', 'tool_call_id': call['id'], 'content': str(content)}
                         message['_provenance'] = metrics['source']
                         message['_event_id'] = metrics['event_id']
                         if metadata is not None:
                             message['_context_observation'] = metadata
                             trusted_observations[call['id']] = metadata
                         session.record['messages'].append(message)
+                        if required_read_names:
+                            name = call['function']['name']
+                            call_id = call.get('id')
+                            duplicate_id = not isinstance(call_id, str) or not call_id or call_id in seen_read_call_ids
+                            if isinstance(call_id, str) and call_id:
+                                if duplicate_id:
+                                    verified_read_calls.pop(call_id, None)
+                                seen_read_call_ids.add(call_id)
+                            if (not duplicate_id and name in required_read_names and isinstance(result, str)
+                                    and (name not in TOOL_REGISTRY
+                                         or (name == 'read_file' and metadata and metadata['reader_tool'] == name)
+                                         or ('[输出已截断]' not in result and '已截断）' not in result))
+                                    and metrics['tool_call_id'] == call['id'] and metrics['name'] == name
+                                    and metrics['turn_id'] == session.record['last_run']['turn_id']
+                                    and metrics['source'] == 'executed' and metrics['outcome'] == 'completed'
+                                    and metrics['execution_progress'] and not (gate and gate.blocked)
+                                    and (name in TOOL_REGISTRY or not staged_actions.requires_preview
+                                         or metrics.get('action_stage') == 'commit')):
+                                from agent_core.core.flow_required_reads import required_read_reference
+
+                                verified_read_calls[call_id] = required_read_reference(
+                                    name, reply_index, len(session.record['messages']) - 1, message, call['function']['arguments'])
+                            completed_reads = {reference['name'] for reference in verified_read_calls.values()}
+                            state = session.record['last_run']['flow_required_reads']
+                            state['completed'] = sorted(completed_reads)
+                            state['missing'] = sorted(required_read_names - completed_reads)
+                            state['status'] = 'completed' if not state['missing'] else 'pending'
+                            if required_read_retry:
+                                required_read_recovering = bool(state['missing'])
                         if call['function']['name'] == 'rag_search':
                             contexts.append(result)
                     await self.save(session)
@@ -1754,11 +2200,24 @@ class SessionManager:
                                 await self.task_plans.record_evidence(session, call, result, metrics['source'], event_id=metrics['event_id'])
                             except EvidenceCapacityError as exc:
                                 # 已执行批次全部落盘；剩余调用明确标为未执行，保持工具协议配对。
-                                for skipped in calls[index + len(batch):]:
-                                    session.record['messages'].append({
+                                skipped_calls = calls[index + len(batch):]
+                                skipped_messages = []
+                                for skipped in skipped_calls:
+                                    skipped_messages.append({
                                         'role': 'tool', 'tool_call_id': skipped['id'],
                                         'content': '[未执行] 计划证据索引容量不足，工具尚未执行。',
                                         '_provenance': 'not_executed', '_event_id': uuid.uuid4().hex})
+                                skipped_receipts = [''] * len(skipped_calls)
+                                if self.flow_workspace_scope(session) and any(skipped['function']['name'] == 'rag_search' for skipped in skipped_calls):
+                                    from agent_core.core.execution_guidance import retrieval_batch_receipts
+                                    skipped_results = [(message['content'], {'event_id': message['_event_id'],
+                                        'source': 'not_executed', 'name': skipped['function']['name'],
+                                        'tool_call_id': skipped['id'], 'outcome': 'rejected'})
+                                        for skipped, message in zip(skipped_calls, skipped_messages)]
+                                    skipped_receipts = retrieval_batch_receipts(session.record, skipped_calls, skipped_results)
+                                for message, receipt in zip(skipped_messages, skipped_receipts):
+                                    message['content'] += receipt
+                                    session.record['messages'].append(message)
                                 checkpoint('plan_evidence_capacity',
                                     f'工具结果已保存，但计划证据索引容量不足：{exc}；'
                                     '请检查原始工具结果并整理或归档计划后继续。')
@@ -1768,6 +2227,16 @@ class SessionManager:
                             break
                     index += len(batch)
                 if evidence_capacity_reached:
+                    break
+                if gate and gate.blocked:
+                    checkpoint('flow_source_review', gate.blocked)
+                    break
+                if confirmation_rejected:
+                    reason, message = staged_actions.handoff_checkpoint()
+                    if reason == 'flow_action_pending':
+                        reason = 'flow_action_confirmation_rejected'
+                        message = '本次确认没有单独提交获批原工具和参数，相关调用均未执行。'
+                    checkpoint(reason, message)
                     break
             else:
                 _, waiting = execution_state(self, session)
@@ -1780,6 +2249,8 @@ class SessionManager:
                 raise asyncio.CancelledError
             if session.record['status'] != 'checkpoint':
                 session.record['status'] = 'idle'
+        except FlowConfirmationChanged:
+            checkpoint('flow_action_expired', '等待模型期间草稿或权限发生变化，已保留此前结果，请重新预审。')
         except ModelConnectionError as exc:
             session.record['status'] = 'checkpoint'
             session.record['last_run']['stop_reason'] = 'model_connection'
@@ -1798,6 +2269,27 @@ class SessionManager:
         except Exception as exc:
             session.record['status'] = 'error'
             session.record['error'] = f'{type(exc).__name__}: {exc}'
+        finally:
+            if required_read_names and required_read_names - completed_reads:
+                session.record['last_run']['flow_required_reads']['status'] = 'blocked'
+            run = session.record['last_run']
+            resume_checkpoint = (staged_actions is not None and session.record.get('flow_run_id')
+                                 and run.get('stop_reason') in {'model_connection', 'model_timeout'})
+            if resume_checkpoint:
+                staged_actions.expire_for_resume()
+            if staged_actions is not None and not await staged_actions.flush_audit():
+                if session.record['last_run'].get('stop_reason') != 'flow_action_audit':
+                    finish_pending_tools(session.record['messages'])
+                    checkpoint('flow_action_audit', gate.blocked)
+            if resume_checkpoint and run.get('stop_reason') != 'flow_action_audit':
+                session.record['_flow_action_checkpoint'] = {
+                    'flow_run_id': session.record['flow_run_id'], 'turn_id': run['turn_id'],
+                    'actions': staged_actions.checkpoint_state(),
+                    'receipts': receipt_index.checkpoint_state() if receipt_index is not None else None,
+                    'required_reads': {'seen': sorted(seen_read_call_ids), 'calls': verified_read_calls},
+                }
+            else:
+                session.record.pop('_flow_action_checkpoint', None)
 
     async def _finish_turn(self, session: Session, *, workspace_memory_allowed: bool = False) -> None:
         record = session.record
@@ -1823,7 +2315,7 @@ class SessionManager:
         record['run_history'] = record['run_history'][-config.RUN_HISTORY_LIMIT:]
         persisted = await self._save_terminal_state(session, run, history_entry)
         if persisted and workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED:
-            if session.cancelled.is_set():
+            if session.cancelled.is_set() and run.get('stop_reason') != 'flow_action_audit':
                 record['status'] = 'cancelled'
             if workspace_memory_allowed and config.WORKSPACE_MEMORY_ENABLED:
                 await self.workspace_memory.finish(session)
@@ -1843,7 +2335,7 @@ class SessionManager:
         record = session.record
         try:
             await wait_for_io_completion(self.save(session))
-            if session.cancelled.is_set() and record['status'] != 'cancelled':
+            if session.cancelled.is_set() and record['status'] != 'cancelled' and run.get('stop_reason') != 'flow_action_audit':
                 # 停止可能发生在任一终态写盘期间，排空后再发布一致的取消终态。
                 record['status'] = 'cancelled'
                 run['status'] = history_entry['status'] = 'cancelled'

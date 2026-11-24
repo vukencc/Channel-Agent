@@ -1,4 +1,5 @@
 """可验证的模型采样参数和上下文隔离的命名配置。"""
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Literal
@@ -28,6 +29,28 @@ class ModelProfile(BaseModel):
     # 容量属于本地预算元数据，不能作为供应商采样参数发送。
     context_tokens: int | None = Field(default=None, ge=512, le=2097152, strict=True)
     response_reserve_tokens: int | None = Field(default=None, ge=0, le=2097151, strict=True)
+
+
+class ModelDispatchStopped(RuntimeError):
+    """当前批次已失效，待发模型请求应停止。"""
+
+
+_dispatch_guards: ContextVar[tuple[Callable[[], bool], ...]] = ContextVar('model_dispatch_guards', default=())
+
+
+@contextmanager
+def model_dispatch_guard(check: Callable[[], bool]) -> Iterator[None]:
+    token = _dispatch_guards.set((*_dispatch_guards.get(), check))
+    try:
+        yield
+    finally:
+        _dispatch_guards.reset(token)
+
+
+def check_model_dispatch() -> None:
+    for check in _dispatch_guards.get():
+        if not check():
+            raise ModelDispatchStopped('本次复核已失效，待发请求已停止。')
 
 
 active_profile = ContextVar('active_model_profile', default=None)

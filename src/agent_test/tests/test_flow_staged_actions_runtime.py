@@ -1,0 +1,917 @@
+"""两阶段动作的受控离线模型回归；真读临时文件，业务写入口单独隔离；非实模型/回放。"""
+import asyncio
+import copy
+import json
+import os
+import re
+import uuid
+
+import pytest
+
+from agent_core import config
+from agent_core.core.flows import FlowService
+from agent_core.core.flow_review_sources import review_sources
+from agent_core.core.instrumentation import tool_outcome
+from agent_core.core.llm import TOOL_SCHEMAS
+from agent_core.core.messages import is_user_request
+from agent_core.core.projects import ProjectService
+from agent_core.core.sessions import SessionManager
+from agent_core.core.tool_settings import selected_schemas
+from test_flow_draft_review_runtime import (
+    CORRECTED, DISPUTED, SOURCE, assistant, call, review_payload,
+    runtime_store, tool_spec,
+)
+
+
+async def refresh_real_source(manager, session, identifier, path):
+    """受控并发读取沿用真实工具及完整账本格式，不放宽来源校验。"""
+    from agent_core.core.tool_observations import extract_observation
+    before = review_sources(session.record, char_limit=24000)
+    refresh = call(identifier, "read_file", path=path)
+    evidence = {"source": "not_executed"}
+    result = await manager._tool(session, refresh, evidence=evidence)
+    metadata = extract_observation(result)
+    assert evidence["source"] == "executed" and metadata
+    event_id = uuid.uuid4().hex
+    turn_id = session.record["last_run"]["turn_id"]
+    session.record["messages"].extend([assistant(calls=[refresh]), {
+        "role": "tool", "tool_call_id": identifier, "content": str(result),
+        "_provenance": evidence["source"], "_event_id": event_id, "_context_observation": metadata}])
+    session.record["last_run"]["tools"].append({
+        "name": "read_file", "tool_call_id": identifier, "source": evidence["source"],
+        "event_id": event_id, "turn_id": turn_id, "outcome": tool_outcome(result),
+        "output_chars": len(result), "execution_progress": tool_outcome(result) == "completed"})
+    after = review_sources(session.record, char_limit=24000)
+    assert len(after) > len(before), "必须实际新增可验证来源，不能只插入未受信任文本"
+    return result
+
+
+async def staged_scenario(runtime_store, monkeypatch, mode="success"):
+    """模型从实际授权 schema 发现草稿入口，绝不预告草稿别名。"""
+    store, project = runtime_store
+    reviews, normal_schemas, writes, model_assertions = [], [], [], []
+    normal_index = 0
+    resume_source_read = False
+    preview_name = None
+    approved = {"reason": CORRECTED, "item_ref": "case-1"}
+    linked_revision = mode in {"unidentified_revision", "isolated_revision", "unknown_revision", "resume_revision"}
+    if linked_revision or mode == "unlinked_revision":
+        approved.pop("item_ref")
+    unidentified_batch = mode.startswith("two_unidentified")
+    unidentified = unidentified_batch or mode in {"source_change", "source_change_end"}
+    second_approved = {"reason": "客户表示页面无法提交，建议记录故障排查。"}
+    if unidentified:
+        approved = {"reason": "客户表示页面无法提交，建议安排人工排查。"}
+    repeat_after_source = mode.startswith("repeat_after_source_")
+    repeated_selector = mode == "repeat_after_source_selector"
+    business_result = {
+        "repeat_after_source_business_retry": {"ok": False, "error": "办理暂未成功"},
+        "repeat_after_source_business_blocked": {"success": False, "error": "办理暂未成功"},
+        "repeat_after_source_business_status": {"status": "failed", "message": "办理暂未成功"},
+        "repeat_after_source_invalid_keeps_failure": {"ok": False, "error": "办理暂未成功"},
+        "repeat_after_source_error_envelope": {"error": "办理暂未成功"},
+        "repeat_after_source_error_data": {"id": "case-1", "error": "页面显示错误"},
+    }.get(mode)
+    spec = tool_spec()
+    if repeat_after_source:
+        approved = {"item_ref": "case-1", "reason": "记录页面故障。"}
+    if repeated_selector:
+        approved = {"path": "query.json"}
+        spec["description"] = "读取工作区内的查询结果。"
+        spec["parameters"] = {"type": "object", "properties": {"path": {"type": "string"}},
+                              "required": ["path"], "additionalProperties": False}
+        spec["code"] = chr(10).join(("def main(arguments):", "    import json", "    from pathlib import Path",
+                                   "    rows = json.loads(Path(arguments['path']).read_text(encoding='utf-8'))",
+                                   "    return rows"))
+        (project / "query.json").write_text('{"items":[]}', encoding="utf-8")
+        if os.name == "nt" and os.environ.get("RUN_WINDOWS_WSL_TESTS") != "1":
+            from agent_core.core.custom_tools import CustomTool
+
+            original_run = CustomTool.run
+
+            def controlled_query(tool, arguments):
+                if tool.name != "record_case":
+                    return original_run(tool, arguments)
+                assert json.loads(arguments) == approved and tool.definition["code"] == spec["code"]
+                result = (project / "query.json").read_text(encoding="utf-8")
+                return chr(10).join(("[退出码] 0", "[stdout]", result))
+
+            monkeypatch.setattr(CustomTool, "run", controlled_query)
+    elif mode == "repeat_after_source_selector_write":
+        approved = {"id": "case-1"}
+        spec["parameters"] = {"type": "object", "properties": {"id": {"type": "string"}},
+                              "required": ["id"], "additionalProperties": False}
+    if repeat_after_source or mode in {"source_change", "source_change_end"}:
+        (project / "extra-source.txt").write_text("补充资料：本事项尚待排查。", encoding="utf-8")
+    if mode == "blind_batch":
+        approved["reason"] = "客户表示页面无法提交，建议安排人工排查。"
+    permission = "readonly" if mode == "readonly" else "full_access"
+    if mode in {"timeout", "resume_revision"}:
+        monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 0)
+
+    async def model(history, *, session_id, emit):
+        nonlocal normal_index, preview_name, resume_source_read
+        session = manager.sessions[session_id]
+        schemas = selected_schemas(TOOL_SCHEMAS)
+        payload = review_payload(history)
+        if payload is not None:
+            assert schemas == [], "独立复核不得调用业务工具"
+            assert len(history) == 2
+            assert any(SOURCE in row["text"] for row in payload["sources"])
+            reviews.append(copy.deepcopy(payload))
+            if mode == "timeout":
+                raise TimeoutError("受控离线复核超时")
+            if DISPUTED in payload["draft"]:
+                source = next(row for row in payload["sources"] if SOURCE in row["text"])
+                target = next(row for row in payload["targets"] if DISPUTED in row["excerpt"])
+                # 两侧引文确实来自请求，不编造来源或裁决协议。
+                assert SOURCE in source["text"]
+                assert target["excerpt"] in json.loads(payload["draft"])["reason"]
+                return assistant(json.dumps({"status": "revise", "issues": [{
+                    "reason": "客户未明确要求人工，应改为排查建议",
+                    "target_id": target["id"], "draft_quote": target["excerpt"],
+                    "source_id": source["id"], "quote": SOURCE,
+                }]}, ensure_ascii=False))
+            assert json.loads(payload["draft"]) in ([approved, second_approved] if unidentified else [approved])
+            return assistant('{"status":"pass"}')
+
+        normal_index += 1
+        names = {schema["function"]["name"] for schema in schemas}
+        normal_schemas.append(names)
+        if mode == "resume_revision" and not resume_source_read:
+            if normal_index == 3:
+                raise TimeoutError("受控离线模型超时")
+            if normal_index == 4:
+                resume_source_read = True
+                normal_index = 2
+                return assistant(calls=[call("source-resumed", "read_file", path="source.txt")])
+        if normal_index == 1:
+            assert "record_case" not in names, "正式动作必须等草稿获批后才宣告"
+            previews = [schema["function"]["name"] for schema in schemas
+                        if "record_case" in schema["function"].get("description", "")]
+            assert len(previews) == 1, "从授权 schema 必须可发现唯一草稿别名"
+            preview_name = previews[0]
+            assert preview_name != "record_case"
+            return assistant(calls=[call("source", "read_file", path="source.txt")])
+        if repeat_after_source:
+            changed = (dict(approved, reason="记录补充材料。") if mode.endswith("_distinct")
+                       else dict(reversed(approved.items())))
+            if normal_index == 2:
+                return assistant(calls=[call("draft-first", preview_name, **approved)])
+            if normal_index == 3:
+                assert names == {"record_case"}
+                return assistant(calls=[call("formal-first", "record_case", **approved)])
+            if mode == "repeat_after_source_invalid_keeps_failure":
+                if normal_index == 4:
+                    return assistant(calls=[call("invalid-followup", preview_name, item_ref=approved["item_ref"])])
+                return assistant("已核对回执。")
+            if normal_index == 4:
+                assert "read_file" in names and "record_case" not in names
+                if mode in {"repeat_after_source_business_blocked", "repeat_after_source_business_status",
+                            "repeat_after_source_error_envelope", "repeat_after_source_error_data"}:
+                    return assistant("已核对回执。")
+                return assistant(calls=[call("extra-source", "read_file", path="extra-source.txt")])
+            if normal_index == 5:
+                assert any(row.get("path") == "extra-source.txt"
+                           for row in review_sources(session.record, char_limit=24000))
+                return assistant(calls=[call("draft-after-read", preview_name, **changed)])
+            if normal_index == 6 and names == {"record_case"}:
+                return assistant(calls=[call("formal-after-read", "record_case", **changed)])
+            return assistant("已核对回执。")
+        if unidentified:
+            if normal_index == 2:
+                calls = [call("draft-first", preview_name, **approved)]
+                if unidentified_batch:
+                    calls.append(call("draft-second", preview_name, **second_approved))
+                return assistant(calls=calls)
+            if mode == "source_change_end" and normal_index == 3:
+                assert names == {"record_case"}
+                # 受控并发证据刷新：真实读工具、真实观察元数据及完整配对，非模型越权请求。
+                await refresh_real_source(manager, session, "extra-source", "extra-source.txt")
+                return assistant("来源已补读，结束本节点。")
+            if mode == "source_change":
+                if normal_index == 3:
+                    assert names == {"record_case"}
+                    return assistant('{"decision":"revise","reason":"补读新来源再预审。"}')
+                if normal_index == 4:
+                    assert "record_case" not in names and "read_file" in names
+                    return assistant(calls=[call("extra-source", "read_file", path="extra-source.txt")])
+                if normal_index == 5:
+                    assert "record_case" not in names, "补读新来源后旧批准必须失效"
+                    return assistant(calls=[call("stale-formal", "record_case", **approved)])
+                if normal_index == 6:
+                    return assistant(calls=[call("draft-renewed", preview_name, **approved)])
+                if normal_index == 7:
+                    assert names == {"record_case"}
+                    return assistant(calls=[call("formal", "record_case", **approved)])
+            else:
+                if normal_index == 3:
+                    assert names == {"record_case"}
+                    return assistant(calls=[call("formal-first", "record_case", **approved)])
+                if normal_index == 4:
+                    assert names == {"record_case"}
+                    return assistant(calls=[call("formal-second", "record_case", **second_approved)])
+            return assistant("已核对回执。")
+        if normal_index == 2:
+            assert "record_case" not in names
+            if mode == "direct_unapproved":
+                return assistant(calls=[call("formal", "record_case", **approved)])
+            args = approved if mode == "blind_batch" else dict(approved, reason=DISPUTED)
+            calls = [call("draft-first", preview_name, **args)]
+            if mode == "isolated_revision":
+                calls.append(call("draft-other", preview_name, reason=DISPUTED + "需立即处理。"))
+            if mode == "blind_batch":
+                calls.append(call("blind-submit", "record_case", **approved))
+            return assistant(calls=calls)
+        if normal_index == 3 and mode not in {"blind_batch", "timeout", "direct_unapproved"}:
+            assert "record_case" not in names, "争议草稿必须有效 revise 后继续隐藏正式动作"
+            assert "客户未明确要求人工" in str(history)
+            if linked_revision and "revise_flow_draft" in names:
+                rejection = next(row["content"] for row in history if row.get("tool_call_id") == "draft-first")
+                revision_id = re.search(r'"revision_id":"([A-Za-z0-9_-]+)"', rejection).group(1)
+                if mode == "unknown_revision":
+                    revision_id = ("B" if revision_id[0] == "A" else "A") + revision_id[1:]
+                return assistant(calls=[call("draft-revised", "revise_flow_draft",
+                                             revision_id=revision_id, arguments_json=json.dumps(approved, ensure_ascii=False))])
+            return assistant(calls=[call("draft-revised", preview_name, **approved)])
+        if normal_index == 4 and mode == "unknown_revision":
+            assert "record_case" not in names
+            return assistant("尝试结束。")
+        if normal_index == 4 and mode not in {"blind_batch", "timeout", "direct_unapproved"}:
+            assert "record_case" in names, "获批后下一轮应开放原名提交"
+            if mode in {"early_handoff", "ignore_handoff"}:
+                return assistant("提前交接：草稿已批准，本节点处理结束。")
+            arguments = dict(approved)
+            if mode == "changed_arguments":
+                arguments["reason"] = "建议另行安排排查。"
+            if mode == "changed_item":
+                arguments["item_ref"] = "case-2"
+            if mode == "cancel":
+                session.cancelled.set()
+            if mode == "revoke":
+                # 部署层撤销生效于返回前；活跃会话的用户策略本身不可修改。
+                manager.permission_override = "readonly"
+            return assistant(calls=[call("formal", "record_case", **arguments)])
+        if normal_index >= 5 and mode in {"early_handoff", "ignore_handoff"}:
+            assert (manager.history_context is not None) == config.ENABLE_STRUCTURED_CONTEXT
+            early = next(index for index, row in enumerate(session.record["messages"])
+                         if row.get("content") == "提前交接：草稿已批准，本节点处理结束。")
+            if mode == "early_handoff" and normal_index > 5:
+                receipt = next(row for row in history if row.get("tool_call_id") == "formal")
+                assert receipt["_provenance"] == "executed"
+                assert CORRECTED in receipt["content"]
+                return assistant("已读取正式执行回执，本节点完成。")
+            references = [row for row in history if row["role"] == "user" and row.get("_context_reference") and row.get("content")]
+            assert references, "提前交接后须提供待提交上下文"
+            assert all(row.get("_context_reference") and not is_user_request(row) for row in references), "获批参数仍是引用数据，不能变为新用户授权"
+            if normal_index == 5 or mode == "ignore_handoff":
+                assert "record_case" in names, "补交上下文给出的原名也须在本次实际目录中"
+
+            def has_copyable_proposal(value):
+                if isinstance(value, list):
+                    return any(has_copyable_proposal(child) for child in value)
+                if not isinstance(value, dict):
+                    return False
+                if "record_case" in value.values():
+                    for child in value.values():
+                        if isinstance(child, dict) and child == approved:
+                            return True
+                        if isinstance(child, str):
+                            try:
+                                if json.loads(child) == approved:
+                                    return True
+                            except ValueError:
+                                pass
+                return any(has_copyable_proposal(child) for child in value.values())
+
+            decoder = json.JSONDecoder()
+            copyable = False
+            for row in references:
+                text = row["content"]
+                for index, char in enumerate(text):
+                    if char not in "[{":
+                        continue
+                    try:
+                        value, _ = decoder.raw_decode(text[index:])
+                    except ValueError:
+                        continue
+                    copyable |= has_copyable_proposal(value)
+            assert copyable, "补交轮输入须含可解析的原名与准确获批原参数，而非只有目录或数量"
+            if mode == "ignore_handoff":
+                return assistant("仍然提前交接，不提交正式工具。")
+            if normal_index == 5:
+                assert "record_case" in names
+                return assistant(calls=[call("formal", "record_case", **approved)])
+            receipt = next(row for row in history if row.get("tool_call_id") == "formal")
+            assert receipt["_provenance"] == "executed"
+            assert CORRECTED in receipt["content"]
+            return assistant("已读取正式执行回执，本节点完成。")
+        if normal_index == 5 and mode == "duplicate":
+            return assistant(calls=[call("formal-repeat", "record_case", **approved)])
+        return assistant("已核对回执。")
+
+    async def checked_model(history, *, session_id, emit):
+        # Flow 会把回调断言保存为运行失败；测试仍须报告真正的契约断点。
+        try:
+            return await model(history, session_id=session_id, emit=emit)
+        except AssertionError as exc:
+            model_assertions.append(exc)
+            raise
+
+    if mode == "cancel_before_model":
+        from agent_core.core.flow_staged_actions import FlowStagedActions
+        begin = FlowStagedActions.begin_drafting
+
+        def stop_before_provider(staged):
+            begin(staged)
+            staged.session.cancelled.set()
+
+        monkeypatch.setattr(FlowStagedActions, "begin_drafting", stop_before_provider)
+    if mode == "audit_cancel":
+        import agent_core.core.flow_staged_actions as staged_module
+        original_append = staged_module.append_audit
+
+        def fail_formal_result(path, line, **kwargs):
+            if json.loads(line)["stage"] == "commit_result":
+                raise OSError("受控审计写入失败")
+            return original_append(path, line, **kwargs)
+
+        monkeypatch.setattr(staged_module, "append_audit", fail_formal_result)
+    manager = SessionManager(store, model=checked_model)
+    service = FlowService(manager)
+    projects = ProjectService(manager, service)
+    original_tool = manager._tool
+
+    async def controlled_business_write(session, tool_call, *, evidence=None):
+        if (tool_call["function"]["name"] != "record_case"
+                or (manager.permission_override or session.record["permission_policy"]) == "readonly"):
+            return await original_tool(session, tool_call, evidence=evidence)
+        arguments = json.loads(tool_call["function"]["arguments"])
+        if mode == "two_unidentified_rejected" and arguments == approved:
+            return "[已拒绝] 受控确认拒绝，尚未执行。"
+        writes.append(arguments)
+        if business_result is not None and len(writes) == 1:
+            evidence["source"] = "executed"
+            return chr(10).join(("[退出码] 0", "[stdout]", json.dumps(business_result, ensure_ascii=False)))
+        if repeated_selector:
+            return await original_tool(session, tool_call, evidence=evidence)
+        if mode == "repeat_after_source_selector_write":
+            (project / "staged-record.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
+            evidence["source"] = "executed"
+            return "已记录：" + arguments["id"]
+        (project / "staged-record.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
+        if mode == "formal_failure" or (mode == "two_unidentified_failure" and arguments == approved):
+            evidence["source"] = "executed"
+            return "[失败] 受控工具在写入后未返回成功回执。"
+        if mode == "audit_cancel":
+            session.cancelled.set()
+        evidence["source"] = "executed"
+        return "已记录：" + arguments["reason"]
+
+    monkeypatch.setattr(manager, "_tool", controlled_business_write)
+    try:
+        project_record = projects.create("两阶段离线验证", str(project), permission_policy=permission)
+        flow = service.get(project_record["flow_id"])
+        flow["nodes"] = [{"id": "a", "title": "原业务", "prompt": "读取原文并记录排查建议后交接",
+                          "tool_names": ["read_file", "record_case"], "custom_tools": [spec]}]
+        flow["edges"] = []
+        if mode == "source_change_end" or mode in {"two_unidentified_failure", "two_unidentified_rejected"}:
+            flow["nodes"].append({"id": "downstream", "title": "下游", "prompt": "不得接收未提交交接", "tool_names": []})
+            flow["edges"] = [{"source": "a", "target": "downstream"}]
+        flow = service.save(flow)
+        service.start(flow["id"])
+        await service.tasks[flow["id"]]
+        if mode == "resume_revision":
+            initial_run = service.get(flow["id"])["run"]
+            assert initial_run["resume_available"], initial_run["error"]
+            sid = initial_run["nodes"]["a"]["session_id"]
+            persisted = store.read_record(store.directory(sid) / "session.json")
+            action_state = persisted["_flow_action_checkpoint"]["actions"]
+            assert len(action_state["revisions"]) == 1
+            assert list(action_state["revisions"].values()) == action_state["pending"]
+            service.resume(flow["id"], run_id=initial_run["id"])
+            await service.tasks[flow["id"]]
+        if model_assertions:
+            raise model_assertions[0]
+        session = next(iter(manager.sessions.values()))
+        effective_policy = manager.permission_override or session.record["permission_policy"]
+        return session.record, service.get(flow["id"])["run"], reviews, normal_schemas, writes, preview_name, effective_policy
+    finally:
+        await service.shutdown()
+        await manager.shutdown()
+
+
+def assert_paired(record):
+    calls = [call["id"] for row in record["messages"] for call in row.get("tool_calls", [])]
+    receipts = [row["tool_call_id"] for row in record["messages"] if row["role"] == "tool"]
+    assert len(calls) == len(set(calls))
+    assert sorted(calls) == sorted(receipts)
+
+
+@pytest.mark.parametrize("mode", ["readonly", "formal_failure"])
+def test_approved_action_without_success_receipt_reports_tool_status(runtime_store, monkeypatch, mode):
+    record, run, reviews, _, writes, _, _ = asyncio.run(staged_scenario(runtime_store, monkeypatch, mode))
+    assert len(reviews) == 2 and run["status"] != "completed"
+    assert record["status"] == "checkpoint"
+    assert len(writes) == (1 if mode == "formal_failure" else 0)
+    assert "原工具未成功" in run["error"] and "核对" in run["error"]
+    assert "来源复核未完成" not in run["error"]
+    assert_paired(record)
+
+
+def test_staged_review_revise_then_formal_same_arguments_execute_once(runtime_store, monkeypatch):
+    record, result, reviews, schemas, writes, preview, policy = asyncio.run(staged_scenario(runtime_store, monkeypatch))
+    assert result["status"] == "completed"
+    assert len(reviews) == 2, "正式提交不得重复语义复核"
+    assert DISPUTED in reviews[0]["draft"] and CORRECTED in reviews[1]["draft"]
+    assert writes == [{"reason": CORRECTED, "item_ref": "case-1"}]
+    assert json.loads((runtime_store[1] / "staged-record.json").read_text(encoding="utf-8")) == writes
+    assert_paired(record)
+    calls = {entry["id"]: entry for row in record["messages"] for entry in row.get("tool_calls", [])}
+    assert calls["draft-first"]["function"]["name"] == calls["draft-revised"]["function"]["name"] == preview
+    assert calls["formal"]["function"]["name"] == "record_case"
+    assert json.loads(calls["formal"]["function"]["arguments"]) == json.loads(calls["draft-revised"]["function"]["arguments"])
+    receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
+    assert receipts["source"]["_provenance"] == "executed" and SOURCE in receipts["source"]["content"]
+    assert receipts["source"]["_context_observation"]
+    assert receipts["formal"]["_provenance"] == "executed"
+    metrics = {row["tool_call_id"]: row for row in record["last_run"]["tools"]}
+    for identifier in ("draft-first", "draft-revised"):
+        assert metrics[identifier]["execution_progress"] is False
+        assert receipts[identifier]["_provenance"] == "not_executed"
+    assert record["last_run"]["model_rounds"] == len(schemas) + len(reviews)
+
+
+@pytest.mark.parametrize("mode", ["changed_arguments", "changed_item", "blind_batch", "duplicate", "cancel", "revoke", "readonly", "timeout", "direct_unapproved"])
+def test_staged_approval_cannot_authorize_other_or_repeated_execution(runtime_store, monkeypatch, mode):
+    record, result, reviews, schemas, writes, preview, policy = asyncio.run(staged_scenario(runtime_store, monkeypatch, mode))
+    if mode != "direct_unapproved":
+        assert reviews, "故障注入必须到达草稿独立复核"
+    assert writes == ([{"reason": CORRECTED, "item_ref": "case-1"}] if mode == "duplicate" else [])
+    assert_paired(record)
+    if mode != "duplicate":
+        assert not (runtime_store[1] / "staged-record.json").exists()
+    identifier = {"blind_batch": "blind-submit", "duplicate": "formal-repeat"}.get(mode, "formal")
+    receipts = [row for row in record["messages"] if row.get("tool_call_id") == identifier]
+    if mode not in {"cancel", "timeout"}:
+        assert len(receipts) == 1 and receipts[0]["_provenance"] == "not_executed"
+    if mode == "timeout":
+        assert len(reviews) == 1 and result["status"] != "completed"
+        assert all(word in result["error"] for word in ("来源", "复核", "未完成"))
+        assert "已批准" not in result["error"] and "来源变化" not in result["error"]
+        assert all(text not in result["error"] for text in (SOURCE, DISPUTED, CORRECTED))
+    elif mode == "blind_batch":
+        assert len(reviews) == 1
+    elif mode == "direct_unapproved":
+        assert reviews == []
+        assert record["flow_project_id"], "项目绑定的正式入口不能沿用旧版直接调用兼容分支"
+    else:
+        assert len(reviews) == 2, "正式提交失败也不得重新语义复核"
+    if mode in {"readonly", "revoke"}:
+        assert policy == "readonly"
+        assert record["permission_policy"] == ("full_access" if mode == "revoke" else "readonly")
+
+
+def test_unidentified_draft_can_be_reapproved_after_source_change(runtime_store, monkeypatch):
+    record, result, reviews, schemas, writes, preview, policy = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "source_change"))
+    assert result["status"] == "completed", result
+    assert len(reviews) == 2, "失效草稿重新复核，正式提交不得重复复核"
+    expected = {"reason": "客户表示页面无法提交，建议安排人工排查。"}
+    assert [json.loads(row["draft"]) for row in reviews] == [expected, expected]
+    assert not any("补充资料" in row["text"] for row in reviews[0]["sources"])
+    assert any("补充资料" in row["text"] for row in reviews[1]["sources"])
+    assert writes == [expected]
+    assert json.loads((runtime_store[1] / "staged-record.json").read_text(encoding="utf-8")) == writes
+    assert_paired(record)
+    receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
+    assert receipts["extra-source"]["_provenance"] == "executed"
+    assert receipts["stale-formal"]["_provenance"] == "not_executed"
+    assert receipts["formal"]["_provenance"] == "executed"
+    events = {row["tool_call_id"]: row for row in record["last_run"]["action_preflights"]}
+    assert events["stale-formal"]["status"] == "not_approved"
+    assert events["draft-first"]["status"] == events["draft-renewed"]["status"] == "approved"
+    assert events["draft-first"]["draft_id"] != events["draft-renewed"]["draft_id"]
+
+
+def test_distinct_unidentified_approved_drafts_can_each_be_consumed(runtime_store, monkeypatch):
+    record, result, reviews, schemas, writes, preview, policy = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "two_unidentified"))
+    assert result["status"] == "completed", result
+    assert len(reviews) == 2
+    assert writes == [json.loads(row["draft"]) for row in reviews]
+    assert len(writes) == 2 and writes[0] != writes[1]
+    assert all(set(row) == {"reason"} for row in writes)
+    assert_paired(record)
+    receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
+    assert all(receipts[identifier]["_provenance"] == "executed"
+               for identifier in ("formal-first", "formal-second"))
+    events = {row["tool_call_id"]: row for row in record["last_run"]["action_preflights"]}
+    assert events["formal-first"]["draft_id"] == events["draft-first"]["draft_id"]
+    assert events["formal-second"]["draft_id"] == events["draft-second"]["draft_id"]
+    assert events["draft-first"]["draft_id"] != events["draft-second"]["draft_id"]
+
+
+@pytest.mark.parametrize("outcome", ["failure", "rejected"])
+def test_success_of_distinct_unidentified_draft_does_not_clear_first_failure(runtime_store, monkeypatch, outcome):
+    record, run, reviews, _, writes, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "two_unidentified_" + outcome))
+    assert len(reviews) == 2
+    assert len(writes) == (2 if outcome == "failure" else 1)
+    assert_paired(record)
+    results = {row["tool_call_id"]: row for row in record["last_run"]["tools"]}
+    assert not results["formal-first"]["execution_progress"]
+    assert results["formal-second"]["execution_progress"]
+    assert run["nodes"]["downstream"]["session_id"] is None
+    assert not run["nodes"]["a"]["output_handoff"]
+    assert record["last_run"]["stop_reason"] == "flow_action_tool_unsuccessful"
+
+
+@pytest.mark.parametrize("mode", ["unidentified_revision", "resume_revision"])
+def test_unidentified_rejected_draft_can_be_revised_and_committed(runtime_store, monkeypatch, mode):
+    record, run, reviews, _, writes, _, _ = asyncio.run(staged_scenario(runtime_store, monkeypatch, mode))
+    assert_paired(record)
+    assert writes == [{"reason": CORRECTED}]
+    assert run["status"] == "completed", run["error"]
+    assert len(reviews) == 2
+    receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
+    assert receipts["draft-revised"]["_provenance"] == "not_executed"
+    assert receipts["formal"]["_provenance"] == "executed"
+    events = {row["tool_call_id"]: row for turn in record["run_history"]
+              for row in turn.get("action_preflights", [])}
+    assert events["draft-revised"]["revision_of"] == events["draft-first"]["draft_id"]
+    assert events["formal"]["draft_id"] == events["draft-revised"]["draft_id"]
+    assert events["formal"]["arguments_sha256"] == events["draft-revised"]["arguments_sha256"]
+
+
+@pytest.mark.parametrize("mode", ["unlinked_revision", "unknown_revision", "isolated_revision"])
+def test_unidentified_draft_link_must_be_explicit_and_valid(runtime_store, monkeypatch, mode):
+    record, run, _, _, writes, _, _ = asyncio.run(staged_scenario(runtime_store, monkeypatch, mode))
+    assert_paired(record)
+    assert record["last_run"]["stop_reason"] == "flow_source_review"
+    assert writes == ([] if mode == "unknown_revision" else [{"reason": CORRECTED}])
+    assert not run["nodes"]["a"]["output_handoff"]
+
+
+def test_stop_during_model_preparation_prevents_provider_call(runtime_store, monkeypatch):
+    record, run, reviews, schemas, writes, *_ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "cancel_before_model"))
+    assert not schemas and not reviews and not writes
+    assert record["status"] == "cancelled" and run["status"] != "completed"
+    assert "审计" not in run["error"] and "来源变化" not in run["error"]
+    assert_paired(record)
+
+
+def test_uncertain_result_audit_with_stop_preserves_checkpoint(runtime_store, monkeypatch):
+    record, run, _, _, writes, *_ = asyncio.run(staged_scenario(runtime_store, monkeypatch, "audit_cancel"))
+    assert len(writes) == 1 and run["status"] != "completed"
+    assert record["status"] == "checkpoint"
+    assert record["last_run"]["stop_reason"] == "flow_action_audit"
+    assert record["run_history"][-1]["status"] == "checkpoint"
+    assert_paired(record)
+    formal = next(row for row in record["last_run"]["tools"] if row["tool_call_id"] == "formal")
+    assert formal["source"] == "executed" and formal["outcome"] == "error"
+    assert not formal["execution_progress"]
+    error = run["error"]
+    assert "审计" in error and "失败" in error
+    assert "回执" in error and any(word in error for word in ("核对", "核验"))
+    assert all(text not in error for text in (SOURCE, DISPUTED, CORRECTED))
+
+
+@pytest.mark.parametrize("descendant_kind", ["child", "branch"])
+def test_project_flow_descendant_requires_preview_before_original(runtime_store, monkeypatch, descendant_kind):
+    """真实创建父 Flow、子会话/分支及隔离工具；仅模型回复受控离线。"""
+    store, workspace = runtime_store
+    monkeypatch.setattr(config, "ENABLE_SESSION_BRANCHES", True)
+    catalogs = []
+    attempted = False
+    spec = {"name": "descendant_selector", "description": "读取选择的事项并记录探针",
+            "parameters": {"type": "object", "properties": {"id": {"type": "string"}},
+                           "required": ["id"], "additionalProperties": False},
+            "code": "from pathlib import Path\ndef main(arguments):\n    Path('descendant-executed').touch()\n    return arguments['id']\n"}
+
+    async def scenario():
+        async def model(history, *, session_id, emit):
+            nonlocal attempted
+            session = manager.sessions[session_id]
+            if session.record.get("flow_project_id"):
+                return assistant("父节点已完成。")
+            catalogs.append(copy.deepcopy(selected_schemas(TOOL_SCHEMAS)))
+            if not attempted:
+                attempted = True
+                return assistant(calls=[call("unapproved-descendant", "descendant_selector", id="case-1")])
+            return assistant("已核对实际回执。")
+
+        manager = SessionManager(store, model=model)
+        service = FlowService(manager)
+        projects = ProjectService(manager, service)
+        try:
+            project = projects.create("后代边界验证", str(workspace), permission_policy="full_access",
+                                      execution_environment="sandbox")
+            flow = service.get(project["flow_id"])
+            flow["nodes"] = [{"id": "parent", "title": "父节点", "prompt": "准备后代能力验证",
+                              "tool_names": [spec["name"]], "custom_tools": [spec]}]
+            flow["edges"] = []
+            service.save(flow)
+            service.start(flow["id"])
+            await service.tasks[flow["id"]]
+            run = service.get(flow["id"])["run"]
+            assert run["status"] == "completed", run
+            parent = manager.sessions[run["nodes"]["parent"]["session_id"]]
+            assert parent.record["flow_project_id"] == project["id"]
+            if descendant_kind == "child":
+                descendant = manager.create("真实子会话", "验证继承范围", parent=parent)
+                # 与 AgentTasks 的已选能力继承记录一致，不增加权限或自定义执行入口。
+                descendant.record.update(custom_tools=copy.deepcopy(parent.record["custom_tools"]),
+                    inherited_custom_tools=copy.deepcopy(parent.record["custom_tools"]),
+                    tool_names=[spec["name"]], inherited_tool_names=[spec["name"]],
+                    permission_policy=parent.record["permission_policy"])
+            else:
+                descendant = await manager.fork_session(parent, through=0)
+            assert not descendant.record.get("flow_project_id")
+            assert descendant.record.get("flow_workspace_scope")
+            assert manager.flow_workspace_scope(descendant)
+            assert spec["name"] in manager._session_custom_registry(descendant)
+            manager.submit(descendant, "直接尝试原名，应要求预审。")
+            await descendant.task
+            assert attempted and catalogs
+            assert not (manager.workspace(descendant) / "descendant-executed").exists(), "后代原名未预审不得执行业务"
+            names = {row["function"]["name"] for row in catalogs[0]}
+            previews = [row for row in catalogs[0]
+                        if spec["name"] in row["function"].get("description", "")]
+            assert spec["name"] not in names
+            assert len(previews) == 1, "Flow 后代的选择器也必须提供草稿 schema"
+            assert previews[0]["function"]["parameters"] == spec["parameters"]
+            assert_paired(descendant.record)
+            receipt = next(row for row in descendant.record["messages"]
+                           if row.get("tool_call_id") == "unapproved-descendant")
+            assert receipt["_provenance"] == "not_executed"
+            assert "[退出码] 0" not in receipt["content"]
+            assert not descendant.tool_workers and not manager._active_tools
+        finally:
+            await service.shutdown()
+            await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
+def test_approved_action_early_handoff_gets_explicit_commit_opportunity(runtime_store, monkeypatch, structured):
+    monkeypatch.setattr(config, "ENABLE_STRUCTURED_CONTEXT", structured)
+    record, run, reviews, schemas, writes, *_ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "early_handoff"))
+    assert run["status"] == "completed", run
+    expected = {"reason": CORRECTED, "item_ref": "case-1"}
+    assert writes == [expected], "获批后提前交接须引导下一轮显式提交，不能由框架自动实写"
+    assert json.loads((runtime_store[1] / "staged-record.json").read_text(encoding="utf-8")) == [expected]
+    assert len(reviews) == 2, "正式提交不能重复语义审查"
+    assert_paired(record)
+    formal_calls = [entry for row in record["messages"] for entry in row.get("tool_calls", [])
+                    if entry["function"]["name"] == "record_case"]
+    assert len(formal_calls) == 1
+    assert json.loads(formal_calls[0]["function"]["arguments"]) == expected
+    formal_receipt = next(row for row in record["messages"] if row.get("tool_call_id") == formal_calls[0]["id"])
+    assert formal_receipt["_provenance"] == "executed" and CORRECTED in formal_receipt["content"]
+    assert record["last_run"]["model_rounds"] == len(schemas) + len(reviews) <= config.MAX_TOOL_ROUNDS
+    assert run["nodes"]["a"]["output_handoff"].endswith("已读取正式执行回执，本节点完成。")
+    store = runtime_store[0]
+    persisted = store.read_record(store.directory(record["id"]) / "session.json")
+    premature = [row for row in persisted["messages"]
+                 if row["role"] == "assistant" and row.get("content") == "提前交接：草稿已批准，本节点处理结束。"]
+    assert len(premature) == 1, "第一次提前交接的原 assistant 必须耐久保留"
+    assert_paired(persisted)
+
+
+@pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
+def test_repeated_early_handoff_is_bounded_without_automatic_commit(runtime_store, monkeypatch, structured):
+    monkeypatch.setattr(config, "ENABLE_STRUCTURED_CONTEXT", structured)
+    record, run, reviews, schemas, writes, *_ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "ignore_handoff"))
+    assert len(schemas) >= 5, "首次提前交接应有下一轮补交机会"
+    assert len(schemas) == 5, "同一提案的纯文本误交接最多纠正一次"
+    assert record["status"] == "checkpoint" and run["status"] != "completed"
+    assert writes == [] and not (runtime_store[1] / "staged-record.json").exists()
+    assert len(reviews) == 2
+    assert record["last_run"]["model_rounds"] == len(schemas) + len(reviews) <= config.MAX_TOOL_ROUNDS
+    assert not any(entry["function"]["name"] == "record_case"
+                   for row in record["messages"] for entry in row.get("tool_calls", []))
+    assert_paired(record)
+    error = run["error"]
+    assert "批准" in error and any(word in error for word in ("未提交", "待提交"))
+    assert any(word in error for word in ("原工具", "正式"))
+    assert "来源复核未完成" not in error
+    assert all(text not in error for text in (SOURCE, DISPUTED, CORRECTED))
+
+
+@pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
+def test_public_error_distinguishes_expired_source_approval(runtime_store, monkeypatch, structured):
+    monkeypatch.setattr(config, "ENABLE_STRUCTURED_CONTEXT", structured)
+    record, run, reviews, schemas, writes, *_ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "source_change_end"))
+    assert record["status"] == "checkpoint" and run["status"] != "completed"
+    assert len(reviews) == 1
+    assert writes == [] and not (runtime_store[1] / "staged-record.json").exists()
+    assert run["nodes"]["downstream"]["session_id"] is None
+    assert not run["nodes"]["a"]["output_handoff"]
+    events = record["last_run"]["action_preflights"]
+    assert any(event["tool_call_id"] == "draft-first" and event["status"] == "approved" for event in events)
+    read = next(row for row in record["messages"] if row.get("tool_call_id") == "extra-source")
+    assert read["_provenance"] == "executed" and "补充资料" in read["content"]
+    error = run["error"]
+    assert "来源" in error and any(word in error for word in ("变化", "变更"))
+    assert any(word in error for word in ("重新预审", "重新复核"))
+    assert all(text not in error for text in (SOURCE, DISPUTED, CORRECTED,
+        "客户表示页面无法提交，建议安排人工排查。", "补充资料：本事项尚待排查。"))
+    assert_paired(record)
+
+
+@pytest.mark.parametrize("decision, name", [
+    ("revise", "record_case"),
+    ("revise", "revise_flow_draft"),
+    ("resume", "record_case"),
+    ("stop", "record_case"),
+    ("deny", "record_case"),
+])
+def test_confirmation_return_can_explicitly_replace_unidentified_draft(runtime_store, monkeypatch, decision, name):
+    store, workspace = runtime_store
+    first = {"reason": "记录页面故障。"}
+    corrected = {"reason": "记录页面故障并补充复核结果。"}
+    attempts, writes, ordinary = [], [], []
+    preview_name = "draft_" + name
+    revision_name = "revise_flow_draft" + ("_" if name == "revise_flow_draft" else "")
+    model_calls = 0
+    resumed = False
+    revising = decision in {"revise", "resume"}
+    if decision == "resume":
+        monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 0)
+
+    async def model(history, *, session_id, emit):
+        nonlocal model_calls
+        if manager.sessions[session_id].record["flow_node_id"] == "downstream":
+            return assistant("已核对交接。")
+        model_calls += 1
+        names = {row["function"]["name"] for row in selected_schemas(TOOL_SCHEMAS)}
+        if model_calls == 1:
+            assert preview_name in names and name not in names and revision_name not in names
+            return assistant(calls=[call("initial-preview", preview_name, **first)])
+        if model_calls == 2:
+            assert names == {name}
+            if revising or decision == "stop":
+                return assistant(json.dumps({"decision": "revise" if revising else "stop"}))
+            return assistant(calls=[call("denied", name, **first)])
+        ordinary.append(names)
+        if model_calls == 3 and revising:
+            if decision == "resume" and not resumed:
+                raise TimeoutError("受控退审后模型超时")
+            assert preview_name in names and name not in names
+            if revision_name not in names:
+                return assistant(calls=[call("changed-preview", preview_name, **corrected)])
+            message = next(row for row in reversed(history)
+                           if row.get("_context_reference") and "revision_id" in row.get("content", ""))
+            reference = re.search(r'"revision_id":"([A-Za-z0-9_-]+)"', message["content"]).group(1)
+            assert not is_user_request(message)
+            return assistant(calls=[call("changed-preview", revision_name,
+                                         revision_id=reference, arguments_json=json.dumps(corrected, ensure_ascii=False))])
+        if model_calls == 4 and revising:
+            assert names == {name}
+            assert json.dumps(corrected, ensure_ascii=False) in history[-1]["content"]
+            return assistant(calls=[call("final-commit", name, **corrected)])
+        assert name not in names and revision_name not in names
+        return assistant("已核对回执。")
+
+    async def run():
+        nonlocal manager, resumed, model_calls
+        manager = SessionManager(store, model=model)
+        service = FlowService(manager)
+        projects = ProjectService(manager, service)
+        original_tool = manager._tool
+
+        async def write(session, tool_call, *, evidence=None):
+            if tool_call["function"]["name"] != name:
+                return await original_tool(session, tool_call, evidence=evidence)
+            arguments = json.loads(tool_call["function"]["arguments"])
+            attempts.append(arguments)
+            if decision == "deny":
+                return "[已取消] 用户拒绝，命令尚未执行。"
+            writes.append(arguments)
+            (workspace / "returned-action.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
+            evidence["source"] = "executed"
+            return "办理完成。"
+
+        monkeypatch.setattr(manager, "_tool", write)
+        try:
+            project = projects.create("确认轮退审", str(workspace), permission_policy="full_access")
+            fid = project["flow_id"]
+            flow = service.get(fid)
+            spec = dict(tool_spec(), name=name)
+            flow.update(nodes=[
+                {"id": "work", "title": "办理", "prompt": "记录页面故障。", "tool_names": [name],
+                 "custom_tools": [spec]},
+                {"id": "downstream", "title": "下游", "prompt": "核对交接。", "tool_names": []},
+            ], edges=[{"source": "work", "target": "downstream"}])
+            service.save(flow)
+            service.start(fid)
+            await service.tasks[fid]
+            run = service.get(fid)["run"]
+            if decision == "resume":
+                assert run["resume_available"], run["nodes"]["work"]["error"]
+                sid = run["nodes"]["work"]["session_id"]
+                persisted = store.read_record(store.directory(sid) / "session.json")
+                actions = persisted["_flow_action_checkpoint"]["actions"]
+                assert list(actions["revisions"].values()) == actions["pending"]
+                assert len(actions["pending"]) == 1 and not actions["disputed"]
+                resumed = True
+                model_calls = 2
+                service.resume(fid, run_id=run["id"])
+                await service.tasks[fid]
+                run = service.get(fid)["run"]
+            record = manager.sessions[run["nodes"]["work"]["session_id"]].record
+            assert_paired(record)
+            if revising:
+                assert run["status"] == "completed", run["nodes"]["work"]["error"]
+                assert attempts == writes == [corrected]
+                stages = {row["tool_call_id"]: row for turn in record["run_history"]
+                          for row in turn.get("action_preflights", [])}
+                assert stages["changed-preview"]["revision_of"] == stages["initial-preview"]["draft_id"]
+                assert stages["final-commit"]["draft_id"] == stages["changed-preview"]["draft_id"]
+            else:
+                assert not any(revision_name in names for names in ordinary)
+                assert not any("revision_id" in row.get("content", "") for row in record["messages"]
+                               if isinstance(row.get("content"), str))
+                assert not writes and run["nodes"]["downstream"]["session_id"] is None
+                assert attempts == ([first] if decision == "deny" else [])
+                reason = "flow_action_stopped" if decision == "stop" else "flow_action_tool_unsuccessful"
+                assert record["last_run"]["stop_reason"] == reason
+        finally:
+            await service.shutdown()
+            await manager.shutdown()
+
+    manager = None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ["duplicate", "distinct", "selector", "selector_write"])
+def test_completed_write_cannot_be_repeat_approved_after_source_refresh(runtime_store, monkeypatch, operation):
+    record, run, _, schemas, invocations, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "repeat_after_source_" + operation))
+    assert run["status"] == "completed", run["error"]
+    assert_paired(record)
+    duplicate_write = operation in {"duplicate", "selector_write"}
+    assert len(invocations) == (1 if duplicate_write else 2)
+    if operation == "selector":
+        assert invocations == [{"path": "query.json"}] * 2
+        assert not (runtime_store[1] / "staged-record.json").exists()
+    elif operation == "distinct":
+        assert invocations[0]["item_ref"] == invocations[1]["item_ref"]
+        assert invocations[0]["reason"] != invocations[1]["reason"]
+    events = {row["tool_call_id"]: row for row in record["last_run"]["action_preflights"]}
+    if duplicate_write:
+        assert all("record_case" not in names for names in schemas[3:])
+        assert events["draft-after-read"]["status"] == "already_completed"
+        assert "formal-after-read" not in events
+    else:
+        assert events["draft-after-read"]["status"] == "approved"
+        assert events["formal-after-read"]["draft_id"] == events["draft-after-read"]["draft_id"]
+
+
+@pytest.mark.parametrize("outcome", [
+    "business_retry", "business_blocked", "business_status", "error_envelope", "error_data",
+])
+def test_exit_zero_does_not_hide_explicit_business_failure(runtime_store, monkeypatch, outcome):
+    record, run, _, _, invocations, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "repeat_after_source_" + outcome))
+    assert_paired(record)
+    receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
+    assert receipts["formal-first"]["_provenance"] == "executed"
+    assert receipts["formal-first"]["content"].startswith("[退出码] 0")
+    events = {row["tool_call_id"]: row for row in record["last_run"]["action_preflights"]}
+    metrics = {row["tool_call_id"]: row for row in record["last_run"]["tools"]}
+    expected_first = "completed" if outcome == "error_data" else "error"
+    assert events["formal-first"]["status"] == metrics["formal-first"]["outcome"] == expected_first
+    assert metrics["formal-first"]["execution_progress"] is (outcome == "error_data")
+    if outcome == "business_retry":
+        assert len(invocations) == 2 and invocations[0] == invocations[1]
+        assert events["formal-after-read"]["status"] == metrics["formal-after-read"]["outcome"] == "completed"
+        assert run["status"] == "completed"
+    elif outcome == "error_data":
+        assert len(invocations) == 1 and run["status"] == "completed"
+    else:
+        assert len(invocations) == 1 and not run["nodes"]["a"]["output_handoff"]
+        assert record["last_run"]["stop_reason"] == "flow_action_tool_unsuccessful"
+
+
+def test_business_error_json_only_affects_dynamic_tools():
+    output = chr(10).join(("[退出码] 0", "[stdout]", '{"ok":false,"error":"检查失败"}'))
+    assert tool_outcome(output, tool_name="run_command") == "completed"
+    assert tool_outcome(output, custom_tool=True) == "error"
+
+
+def test_invalid_draft_preserves_existing_formal_failure(runtime_store, monkeypatch):
+    record, run, _, _, invocations, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "repeat_after_source_invalid_keeps_failure"))
+    assert len(invocations) == 1 and not run["nodes"]["a"]["output_handoff"]
+    stages = {event["tool_call_id"]: event for event in record["last_run"]["action_preflights"]}
+    assert stages["formal-first"]["status"] == "error"
+    assert stages["invalid-followup"]["status"] == "invalid_draft"
+    assert record["last_run"]["stop_reason"] == "flow_action_tool_unsuccessful"
+    assert_paired(record)

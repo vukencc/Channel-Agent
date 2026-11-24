@@ -1,4 +1,8 @@
 """agent_core.config.py 的环境变量解析测试。"""
+import runpy
+
+import pytest
+
 from agent_core import config
 
 
@@ -35,3 +39,20 @@ def test_env_int_falls_back_on_missing_or_blank(monkeypatch):
     assert config.env_int("X_INT", 0) == 3
     monkeypatch.setenv("X_INT", "  ")
     assert config.env_int("X_INT", 9) == 9
+
+
+@pytest.mark.parametrize(('value', 'expected'), [(None, 1), ('1', 1), ('2', 2)])
+def test_flow_review_concurrency_accepts_only_selected_parallelism(monkeypatch, value, expected):
+    monkeypatch.setenv('PYTHON_DOTENV_DISABLED', '1')
+    monkeypatch.delenv('FLOW_REVIEW_CONCURRENCY', raising=False)
+    if value is not None:
+        monkeypatch.setenv('FLOW_REVIEW_CONCURRENCY', value)
+    assert runpy.run_path(config.__file__)['FLOW_REVIEW_CONCURRENCY'] == expected
+
+
+@pytest.mark.parametrize('value', ['0', '3', 'two'])
+def test_flow_review_concurrency_rejects_unbounded_or_invalid_values(monkeypatch, value):
+    monkeypatch.setenv('PYTHON_DOTENV_DISABLED', '1')
+    monkeypatch.setenv('FLOW_REVIEW_CONCURRENCY', value)
+    with pytest.raises(ValueError, match='FLOW_REVIEW_CONCURRENCY'):
+        runpy.run_path(config.__file__)

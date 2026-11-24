@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import shlex
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -210,6 +211,14 @@ class CustomTool:
             "parameters": copy.deepcopy(self.definition["parameters"]),
         }}
 
+    @property
+    def is_receipt_reader(self) -> bool:
+        from agent_core.core.flow_receipt_readers import proven_receipt_reader, receipt_reader_backend
+        from agent_core.tools.sandbox import execution_environment
+
+        return (receipt_reader_backend(sys.platform, execution_environment())
+                and proven_receipt_reader(self.definition))
+
     def run(self, arguments: str) -> str:
         from agent_core.core.command_review import CommandReview, command_review
         from agent_core.tools.command import run_command
@@ -243,7 +252,9 @@ class CustomTool:
                   "ensure_ascii=False,allow_nan=False))")
         code = base64.b64encode(self.definition['code'].encode('utf-8')).decode('ascii')
         payload = base64.b64encode((arguments or '{}').encode('utf-8')).decode('ascii')
-        command = "python3 -c " + shlex.quote(script) + " " + code + " " + payload
+        # 已验证读取仅使用标准库，隔离工作区导入、站点初始化及字节码写入。
+        python = "/usr/bin/python3 -I -S -B -c " if self.is_receipt_reader else "python3 -c "
+        command = python + shlex.quote(script) + " " + code + " " + payload
         audit("custom_tool_execution", tool=self.name,
               code_digest=hashlib.sha256(self.definition["code"].encode()).hexdigest(),
               network=self.definition["network"], strict=True)

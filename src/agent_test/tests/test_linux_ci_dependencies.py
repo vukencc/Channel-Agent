@@ -28,7 +28,7 @@ def run_action(tmp_path: Path, reachable: str, apt_failure: str = "", stale: boo
     for name, body in {
         "sudo": 'exec "$@"',
         "curl": 'echo "curl $*" >> "$CALL_LOG"; case "$*" in *"$REACHABLE"*) test -n "$REACHABLE" || exit 1;; *) exit 1;; esac; while test "$1" != "-o"; do shift; done; date -u -d "$PROBE_DATE" "+Date: %a, %d %b %Y %H:%M:%S UTC" > "$2"',
-        "apt-get": 'echo "apt-get $*" >> "$CALL_LOG"; case "$*" in *"$APT_FAILURE"*) test -z "$APT_FAILURE";; esac',
+        "apt-get": 'echo "apt-get $*" >> "$CALL_LOG"; for arg in "$@"; do case "$arg" in Dir::Etc::sourcelist=*) cat "${arg#*=}" >> "$CALL_LOG";; esac; done; case "$*" in *"$APT_FAILURE"*) test -z "$APT_FAILURE";; esac',
     }.items():
         command = bin_dir / name
         command.write_text(f"#!/bin/bash\n{body}\n", encoding="utf-8")
@@ -55,6 +55,18 @@ def test_all_mirrors_fail_before_apt(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "apt-get" not in calls
     assert "mirror+file:" in source
+
+
+def test_apt_uses_only_signed_ubuntu_suites_for_required_system_packages(tmp_path: Path) -> None:
+    result, calls, _ = run_action(tmp_path, "is.archive.ubuntu.com")
+    assert result.returncode == 0, result.stderr
+    commands = [line for line in calls.splitlines() if line.startswith("apt-get ")]
+    assert len(commands) == 2
+    assert all("Dir::Etc::sourcelist=" in line and "Dir::Etc::sourceparts=" in line for line in commands)
+    sources = [line for line in calls.splitlines() if line.startswith("deb ")]
+    assert len(sources) == 6
+    assert all(line.startswith("deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] "
+                               "https://is.archive.ubuntu.com/ubuntu ") for line in sources)
 
 
 def test_stale_security_metadata_is_rejected(tmp_path: Path) -> None:
