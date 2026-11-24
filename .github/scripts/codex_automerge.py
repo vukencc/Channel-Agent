@@ -15,7 +15,8 @@ def approved(comments: list[dict[str, Any]], sha: str) -> bool:
     trusted = [c for c in comments if c.get("user", {}).get("id") == 199175422
                and c.get("user", {}).get("type") == "Bot"
                and c.get("user", {}).get("login") == "chatgpt-codex-connector[bot]"
-               and (c.get("performed_via_github_app") or {}).get("id") == 1144995]
+               and (c.get("performed_via_github_app") or {}).get("id") == 1144995
+               and not (c.get("body") or "").startswith("<!-- codex-review-receipt:v1 -->")]
     if not trusted:
         return False
     comment = max(trusted, key=lambda c: (c.get("updated_at", ""), c.get("id", 0)))

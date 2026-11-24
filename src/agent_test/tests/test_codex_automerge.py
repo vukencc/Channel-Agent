@@ -19,6 +19,9 @@ def summary(sha="head"):
 def test_summary_requires_identity_current_head_and_no_findings():
     comment = summary()
     assert gate.approved([comment], "head")
+    receipt = {**comment, "id": 2, "body": "<!-- codex-review-receipt:v1 -->\nReviewed commit"}
+    assert gate.approved([comment, receipt], "head")
+    assert not gate.approved([receipt], "head")
     assert not gate.approved([comment], "new")
     forged = summary()
     forged["performed_via_github_app"]["id"] = 1
