@@ -63,6 +63,13 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         approved = {"reason": "客户表示页面无法提交，建议安排人工排查。"}
     repeat_after_source = mode.startswith("repeat_after_source_")
     repeated_selector = mode == "repeat_after_source_selector"
+    business_result = {
+        "repeat_after_source_business_retry": {"ok": False, "error": "办理暂未成功"},
+        "repeat_after_source_business_blocked": {"success": False, "error": "办理暂未成功"},
+        "repeat_after_source_business_status": {"status": "failed", "message": "办理暂未成功"},
+        "repeat_after_source_error_envelope": {"error": "办理暂未成功"},
+        "repeat_after_source_error_data": {"id": "case-1", "error": "页面显示错误"},
+    }.get(mode)
     spec = tool_spec()
     if repeat_after_source:
         approved = {"item_ref": "case-1", "reason": "记录页面故障。"}
@@ -132,6 +139,9 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
                 return assistant(calls=[call("formal-first", "record_case", **approved)])
             if normal_index == 4:
                 assert "read_file" in names and "record_case" not in names
+                if mode in {"repeat_after_source_business_blocked", "repeat_after_source_business_status",
+                            "repeat_after_source_error_envelope", "repeat_after_source_error_data"}:
+                    return assistant("已核对回执。")
                 return assistant(calls=[call("extra-source", "read_file", path="extra-source.txt")])
             if normal_index == 5:
                 assert any(row.get("path") == "extra-source.txt"
@@ -312,6 +322,9 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         if mode == "two_unidentified_rejected" and arguments == approved:
             return "[已拒绝] 受控确认拒绝，尚未执行。"
         writes.append(arguments)
+        if business_result is not None and len(writes) == 1:
+            evidence["source"] = "executed"
+            return chr(10).join(("[退出码] 0", "[stdout]", json.dumps(business_result, ensure_ascii=False)))
         if repeated_selector:
             evidence["source"] = "executed"
             return '[退出码] 0\n[stdout]\n{"items":[]}'
@@ -827,3 +840,35 @@ def test_completed_write_cannot_be_repeat_approved_after_source_refresh(runtime_
     else:
         assert events["draft-after-read"]["status"] == "approved"
         assert events["formal-after-read"]["draft_id"] == events["draft-after-read"]["draft_id"]
+
+
+@pytest.mark.parametrize("outcome", [
+    "business_retry", "business_blocked", "business_status", "error_envelope", "error_data",
+])
+def test_exit_zero_does_not_hide_explicit_business_failure(runtime_store, monkeypatch, outcome):
+    record, run, _, _, invocations, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "repeat_after_source_" + outcome))
+    assert_paired(record)
+    receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
+    assert receipts["formal-first"]["_provenance"] == "executed"
+    assert receipts["formal-first"]["content"].startswith("[退出码] 0")
+    events = {row["tool_call_id"]: row for row in record["last_run"]["action_preflights"]}
+    metrics = {row["tool_call_id"]: row for row in record["last_run"]["tools"]}
+    expected_first = "completed" if outcome == "error_data" else "error"
+    assert events["formal-first"]["status"] == metrics["formal-first"]["outcome"] == expected_first
+    assert metrics["formal-first"]["execution_progress"] is (outcome == "error_data")
+    if outcome == "business_retry":
+        assert len(invocations) == 2 and invocations[0] == invocations[1]
+        assert events["formal-after-read"]["status"] == metrics["formal-after-read"]["outcome"] == "completed"
+        assert run["status"] == "completed"
+    elif outcome == "error_data":
+        assert len(invocations) == 1 and run["status"] == "completed"
+    else:
+        assert len(invocations) == 1 and not run["nodes"]["a"]["output_handoff"]
+        assert record["last_run"]["stop_reason"] == "flow_action_tool_unsuccessful"
+
+
+def test_business_error_json_only_affects_dynamic_tools():
+    output = chr(10).join(("[退出码] 0", "[stdout]", '{"ok":false,"error":"检查失败"}'))
+    assert tool_outcome(output, tool_name="run_command") == "completed"
+    assert tool_outcome(output, custom_tool=True) == "error"

@@ -282,7 +282,7 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
                     or not isinstance(content, str)):
                 continue
             # 已配对的 read_file 成功回执由下方观察摘要和区间核验，正文可含任意协议字样。
-            if name != "read_file" and tool_outcome(content) != "completed":
+            if name != "read_file" and tool_outcome(content, custom_tool=name in custom_names) != "completed":
                 continue
             try:
                 arguments = json.loads(function.get("arguments", ""))

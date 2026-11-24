@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import json
 
+from agent_core.core.custom_tool_results import custom_result_outcome
 from agent_core.core.flow_action_preflight import selection_only
 from agent_core.core.execution_guidance import READ_TOOLS
 from agent_core.core.tool_observations import extract_observation
@@ -16,32 +17,8 @@ _WRITE = re.compile(r"(?:写入|修改|更新|删除|创建|提交|发送|\bwrit
 
 
 def successful_custom_result(result: object) -> bool:
-    """只接受完整命令回执中的一个 JSON 返回值，并排除明确失败。"""
-    if not isinstance(result, str) or not result.startswith('[退出码] 0\n[stdout]\n'):
-        return False
-    output = result[len('[退出码] 0\n[stdout]\n'):].split('\n[stderr]\n', 1)[0].strip()
-    if '[输出已截断]' in output or '已截断）' in output:
-        return False
-    def unique(pairs):
-        value = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError('重复键')
-            value[key] = item
-        return value
-    try:
-        value = json.loads(output, object_pairs_hook=unique,
-                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError('非有限数')))
-    except (ValueError, TypeError, RecursionError):
-        return False
-    if isinstance(value, dict):
-        if value.get('ok') is False or value.get('success') is False:
-            return False
-        if isinstance(value.get('status'), str) and value['status'].lower() in {'error', 'failed', 'failure', 'cancelled', 'denied'}:
-            return False
-        if value.get('error') and set(value) <= {'error', 'status', 'ok', 'success', 'code', 'message'}:
-            return False
-    return True
+    """必做读取只认可完整的成功回执。"""
+    return custom_result_outcome(result) == 'completed'
 
 
 def successful_builtin_result(name: str, result: object) -> bool:

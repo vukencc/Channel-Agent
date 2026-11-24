@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any, ContextManager, Iterator, Protocol, runtime_checkable
 
+from agent_core.core.custom_tool_results import custom_result_outcome
 from agent_core.core.tool_observations import extract_observation
 
 
@@ -84,7 +85,7 @@ def _causal_ids(fields: dict) -> dict:
     return result
 
 
-def tool_outcome(result: str, *, tool_name: str | None = None) -> str:
+def tool_outcome(result: str, *, tool_name: str | None = None, custom_tool: bool = False) -> str:
     """识别可信文件正文和工具协议的状态前缀，不保存返回正文。"""
     if tool_name == 'read_file':
         observation = extract_observation(result)
@@ -100,7 +101,9 @@ def tool_outcome(result: str, *, tool_name: str | None = None) -> str:
         first_line = result.partition('\n')[0].rstrip('\r')
         exit_status = re.fullmatch(r'\[退出码\] (-?[0-9]+)', first_line)
         if exit_status is not None:
-            return 'completed' if exit_status[1].lstrip('-0') == '' else 'error'
+            if exit_status[1].lstrip('-0') or (custom_tool and custom_result_outcome(result) == 'business_error'):
+                return 'error'
+            return 'completed'
     return 'completed'
 
 
@@ -154,7 +157,8 @@ def traced(module: str):
             with observer.scope(session_id, turn_id=turn_id), observer.span(module) as span:
                 result = await function(owner, *args, **kwargs)
                 if module == 'tool.total' and isinstance(result, str):
-                    span.outcome = tool_outcome(result)
+                    evidence = kwargs.get('evidence') or {}
+                    span.outcome = evidence.get('outcome') or tool_outcome(result)
                 if module == 'agent.run' and session is not None:
                     status = session.record.get('status')
                     span.outcome = status if status in {'error', 'cancelled', 'checkpoint'} else 'completed'

@@ -662,13 +662,14 @@ class SessionManager:
                     try:
                         with operation_span('tool.execute', name=name) as span:
                             result = tool.run(call['function']['arguments'])
-                            span.outcome = tool_outcome(result, tool_name=name)
+                            span.outcome = tool_outcome(result, tool_name=name, custom_tool=name not in TOOL_REGISTRY)
                     except Exception:
                         if evidence is not None:
                             evidence['worker_source'] = 'execution_error'
                         raise
                     if evidence is not None:
                         evidence['worker_source'] = 'executed'
+                        evidence['worker_outcome'] = span.outcome
                     return result
                 # Reads must not race commands that replace a validated parent with a symlink.
                 if tool.concurrency == 'serial' or tool.workspace_access:
@@ -726,6 +727,7 @@ class SessionManager:
             result = await asyncio.wait_for(asyncio.shield(worker), timeout)
             if evidence is not None:
                 evidence['source'] = evidence.get('worker_source', 'not_executed')
+                evidence['outcome'] = evidence.get('worker_outcome')
             return result
         except TimeoutError:
             if evidence is not None:
@@ -1972,7 +1974,8 @@ class SessionManager:
                 async def execute_call(call, index):
                     name = call['function']['name']
                     started = time.monotonic()
-                    observed_name = name if name in TOOL_REGISTRY or name in self._session_custom_registry(session) else 'unknown_tool'
+                    custom_tool = name not in TOOL_REGISTRY and name in self._session_custom_registry(session)
+                    observed_name = name if name in TOOL_REGISTRY or custom_tool else 'unknown_tool'
                     if staged_actions and staged_actions.is_preview(name):
                         observed_name = name
                     if self.observer.enabled:
@@ -1997,7 +2000,9 @@ class SessionManager:
                                     result = await self._tool(session, call, evidence=evidence)
                         except Exception as exc:
                             result = f'工具执行失败: {type(exc).__name__}: {exc}'
-                    outcome = tool_outcome(result, tool_name=name if evidence['source'] == 'executed' else None)
+                    outcome = tool_outcome(
+                        result, tool_name=name if evidence['source'] == 'executed' else None,
+                        custom_tool=custom_tool and evidence['source'] == 'executed')
                     if name in required_read_names and name in TOOL_REGISTRY and evidence['source'] == 'executed':
                         from agent_core.core.flow_required_reads import successful_builtin_result
                         if outcome == 'completed' and not successful_builtin_result(name, result):

@@ -602,7 +602,7 @@ class FlowStagedActions:
             event['status'] = 'execution_error'
             self.unsuccessful.add(key)
             raise
-        event['status'] = tool_outcome(result)
+        event['status'] = evidence.get('outcome') or tool_outcome(result, custom_tool=True)
         if evidence.get('source') == 'executed' and event['status'] == 'completed':
             self.unresolved.discard(key)
             self.invalidated.discard(key)

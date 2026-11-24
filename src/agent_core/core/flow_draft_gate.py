@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from agent_core import config
 from agent_core.core.budgets import BudgetExceeded
+from agent_core.core.custom_tool_results import custom_result_outcome
 from agent_core.core.context import history_size, request_tokens
 from agent_core.core.flow_draft_review import (
     AmbiguousDraft, assess_review, needs_review, normalised_draft, parse_review_reply, review_messages,
@@ -124,8 +125,11 @@ class FlowDraftGate:
             self.pending_tools.add(key)
             return '[已拒绝] 草稿尚未提交。' + feedback
         result = await self.manager._tool(self.session, call, evidence=evidence)
-        if evidence['source'] == 'executed' and tool_outcome(result) == 'completed':
-            self.pending_tools.discard(key)
+        if evidence['source'] == 'executed':
+            if custom_result_outcome(result) == 'business_error':
+                self.pending_tools.add(key)
+            elif tool_outcome(result) == 'completed':
+                self.pending_tools.discard(key)
         return result
 
     async def check(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,

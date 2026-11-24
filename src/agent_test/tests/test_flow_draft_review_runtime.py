@@ -77,7 +77,7 @@ def runtime_store(tmp_path, monkeypatch, sandbox_env):
 async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
                    disputed=True, review_mode="revise", rounds=None, permission="full_access",
                    repair_tools=False, abandon=False, missing_source=False,
-                   recovery_write=False, recovery_repeat=False, item_ref=None, two_writes=False, final_draft=DISPUTED, downstream=False, check_isolation=False):
+                   recovery_write=False, recovery_repeat=False, item_ref=None, two_writes=False, final_draft=DISPUTED, downstream=False, check_isolation=False, business_error=False):
     store, project = runtime_store
     seen, reviews, writes, scopes = [], [], [], []
     normal_index = 0
@@ -202,6 +202,9 @@ async def scenario(runtime_store, monkeypatch, *, final=False, classic=False,
         assert session.record["permission_policy"] == permission
         arguments = json.loads(tool_call["function"]["arguments"])
         writes.append(arguments)
+        if business_error:
+            evidence["source"] = "executed"
+            return chr(10).join(("[退出码] 0", "[stdout]", '{"ok":false,"error":"办理暂未成功"}'))
         (project / "recorded.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
         evidence["source"] = "executed"
         return "已记录：" + arguments["reason"]
@@ -659,3 +662,14 @@ def test_final_review_recovery_failure_stays_blocked(runtime_store, monkeypatch,
     event = record["last_run"]["draft_reviews"][-1]
     assert event["status"] == status
     assert event["attempts"] == ["TimeoutError", status]
+
+
+def test_legacy_flow_custom_business_failure_does_not_pass_handoff(runtime_store, monkeypatch):
+    record, run, _, _, writes, _ = asyncio.run(
+        scenario(runtime_store, monkeypatch, disputed=False, downstream=True, business_error=True))
+    assert writes == [{"reason": CORRECTED}]
+    assert run["nodes"]["b"]["session_id"] is None
+    assert not run["nodes"]["a"]["output_handoff"]
+    event = next(row for row in record["last_run"]["tools"] if row["tool_call_id"] == "write-original")
+    assert event["source"] == "executed" and event["outcome"] == "error"
+    assert not event["execution_progress"]
