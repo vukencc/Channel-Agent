@@ -49,7 +49,7 @@ def test_rag_pool_does_not_take_file_slots_and_preserves_context(tmp_path, monke
     asyncio.run(run())
 
 
-def test_timed_out_rag_keeps_inference_slot_until_worker_exits(tmp_path, monkeypatch):
+def test_timed_out_rag_keeps_inference_slot_until_worker_exits(tmp_path, monkeypatch, sandbox_env):
     monkeypatch.setattr(config, 'RAG_INFERENCE_CONCURRENCY', 1, raising=False)
     started, release, second_started = threading.Event(), threading.Event(), threading.Event()
     count = 0
@@ -68,6 +68,19 @@ def test_timed_out_rag_keeps_inference_slot_until_worker_exits(tmp_path, monkeyp
         manager = SessionManager(store)
         session = manager.create()
         try:
+            # 本例验证已启动推理超时后仍占槽，先同步线程启动再计原有 50ms。
+            # 否则繁忙 CI 上线程启动可先耗尽预算，测试不到目标状态。
+            original_wait_for = asyncio.wait_for
+            timeout_armed = False
+
+            async def wait_for_started_worker(awaitable: asyncio.Future[str], timeout: float | None) -> str:
+                nonlocal timeout_armed
+                worker_started = second_started if timeout_armed else started
+                timeout_armed = True
+                assert await asyncio.to_thread(worker_started.wait, 1)
+                return await original_wait_for(awaitable, timeout)
+
+            monkeypatch.setattr(asyncio, 'wait_for', wait_for_started_worker)
             result = await manager._tool(session, call('rag_search', 'first'))
             assert started.is_set() and '[超时]' in result
             second = asyncio.create_task(manager._tool(session, call('rag_search', 'second')))
@@ -79,4 +92,5 @@ def test_timed_out_rag_keeps_inference_slot_until_worker_exits(tmp_path, monkeyp
                 await second
             await manager.shutdown()
             store.close()
+        assert second_started.is_set()
     asyncio.run(run())
