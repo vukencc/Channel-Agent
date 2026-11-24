@@ -25,12 +25,8 @@ def custom_result_is_business_error(value: object) -> bool:
     return bool(value.get('error')) and set(value) <= {'error', 'status', 'ok', 'success', 'code', 'message'}
 
 
-def custom_result_outcome(result: object) -> Literal["completed", "business_error", "unknown"]:
-    """区分完整业务回执、明确的业务失败与不满足该回执协议的输出。"""
-    output = custom_stdout_body(result)
-    if output is None:
-        return 'unknown'
-
+def parse_custom_stdout_json(output: str) -> object:
+    """解析完整 JSON，截断标记必须按 JSON 边界识别。"""
     def unique(pairs):
         value = {}
         for key, item in pairs:
@@ -39,10 +35,18 @@ def custom_result_outcome(result: object) -> Literal["completed", "business_erro
             value[key] = item
         return value
 
+    # 追加在 JSON 之外的输出截断标记会导致整段解析失败。
+    return json.loads(output.strip(), object_pairs_hook=unique,
+                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError('非有限数')))
+
+
+def custom_result_outcome(result: object) -> Literal["completed", "business_error", "unknown"]:
+    """区分完整业务回执、明确的业务失败与不满足该回执协议的输出。"""
+    output = custom_stdout_body(result)
+    if output is None:
+        return 'unknown'
     try:
-        # 框架截断标记在 JSON 之外，整段解析会拒绝；字符串内的同样字面文本是业务数据。
-        value = json.loads(output.strip(), object_pairs_hook=unique,
-                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError('非有限数')))
+        value = parse_custom_stdout_json(output)
     except (ValueError, TypeError, RecursionError):
         return 'unknown'
     return 'business_error' if custom_result_is_business_error(value) else 'completed'

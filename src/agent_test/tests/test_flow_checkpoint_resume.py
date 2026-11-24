@@ -390,7 +390,9 @@ def test_resume_requires_only_reads_without_verifiable_completion(runtime_store,
         monkeypatch.setattr(config, 'RUN_HISTORY_LIMIT', 1)
     complete = case in {'success', 'legacy', 'twice', 'semantic'}
     semantic = case.startswith('semantic')
-    feedback = {'items': [{'id': 'CF-01', 'text': '页面无法提交，请帮忙排查。'}]} if semantic else {'items': []}
+    feedback = {'items': [{'id': 'CF-01', 'text': '页面无法提交，请帮忙排查。提示显示 [输出已截断]。'}]} if semantic else {'items': []}
+    if case == 'legacy':
+        feedback = {'items': [{'id': 'CF-01', 'text': '原文包含 [输出已截断] 以及已截断）'}]}
     (project / 'feedback.json').write_text(json.dumps(feedback, ensure_ascii=False), encoding='utf-8')
     (project / 'unrelated.txt').write_text('先前的无关证据。', encoding='utf-8')
     observed_review = []

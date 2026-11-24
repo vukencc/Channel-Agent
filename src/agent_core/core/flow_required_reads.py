@@ -254,7 +254,7 @@ def _legacy_read_checkpoint(record: dict, turn_id: str, required: set[str],
                 or (require_commit and name in custom and event.get('action_stage') != 'commit')):
             continue
         observation = validate_observation(content, result.get('_context_observation')) if name == 'read_file' else None
-        if ((observation is None or observation.reader_tool != name)
+        if (name not in custom and (observation is None or observation.reader_tool != name)
                 and ('[输出已截断]' in content or '已截断）' in content)):
             continue
         verified[identifier] = {'name': name, 'call_index': positions[0], 'result_index': result_index,

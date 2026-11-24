@@ -2141,7 +2141,8 @@ class SessionManager:
                                     verified_read_calls.pop(call_id, None)
                                 seen_read_call_ids.add(call_id)
                             if (not duplicate_id and name in required_read_names and isinstance(result, str)
-                                    and ((name == 'read_file' and metadata and metadata['reader_tool'] == name)
+                                    and (name not in TOOL_REGISTRY
+                                         or (name == 'read_file' and metadata and metadata['reader_tool'] == name)
                                          or ('[输出已截断]' not in result and '已截断）' not in result))
                                     and metrics['tool_call_id'] == call['id'] and metrics['name'] == name
                                     and metrics['turn_id'] == session.record['last_run']['turn_id']

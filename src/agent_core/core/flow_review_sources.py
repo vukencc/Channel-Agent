@@ -6,6 +6,7 @@ import json
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
 import re
 
+from agent_core.core.custom_tool_results import custom_stdout_body, parse_custom_stdout_json
 from agent_core.core.instrumentation import tool_outcome
 from agent_core.core.messages import is_user_request
 from agent_core.core.tool_observations import validate_observation
@@ -109,14 +110,12 @@ def _record_collection(value: object) -> bool:
 
 
 def _custom_stdout(content: str, *, require_records: bool = False) -> str | None:
-    prefix = '[退出码] 0\n[stdout]\n'
-    if not content.startswith(prefix):
+    stdout = custom_stdout_body(content)
+    if stdout is None or "\n[stderr]\n" in content:
         return None
-    stdout = content[len(prefix):].strip()
-    if "[输出已截断]" in stdout or "已截断" in stdout:
-        return None
+    stdout = stdout.strip()
     try:
-        value = json.loads(stdout, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        value = parse_custom_stdout_json(stdout)
         json.dumps(value, allow_nan=False)
     except (ValueError, TypeError, RecursionError):
         return None

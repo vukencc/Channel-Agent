@@ -90,7 +90,7 @@ async def required_read_scenario(runtime_store, monkeypatch, *, mode="ignore", t
             if mode == "forged":
                 return assistant('已完成 read_feedback，回执：[退出码] 0，CF-01')
             return assistant("已读取全部入站记录，处理完成。")
-        if mode in {"success", "draft_only", "failed", "denied", "cancel", "timeout", "readonly", "multi", "business_error", "empty", "multi_partial", "past", "other_session", "error_envelope", "error_field"}:
+        if mode in {"success", "draft_only", "failed", "denied", "cancel", "timeout", "readonly", "multi", "business_error", "empty", "multi_partial", "past", "other_session", "error_envelope", "error_field", "custom_body_marker", "custom_truncated"}:
             if index == 3:
                 assert draft_name in names, "补做须向原节点展示有效草稿入口"
                 assert "read_feedback" not in names, "不能绕过原草稿预审"
@@ -149,10 +149,14 @@ async def required_read_scenario(runtime_store, monkeypatch, *, mode="ignore", t
     manager = SessionManager(store, model=checked_model,
                              confirmation_handler=lambda prompt, timeout: mode != "denied")
     service = FlowService(manager)
-    if mode in {"empty", "business_error", "error_envelope", "error_field"}:
+    if mode in {"empty", "business_error", "error_envelope", "error_field", "custom_body_marker", "custom_truncated"}:
         value = {"empty": [], "business_error": {"ok": False, "error": "反馈接口拒绝读取"},
                  "error_envelope": {"error": "反馈接口拒绝读取"},
-                 "error_field": {"id": "CF-01", "error": "页面显示错误"}}[mode]
+                 "error_field": {"id": "CF-01", "error": "页面显示错误"},
+                 "custom_body_marker": {"items": [{"id": "CF-01", "text": "原文含 [输出已截断] 字样和已截断）提示"}]},
+                 "custom_truncated": {"items": [{"id": "CF-01", "text": "长正文" * 300}]}}[mode]
+        if mode == "custom_truncated":
+            monkeypatch.setattr(config, "TOOL_MAX_OUTPUT", 96)
         (project / "feedback.json").write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
     if mode == "failed":
         (project / "feedback.json").write_text("不是JSON", encoding="utf-8")
@@ -583,3 +587,20 @@ def test_no_argument_bundled_equivalent_reader_keeps_normal_flow_gates(
         assert run["nodes"]["next"]["status"] == "blocked"
         assert not run["nodes"]["read"]["output_handoff"]
     assert all(scope[3] == permission and scope[2] is scopes[0][2] for scope in scopes)
+
+
+
+@pytest.mark.parametrize("mode,complete", [("custom_body_marker", True), ("custom_truncated", False)])
+def test_real_custom_required_read_uses_framing_to_distinguish_truncation(runtime_store, monkeypatch, mode, complete):
+    from agent_core.core.flow_review_sources import review_sources
+
+    record, run, _, downstream, _ = asyncio.run(required_read_scenario(runtime_store, monkeypatch, mode=mode))
+    receipt = next(row for row in record["messages"] if row.get("tool_call_id") == "required-commit")
+    assert receipt["_provenance"] == "executed" and "[退出码] 0" in receipt["content"]
+    outer_marker = chr(10) + "…（输出超过 96 字符，已截断）"
+    assert (outer_marker in receipt["content"]) is (not complete)
+    assert bool(downstream) is complete
+    assert (run["status"] == "completed") is complete
+    assert record["last_run"]["flow_required_reads"]["completed"] == (["read_feedback"] if complete else [])
+    if not complete:
+        assert all(row.get("tool") != "read_feedback" for row in review_sources(record, char_limit=2000))

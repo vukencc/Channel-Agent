@@ -557,3 +557,33 @@ def test_resumed_required_read_keeps_echo_restrictions_without_old_write_source(
     duplicate = copy.deepcopy(call)
     data["messages"].append({"role": "assistant", "tool_calls": [duplicate]})
     assert review_sources(data, char_limit=4000, restored_reads=restored) == []
+
+
+@pytest.mark.parametrize("text", [
+    "客户看到已截断提示", "正文含 [输出已截断]", "页面显示已截断）", chr(10) + "[stderr]" + chr(10) + "业务文本",
+])
+def test_custom_complete_json_preserves_truncation_words_as_evidence(text):
+    output = {"items": [{"id": "REC-1", "text": text}]}
+    rows = review_sources(selector_result({"limit": 2}, output), char_limit=1000)
+    assert len(rows) == 1 and rows[0]["kind"] == "custom_result"
+    assert json.loads(rows[0]["text"]) == output
+
+
+@pytest.mark.parametrize("tail", ["[输出已截断]", "…（输出超过 20 字符，已截断）"])
+def test_custom_truncation_outside_json_never_becomes_source(tail):
+    data = selector_result({"limit": 2}, {"items": [{"id": "REC-1", "text": "原始资料"}]})
+    message = data["messages"][2]
+    message["content"] += chr(10) + tail
+    assert review_sources(data, char_limit=1000) == []
+
+
+
+@pytest.mark.parametrize("body", [
+    '{"items":[{"id":"R1","text":"第一条","text":"第二条"}]}',
+    '{"items":[{"id":"R1","text":"完整业务文本","nested":[NaN]}]}',
+    '{"items":[{"id":"R1","text":"长度异常数据","number":1e999}]}',
+])
+def test_custom_unreliable_structured_value_cannot_become_a_source(body):
+    data = selector_result({"limit": 2}, [])
+    data["messages"][2]["content"] = chr(10).join(("[退出码] 0", "[stdout]", body))
+    assert review_sources(data, char_limit=1000) == []
