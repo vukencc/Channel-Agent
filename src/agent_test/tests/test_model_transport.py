@@ -234,21 +234,53 @@ def test_close_drains_all_transports_after_failure():
     assert closed == ['first', 'second']
 
 
-def test_environment_mode_does_not_fallback_to_system(monkeypatch):
-    monkeypatch.setenv('HTTP_PROXY', 'http://127.0.0.1:1')
-    monkeypatch.setenv('http_proxy', 'http://127.0.0.1:1')
-    monkeypatch.setenv('ALL_PROXY', 'http://127.0.0.1:1')
+@pytest.mark.parametrize('proxy_variable', ['HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'])
+@pytest.mark.parametrize('proxy_disconnects', [False, True], ids=['response', 'disconnect'])
+def test_environment_mode_does_not_fallback_to_system(monkeypatch, proxy_variable, proxy_disconnects):
+    # 本机受控代理直接返回响应，避免依赖宿主对未监听端口的拒绝或超时行为。
+    for name in ('HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy'):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv('NO_PROXY', '')
     monkeypatch.setenv('no_proxy', '')
     monkeypatch.setattr(model_transport, '_windows_settings', lambda: pytest.fail('系统代理不应被读取'))
+    monkeypatch.setattr(model_transport, 'system_http_client', lambda url: pytest.fail('系统代理客户端不应被创建'))
 
-    async def exercise():
-        client = llm.endpoint_client({'base_url': 'http://example.test/v1', 'api_key': 'key'})
+    async def exercise() -> None:
+        received: list[bytes] = []
+
+        async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                received.append(await reader.readuntil(b'\r\n\r\n'))
+                if not proxy_disconnects:
+                    writer.write(b'HTTP/1.1 203 Non-Authoritative Information\r\n'
+                                 b'Content-Length: 17\r\nConnection: close\r\n\r\nenvironment-proxy')
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(serve, '127.0.0.1', 0)
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setenv(proxy_variable, f'http://127.0.0.1:{port}')
         try:
-            with pytest.raises(model_transport.httpx.ConnectError):
-                await client._client.get('http://example.test/v1')
+            client = llm.endpoint_client({'base_url': 'http://example.test/v1', 'api_key': 'key'})
+            try:
+                if proxy_disconnects:
+                    # 代理中途断连同样不能回退到系统代理。
+                    with pytest.raises(model_transport.httpx.RemoteProtocolError):
+                        await client._client.get('http://example.test/v1', timeout=1)
+                else:
+                    response = await client._client.get('http://example.test/v1', timeout=1)
+                    assert response.status_code == 203
+                    assert response.text == 'environment-proxy'
+                assert len(received) == 1
+                assert received[0].startswith(b'GET http://example.test/v1 HTTP/1.1\r\n')
+            finally:
+                await client.close()
+            assert client.is_closed()
         finally:
-            await client.close()
+            server.close()
+            await server.wait_closed()
     asyncio.run(exercise())
 
 
