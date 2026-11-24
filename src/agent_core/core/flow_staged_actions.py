@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from agent_core import config
 from agent_core.core.audit_writer import append_audit
+from agent_core.core.custom_tools import MAX_ARGUMENT_BYTES
 from agent_core.core.flow_action_preflight import (
     FlowActionPreflight, _argument_digest, _object, selection_only,
 )
@@ -32,6 +33,16 @@ ACTION_CHECKPOINT_MESSAGES = {
 
 _EMPTY_MATTER_DIGEST = hashlib.sha256(b'{}').hexdigest()
 _ARGUMENTS_KEY_PREFIX = 'arguments:'
+_REVISION_TOOL_NAME = 'revise_flow_draft'
+_REVISION_PARAMETERS = {
+    'type': 'object', 'additionalProperties': False,
+    'properties': {
+        'revision_id': {'type': 'string', 'pattern': '^[A-Za-z0-9_-]{32}$'},
+        'arguments_json': {'type': 'string', 'minLength': 2, 'maxLength': MAX_ARGUMENT_BYTES,
+                           'description': '修订后的完整原工具参数，按该工具的草稿 schema 编写为 JSON 对象字符串。'},
+    },
+    'required': ['revision_id', 'arguments_json'],
+}
 
 
 def read_action_checkpoint(state: dict) -> dict[str, set[tuple[str, str]]]:
@@ -50,6 +61,15 @@ def read_action_checkpoint(state: dict) -> dict[str, set[tuple[str, str]]]:
         if field != 'completed' and any(row[1] == _EMPTY_MATTER_DIGEST for row in rows):
             raise ValueError('旧检查点无法区分未标识动作，请核对正式工具回执和实际状态')
         keys[field] = {tuple(row) for row in rows}
+    revisions = state.get('revisions', {})
+    if not isinstance(revisions, dict) or any(
+        not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9_-]{32}', identifier)
+        or not isinstance(key, (list, tuple)) or len(key) != 2
+        or not all(isinstance(value, str) for value in key)
+        or tuple(key) not in (keys['pending'] & keys['disputed']) - keys['unsuccessful']
+        for identifier, key in revisions.items()
+    ):
+        raise ValueError('Flow 检查点草稿修订约束无效')
     return keys
 
 
@@ -78,6 +98,8 @@ class FlowStagedActions:
         self._receipt_args = {}
         self._confirmation_id = None
         self._last_offered_id = None
+        self._revision_tool_name = _REVISION_TOOL_NAME
+        self._revision_targets: dict[str, tuple[str, str]] = {}
         self._resumed_commits: set[tuple[str, str]] = set()
         self._completed_commits: set[tuple[str, str]] = set()
 
@@ -93,6 +115,8 @@ class FlowStagedActions:
             'disputed': sorted(self.gate.pending_tools),
             'unsuccessful': sorted(self.unsuccessful),
             'completed': sorted(self._resumed_commits | self._completed_commits),
+            'revisions': {identifier: key for identifier, key in self._revision_targets.items()
+                          if key in self.unresolved and key not in self.unsuccessful},
         }
 
     def restore_checkpoint(self, state: dict) -> None:
@@ -103,6 +127,7 @@ class FlowStagedActions:
         self.unsuccessful = keys['unsuccessful']
         self.invalidated = self.unresolved - self.unsuccessful
         self._resumed_commits = keys['completed']
+        self._revision_targets = {identifier: tuple(key) for identifier, key in state.get('revisions', {}).items()}
 
     def _queue_audit(self, event: dict, stage: str, status: str) -> None:
         self._audit_queue.append({'time': datetime.now(timezone.utc).isoformat(), 'event': 'flow_action',
@@ -110,7 +135,8 @@ class FlowStagedActions:
                                   'session_id': self.session.id, 'turn_id': event.get('turn_id'),
                                   'tool_name': event['tool'], 'tool_call_id': event['tool_call_id'],
                                   'status': status, 'hash': event['arguments_sha256'],
-                                  'draft_id': event.get('draft_id')})
+                                  'draft_id': event.get('draft_id'),
+                                  **({'revision_of': event['revision_of']} if 'revision_of' in event else {})})
 
     async def flush_audit(self) -> bool:
         """持久化已排队事件；失败后阻断本轮，不自动重试。"""
@@ -193,6 +219,18 @@ class FlowStagedActions:
             return original
         additions = self.preflight.schemas()
         names = [row['function']['name'] for row in additions]
+        occupied = set(TOOL_REGISTRY) | set(self.manager._session_custom_registry(self.session)) | set(names)
+        self._revision_tool_name = _REVISION_TOOL_NAME
+        while self._revision_tool_name in occupied:
+            self._revision_tool_name += '_'
+        if any(name in authorized for name, _ in self._revision_targets.values()):
+            names.append(self._revision_tool_name)
+            additions.append({'type': 'function', 'function': {
+                'name': self._revision_tool_name,
+                'description': ('修订刚被退回且未执行的指定草稿。填写退回回执中的 revision_id 与修订后的完整参数。'
+                                '仅重新预审，成功后仍须单独正式确认。'),
+                'parameters': copy.deepcopy(_REVISION_PARAMETERS),
+            }})
         return [row for row in original if row['function']['name'] not in authorized] + bounded_schemas(additions, names)
 
     def drafting_schemas(self, original: list[dict]) -> list[dict]:
@@ -303,7 +341,7 @@ class FlowStagedActions:
         return await self.flush_audit()
 
     def is_preview(self, name: str) -> bool:
-        return self.preflight.original_for_preview(name) is not None
+        return name == self._revision_tool_name or self.preflight.original_for_preview(name) is not None
 
     def _expire_changed(self, binding: dict) -> None:
         if self.receipts and binding != self.receipt_binding:
@@ -335,16 +373,39 @@ class FlowStagedActions:
         self.session.record['last_run'].setdefault('action_preflights', []).append(event)
         return event
 
-    async def _preview(self, call: dict, name: str, evidence: dict) -> str:
-        fn = call['function']
+    async def _revise(self, call: dict, evidence: dict) -> str:
+        evidence['action_stage'] = 'preview'
+        try:
+            payload = _object(call['function']['arguments'], _REVISION_PARAMETERS)
+        except ValueError:
+            payload = {}
+        identifier = payload.get('revision_id')
+        prior = self._revision_targets.get(identifier)
+        if (prior is not None and prior in self.unresolved and prior in self.gate.pending_tools
+                and prior not in self.unsuccessful and prior[0] in self._authorized()):
+            arguments = payload['arguments_json']
+            candidate = self._action_key(prior[0], arguments)
+            other_pending = self.unresolved | self.gate.pending_tools | set(self.receipts.values())
+            if candidate == prior or candidate not in other_pending:
+                return await self._preview(call, prior[0], evidence, arguments, revision_id=identifier)
+        event = self._event(call, call['function']['name'], 'preview')
+        event['status'] = 'revision_rejected'
+        return '[已拒绝] 仅可修订回执明确指定且仍待修订的原草稿。业务操作尚未执行。'
+
+    async def _preview(self, call: dict, name: str, evidence: dict, arguments: str, *,
+                       revision_id: str | None = None) -> str:
         event = self._event(call, name, 'preview')
         evidence['action_stage'] = 'preview'
         self.previewed.add(name)
-        key = self._action_key(name, fn['arguments'])
+        key = self._action_key(name, arguments)
+        prior = self._revision_targets[revision_id] if revision_id is not None else key
+        if revision_id is not None:
+            event['revision_of'] = revision_id
+            event['arguments_sha256'] = hashlib.sha256(arguments.encode('utf-8', 'surrogatepass')).hexdigest()
         definition = self._authorized().get(name)
         if definition is not None and definition == self.definitions.get(name) and self._resumed_commits:
             try:
-                signature = (name, _argument_digest(_object(fn['arguments'], definition['parameters'])))
+                signature = (name, _argument_digest(_object(arguments, definition['parameters'])))
             except ValueError:
                 # 非法参数由常规预审路径记入未决草稿。
                 pass
@@ -352,48 +413,60 @@ class FlowStagedActions:
                 if signature in self._resumed_commits:
                     event['status'] = 'already_completed'
                     return '[已拒绝] 同一流程已成功执行相同操作，请查阅原工具回执。'
-        self.unresolved.add(key)
-        self.unsuccessful.discard(key)
+        self.unresolved.add(prior)
+        self.unsuccessful.discard(prior)
         if definition is None or definition != self.definitions.get(name):
             event['status'] = 'authorization_changed'
             return '[已拒绝] 工具选择或定义已变化，请重新查看可用工具。'
         binding = self._binding()
         self._expire_changed(binding)
         try:
-            identifier = self.preflight.draft(fn['name'], fn['arguments'], binding)
+            identifier = self.preflight.draft(self.preflight.preview_for_original(name), arguments, binding)
         except ValueError as exc:
             event['status'] = 'invalid_draft'
             return f'[已拒绝] 草稿未获受理：{exc}。'
         event['draft_id'] = identifier
-        self.invalidated.discard(key)
+        self.invalidated.discard(prior)
         # 新草稿校验通过后才撤销同事项的旧批准。
         if not key[1].startswith(_ARGUMENTS_KEY_PREFIX):
-            for prior, prior_key in list(self.receipts.items()):
-                if prior_key == key:
-                    self._queue_audit(self._receipt_events.pop(prior), 'preview', 'superseded')
-                    self.preflight.discard(prior)
-                    del self.receipts[prior]
-                    self._receipt_args.pop(prior, None)
-                    if self._confirmation_id == prior:
+            for previous_id, previous_key in list(self.receipts.items()):
+                if previous_key == key:
+                    self._queue_audit(self._receipt_events.pop(previous_id), 'preview', 'superseded')
+                    self.preflight.discard(previous_id)
+                    del self.receipts[previous_id]
+                    self._receipt_args.pop(previous_id, None)
+                    if self._confirmation_id == previous_id:
                         self._confirmation_id = None
         try:
-            feedback = await self.gate.check(fn['arguments'], stage='preview', force=key in self.gate.pending_tools,
-                call_id=call['id'], revision_key=key, revision_definition=definition,
+            feedback = await self.gate.check(arguments, stage='preview', force=prior in self.gate.pending_tools,
+                call_id=call['id'], revision_key=prior, revision_definition=definition,
                 action_context=action_review_context(definition))
             if self.session.cancelled.is_set():
                 raise asyncio.CancelledError
             if feedback:
-                self.gate.pending_tools.add(key)
+                self.gate.pending_tools.add(prior)
                 event['status'] = 'review_blocked' if self.gate.blocked else 'needs_revision'
-                return '[已拒绝] 草稿待修订，业务操作尚未执行。' + feedback
+                hint = ''
+                if not self.gate.blocked and prior[1].startswith(_ARGUMENTS_KEY_PREFIX):
+                    target = next((target for target, constrained in self._revision_targets.items() if constrained == prior),
+                                  identifier)
+                    self._revision_targets[target] = prior
+                    hint = (' 可使用 ' + self._revision_tool_name + ' 修订这一笔，引用 ' +
+                            json.dumps({'revision_id': target}, separators=(',', ':')) + '。')
+                return '[已拒绝] 草稿待修订，业务操作尚未执行。' + hint + feedback
             if (self._authorized().get(name) != definition
                     or not self.preflight.approve(identifier, self._binding())):
                 event['status'] = 'context_changed'
                 return '[已拒绝] 草稿的来源或权限已变化，请重新预审。'
             self.receipts[identifier] = key
             self._receipt_events[identifier] = dict(event)
-            self._receipt_args[identifier] = fn['arguments']
-            self.unresolved.discard(key)
+            self._receipt_args[identifier] = arguments
+            self.unresolved.discard(prior)
+            if prior in self.gate.pending_tools:
+                self.gate.pending_tools.remove(prior)
+                self.gate.pending_tools.add(key)
+            self._revision_targets = {identifier: target for identifier, target in self._revision_targets.items()
+                                      if target != prior}
             evidence['approval_progress'] = True
             event['status'] = 'approved'
             return (f'草稿已批准，业务操作尚未执行。下一步将逐笔正式确认，确认请求会单独提供原工具 {name} '
@@ -437,9 +510,11 @@ class FlowStagedActions:
     async def _execute(self, call: dict, evidence: dict) -> str:
         fn = call['function']
         name = fn['name']
+        if name == self._revision_tool_name and name not in TOOL_REGISTRY and name not in self._authorized():
+            return await self._revise(call, evidence)
         original = self.preflight.original_for_preview(name)
         if original is not None:
-            return await self._preview(call, original, evidence)
+            return await self._preview(call, original, evidence, fn['arguments'])
         preview = self.preflight.preview_for_original(name)
         if not preview:
             if self.requires_preview and name not in TOOL_REGISTRY and name in self._authorized():

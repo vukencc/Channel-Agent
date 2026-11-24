@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import re
 import uuid
 
 import pytest
@@ -49,8 +50,12 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
     store, project = runtime_store
     reviews, normal_schemas, writes, model_assertions = [], [], [], []
     normal_index = 0
+    resume_source_read = False
     preview_name = None
     approved = {"reason": CORRECTED, "item_ref": "case-1"}
+    linked_revision = mode in {"unidentified_revision", "isolated_revision", "unknown_revision", "resume_revision"}
+    if linked_revision or mode == "unlinked_revision":
+        approved.pop("item_ref")
     unidentified_batch = mode.startswith("two_unidentified")
     unidentified = unidentified_batch or mode in {"source_change", "source_change_end"}
     second_approved = {"reason": "客户表示页面无法提交，建议记录故障排查。"}
@@ -61,11 +66,11 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
     if mode == "blind_batch":
         approved["reason"] = "客户表示页面无法提交，建议安排人工排查。"
     permission = "readonly" if mode == "readonly" else "full_access"
-    if mode == "timeout":
+    if mode in {"timeout", "resume_revision"}:
         monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 0)
 
     async def model(history, *, session_id, emit):
-        nonlocal normal_index, preview_name
+        nonlocal normal_index, preview_name, resume_source_read
         session = manager.sessions[session_id]
         schemas = selected_schemas(TOOL_SCHEMAS)
         payload = review_payload(history)
@@ -93,6 +98,13 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         normal_index += 1
         names = {schema["function"]["name"] for schema in schemas}
         normal_schemas.append(names)
+        if mode == "resume_revision" and not resume_source_read:
+            if normal_index == 3:
+                raise TimeoutError("受控离线模型超时")
+            if normal_index == 4:
+                resume_source_read = True
+                normal_index = 2
+                return assistant(calls=[call("source-resumed", "read_file", path="source.txt")])
         if normal_index == 1:
             assert "record_case" not in names, "正式动作必须等草稿获批后才宣告"
             previews = [schema["function"]["name"] for schema in schemas
@@ -141,13 +153,25 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
                 return assistant(calls=[call("formal", "record_case", **approved)])
             args = approved if mode == "blind_batch" else dict(approved, reason=DISPUTED)
             calls = [call("draft-first", preview_name, **args)]
+            if mode == "isolated_revision":
+                calls.append(call("draft-other", preview_name, reason=DISPUTED + "需立即处理。"))
             if mode == "blind_batch":
                 calls.append(call("blind-submit", "record_case", **approved))
             return assistant(calls=calls)
         if normal_index == 3 and mode not in {"blind_batch", "timeout", "direct_unapproved"}:
             assert "record_case" not in names, "争议草稿必须有效 revise 后继续隐藏正式动作"
             assert "客户未明确要求人工" in str(history)
+            if linked_revision and "revise_flow_draft" in names:
+                rejection = next(row["content"] for row in history if row.get("tool_call_id") == "draft-first")
+                revision_id = re.search(r'"revision_id":"([A-Za-z0-9_-]+)"', rejection).group(1)
+                if mode == "unknown_revision":
+                    revision_id = ("B" if revision_id[0] == "A" else "A") + revision_id[1:]
+                return assistant(calls=[call("draft-revised", "revise_flow_draft",
+                                             revision_id=revision_id, arguments_json=json.dumps(approved, ensure_ascii=False))])
             return assistant(calls=[call("draft-revised", preview_name, **approved)])
+        if normal_index == 4 and mode == "unknown_revision":
+            assert "record_case" not in names
+            return assistant("尝试结束。")
         if normal_index == 4 and mode not in {"blind_batch", "timeout", "direct_unapproved"}:
             assert "record_case" in names, "获批后下一轮应开放原名提交"
             if mode in {"early_handoff", "ignore_handoff"}:
@@ -283,6 +307,16 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         flow = service.save(flow)
         service.start(flow["id"])
         await service.tasks[flow["id"]]
+        if mode == "resume_revision":
+            initial_run = service.get(flow["id"])["run"]
+            assert initial_run["resume_available"], initial_run["error"]
+            sid = initial_run["nodes"]["a"]["session_id"]
+            persisted = store.read_record(store.directory(sid) / "session.json")
+            action_state = persisted["_flow_action_checkpoint"]["actions"]
+            assert len(action_state["revisions"]) == 1
+            assert list(action_state["revisions"].values()) == action_state["pending"]
+            service.resume(flow["id"], run_id=initial_run["id"])
+            await service.tasks[flow["id"]]
         if model_assertions:
             raise model_assertions[0]
         session = next(iter(manager.sessions.values()))
@@ -417,6 +451,32 @@ def test_success_of_distinct_unidentified_draft_does_not_clear_first_failure(run
     assert run["nodes"]["downstream"]["session_id"] is None
     assert not run["nodes"]["a"]["output_handoff"]
     assert record["last_run"]["stop_reason"] == "flow_action_tool_unsuccessful"
+
+
+@pytest.mark.parametrize("mode", ["unidentified_revision", "resume_revision"])
+def test_unidentified_rejected_draft_can_be_revised_and_committed(runtime_store, monkeypatch, mode):
+    record, run, reviews, _, writes, _, _ = asyncio.run(staged_scenario(runtime_store, monkeypatch, mode))
+    assert_paired(record)
+    assert writes == [{"reason": CORRECTED}]
+    assert run["status"] == "completed", run["error"]
+    assert len(reviews) == 2
+    receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
+    assert receipts["draft-revised"]["_provenance"] == "not_executed"
+    assert receipts["formal"]["_provenance"] == "executed"
+    events = {row["tool_call_id"]: row for turn in record["run_history"]
+              for row in turn.get("action_preflights", [])}
+    assert events["draft-revised"]["revision_of"] == events["draft-first"]["draft_id"]
+    assert events["formal"]["draft_id"] == events["draft-revised"]["draft_id"]
+    assert events["formal"]["arguments_sha256"] == events["draft-revised"]["arguments_sha256"]
+
+
+@pytest.mark.parametrize("mode", ["unlinked_revision", "unknown_revision", "isolated_revision"])
+def test_unidentified_draft_link_must_be_explicit_and_valid(runtime_store, monkeypatch, mode):
+    record, run, _, _, writes, _, _ = asyncio.run(staged_scenario(runtime_store, monkeypatch, mode))
+    assert_paired(record)
+    assert record["last_run"]["stop_reason"] == "flow_source_review"
+    assert writes == ([] if mode == "unknown_revision" else [{"reason": CORRECTED}])
+    assert not run["nodes"]["a"]["output_handoff"]
 
 
 def test_stop_during_model_preparation_prevents_provider_call(runtime_store, monkeypatch):
