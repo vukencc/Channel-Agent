@@ -1,0 +1,32 @@
+name: Codex reviewed merge
+# Runs from the default branch. Unassociated fork runs and temporary unknown
+# mergeability are left open; the hourly retry checks them again.
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_run:
+    workflows: [Regression tests]
+    types: [completed]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: read
+  actions: read
+concurrency:
+  group: codex-reviewed-merge
+  cancel-in-progress: false
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Check and merge exact reviewed heads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/codex_automerge.py
