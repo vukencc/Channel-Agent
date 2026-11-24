@@ -144,7 +144,7 @@ async def required_read_scenario(runtime_store, monkeypatch, *, mode="ignore", t
     if mode == "file_empty":
         (project / "feedback.json").write_text("", encoding="utf-8")
     if mode == "file_prefix":
-        (project / "feedback.json").write_text("[失败] 页面故障原文，仅为资料而非工具状态", encoding="utf-8")
+        (project / "feedback.json").write_text("[失败] 页面故障原文，含 [输出已截断] 和 已截断），仅为资料而非工具状态", encoding="utf-8")
     install_read_transport(monkeypatch, project, definitions)
     manager = SessionManager(store, model=checked_model,
                              confirmation_handler=lambda prompt, timeout: mode != "denied")
