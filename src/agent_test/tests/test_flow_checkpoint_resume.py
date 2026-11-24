@@ -220,12 +220,14 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             fid = record['flow_id']
             flow = flows.get(fid)
             flow.update(nodes=[
-                {'id': 'work', 'title': '办理', 'prompt': '提交工单，输出签发编号。', 'x': 0.0, 'y': 0.0,
+                {'id': 'work', 'title': '办理', 'prompt': '提交工单，输出签发编号。', 'y': 0.0,
                  'tool_names': ['submit_ticket'], 'custom_tools': [ticket_tool()],
                  'handoff_contract': contract},
                 {'id': 'next', 'title': '下游', 'prompt': '核对交接', 'x': 120.0, 'y': 0.0, 'tool_names': []},
             ], edges=[{'source': 'work', 'target': 'next'}])
             flows.save(flow)
+            # 模拟旧版缺省 x 原样落盘，y 仍是调用者提供的浮点零。
+            flows.records[fid]['nodes'][0]['x'] = 0
             flows.start(fid)
             await asyncio.wait_for(flows.tasks[fid], 5)
             before = flows.get(fid)['run']
@@ -240,6 +242,11 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             manager, flows, projects = setup()
             flows._resume_plan(flows.records[fid], before['id'])
             assert flows.get(fid)['run']['resume_available']
+            node = flows.records[fid]['nodes'][0]
+            assert type(node['x']) is int and type(node['y']) is float
+            node['x'] = 1.0
+            assert not flows.get(fid)['run']['resume_available']
+            node['x'] = 0
             assert manager.sessions[sid].record['_flow_action_checkpoint'] == json.loads(json.dumps(expected_checkpoint))
             resumed = True
             flows.resume(fid, run_id=before['id'])

@@ -108,8 +108,8 @@ class Node(BaseModel):
     id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
     title: str = Field(min_length=1, max_length=120)
     prompt: str = Field(min_length=1, max_length=16000)
-    x: FiniteFloat = 0
-    y: FiniteFloat = 0
+    x: FiniteFloat = 0.0
+    y: FiniteFloat = 0.0
     workspace_path: str | None = None
     handoff: str = Field(default="", max_length=16000)
     handoff_file: str | None = Field(default=None, max_length=4096)
@@ -222,7 +222,14 @@ class FlowService:
                     info = os.fstat(fd)
                     with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
                         raw = stream.read()
-                        value = Definition.model_validate(json.loads(raw)).model_dump()
+                        saved = json.loads(raw)
+                        value = Definition.model_validate(saved).model_dump()
+                # 旧版缺省整数零参与了已保存的定义摘要，重载时保留其原表示。
+                for node, saved_node in zip(value["nodes"], saved.get("nodes", []), strict=True):
+                    for axis in ("x", "y"):
+                        coordinate = saved_node.get(axis)
+                        if type(coordinate) is int and coordinate == 0:
+                            node[axis] = coordinate
                 if value["id"] != path.stem:
                     continue
                 _order(value)
