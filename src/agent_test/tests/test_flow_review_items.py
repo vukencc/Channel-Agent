@@ -318,3 +318,66 @@ def test_shared_field_name_and_value_require_full_review(monkeypatch, field, tex
     assert payload["sources"] == [{"id": "s1", "kind": "read_file", "text": "原始证据"}]
     assert [target["field"] for target in payload["targets"]] == ["/" + field]
     assert review_units(encoded, payload["sources"]) is None
+
+
+@pytest.mark.parametrize("with_reviewed_item", [False, True])
+@pytest.mark.parametrize("metadata", [
+    {"subject": "customer", "statement": "explicitly requested a refund"},
+    {"condition": "a tenant-owner policy", "requirement": "must approve reimbursement"},
+    {"记载": "明确要求核对。", "主体": "用户"},
+])
+def test_unassigned_sibling_metadata_preserves_entire_handoff(
+    monkeypatch, metadata, with_reviewed_item,
+):
+    from agent_core.core import flow_draft_gate
+    from agent_core.core.flow_draft_review import needs_review
+    from agent_test.tests.test_flow_draft_receipt_review import make_gate
+    from agent_test.tests.test_flow_whole_claim_batches import reply
+
+    items = [{"id": "A1", "text": "蓝色标记"}, {"id": "A2", "text": "绿色标记"}]
+    originals = [{**item} for item in items]
+    if with_reviewed_item:
+        items[0]["text"] = "客户明确要求核对记录。"
+    value = {"items": items, **metadata}
+    evidence = [source(originals, "read_file", "observed_span")]
+    gate, _, histories = make_gate(monkeypatch)
+    monkeypatch.setattr(flow_draft_gate, "review_sources", lambda *a, **k: evidence)
+
+    async def model(history, **kwargs):
+        assert kwargs["disable_tools"]
+        histories.append(history)
+        return reply("need_source", field="statement", needed="独立原始记录")
+
+    gate.manager._call_model = model
+    # 反序标点用例也由已有的争议事项触发运行时的整稿筛选。
+    if not needs_review(dump(value)):
+        assert review_units(dump(value), evidence) is None
+        return
+    assert asyncio.run(gate.check(dump(value), stage="handoff"))
+    assert histories
+    for history in histories:
+        payload = json.loads(history[1]["content"])
+        assert json.loads(payload["draft"]) == value
+        assert payload["sources"] == evidence
+    assert review_units(dump(value), evidence) is None
+
+
+def test_empty_unverified_projection_requires_full_review():
+    records = [{"id": "A1", "text": "customer"}, {"id": "A2", "text": "explicitly asked for a refund"}]
+    assert review_units(dump(records), [source(records, "read_file", "observed_span")]) is None
+
+
+def test_neutral_metadata_and_proven_verbatim_copy_keep_empty_projection():
+    neutral = {"items": [{"id": "A1"}, {"id": "A2"}], "subject": "blue", "statement": "archive"}
+    assert review_units(dump(neutral), []) == []
+    records = [{"id": "A1", "text": "客户表示希望退款。"}, {"id": "A2", "text": "绿色标记。"}]
+    assert review_units(dump({**neutral, "items": records}), [source(records)]) == []
+
+
+def test_other_shared_unit_cannot_cover_an_unassigned_clause():
+    records = [{"id": "A1"}, {"id": "A2"}]
+    context = {"items": records, "note": "我只记录客户未提供的资料。"}
+    original = [source(records)]
+    units = review_units(dump(context), original)
+    assert units and [unit["kind"] for unit in units] == ["shared_claim"]
+    assert review_units(dump({**context, "statement": "explicitly requested a refund"}), original) is None

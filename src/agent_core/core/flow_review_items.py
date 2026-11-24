@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from collections import Counter
 
 from agent_core.core.flow_draft_review import _ASSERTION, _CUSTOMER, _MANDATE, _RULE, needs_review
 from agent_core.core.flow_review_records import DuplicateRecordKey, parse_record_json, source_array_records
@@ -10,6 +11,7 @@ _MAX_TEXT = 500_000
 _MAX_ITEMS = 32
 _MAX_UNITS = 12
 _META = {"source_path"}
+_ASSERTION_PAIRS = ((_CUSTOMER, _ASSERTION), (_RULE, _MANDATE))
 _CROSS = re.compile(r"同上|上述|下述|该事项|该工单|其他事项|其它事项|其余事项|另(?:一|个)事项|两者|各事项|所有事项|"
                     r"above|below|other items?|previous items?|both items?|all items?", re.I)
 
@@ -245,7 +247,11 @@ def _split_assertion(left: str, right: str) -> bool:
     """识别分别落在两段文本中的来源归属或规则约束。"""
     return any((re.search(subject, left, re.I) and re.search(predicate, right, re.I))
                or (re.search(subject, right, re.I) and re.search(predicate, left, re.I))
-               for subject, predicate in ((_CUSTOMER, _ASSERTION), (_RULE, _MANDATE)))
+               for subject, predicate in _ASSERTION_PAIRS)
+
+
+def _assertion_terms(text: str) -> set[str]:
+    return {term for pair in _ASSERTION_PAIRS for term in pair if re.search(term, text, re.I)}
 
 
 def _shared(data: object, records: list[tuple[str | None, dict]], required: frozenset[str]) -> tuple[dict, set[str], list[dict]]:
@@ -256,12 +262,16 @@ def _shared(data: object, records: list[tuple[str | None, dict]], required: froz
     metadata = {}
     owners = set()
     claims = []
+    field_counts: Counter[str] = Counter()
+    coverage = []
     for key, value in data.items():
         if isinstance(value, list) and (not value or all(isinstance(item, dict) for item in value)):
             continue
+        uncovered = [key]
         if isinstance(value, list):
             if value != ids:
                 raise ValueError("unmatched shared ids")
+            uncovered.extend(value)
         elif isinstance(value, str):
             if len(value) > 32_000 or _CROSS.search(value):
                 raise ValueError("ambiguous shared text")
@@ -273,7 +283,9 @@ def _shared(data: object, records: list[tuple[str | None, dict]], required: froz
                 raise ValueError("shared identifier collision")
             disputed = []
             for sentence in re.findall(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?", value):
-                if needs_review(sentence):
+                if not needs_review(sentence):
+                    uncovered.append(sentence)
+                else:
                     matches = set(pattern.findall(sentence))
                     if len(matches) == 1:
                         owners.update(matches)
@@ -291,7 +303,17 @@ def _shared(data: object, records: list[tuple[str | None, dict]], required: froz
                     {"field": key, "claims": disputed or [value], "context": value, "item_ids": ids}, ensure_ascii=False)})
         else:
             raise ValueError("unknown metadata")
+        field_terms = _assertion_terms(" ".join([key, *value] if isinstance(value, list) else [key, value]))
+        field_counts.update(field_terms)
+        coverage.append((field_terms, _assertion_terms(" ".join(uncovered))))
         metadata[key] = value
+    # 无法将组合语义全部定位到已分派的片段时，保留整稿和全部来源。
+    for field_terms, uncovered_terms in coverage:
+        for subject, predicate in _ASSERTION_PAIRS:
+            if ((subject in uncovered_terms and predicate in uncovered_terms)
+                    or (subject in uncovered_terms and field_counts[predicate] > int(predicate in field_terms))
+                    or (predicate in uncovered_terms and field_counts[subject] > int(subject in field_terms))):
+                raise ValueError("uncovered shared assertion")
     return metadata, owners, claims
 
 
@@ -364,6 +386,7 @@ def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str
             return None
         units = []
         output_chars = 0
+        proven_copies = []
         for group, row in records:
             identifier = row["id"]
             text = row.get("text")
@@ -376,6 +399,8 @@ def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str
             cross = copied and _split_assertion(text, other)
             filtered = {key: value for key, value in row.items() if not (key == "text" and copied)}
             if identifier not in required_ids and identifier not in owners and not cross and not needs_review(json.dumps(filtered, ensure_ascii=False)):
+                if copied:
+                    proven_copies.append(row)
                 continue
             projected = []
             for source, mapping in indexed:
@@ -401,6 +426,14 @@ def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str
             if len(units) >= _MAX_UNITS or output_chars > 2_000_000:
                 return None
             units.append(unit)
+        if not units and needs_review(draft):
+            # 空投影只有在本轮可信的逐字复制解释完整稿触发条件时才成立。
+            if not proven_copies:
+                return None
+            for row in proven_copies:
+                del row["text"]
+            if needs_review(json.dumps(data, ensure_ascii=False)):
+                return None
         return units
     except (ValueError, TypeError, IndexError, RecursionError, OverflowError):
         return None
