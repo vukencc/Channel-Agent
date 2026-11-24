@@ -1,5 +1,6 @@
 """按模板整理本地环境配置，保留原始赋值且不输出秘密。"""
 import argparse
+from contextlib import ExitStack
 from io import StringIO
 import json
 import os
@@ -19,38 +20,47 @@ RECORD_NEWLINE = re.compile(r'\r\n|\r|\n')
 LEADING_BLANK_LINES = re.compile(r'(?:[^\S\r\n]*(?:\r\n|\r|\n))*')
 
 
-def _read(path: Path, *, optional: bool = False) -> str | None:
-    """同一描述符检查普通文件，拒绝链接及可能阻塞的 FIFO。"""
+def _windows_path(path: Path, handles: ExitStack) -> Path:
+    """消去父目录引用前，先验证并固定它跨过的目录。"""
+    from agent_core.core.files import opened_path
+
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        if part == '..':
+            handles.enter_context(opened_path(current, current, directory=True))
+            current = current.parent
+        else:
+            current /= part
+    return current
+
+
+def _read(path: Path, *, optional: bool = False) -> tuple[str | None, os.stat_result | None]:
+    """同一描述符检查文件身份，拒绝链接及可能阻塞的 FIFO。"""
     if path.is_symlink():
         raise ValueError(f'{path.name} 不能是符号链接')
-    if os.name == 'nt':
-        from agent_core.core.files import opened_path
-        path = path.absolute()
+    with ExitStack() as handles:
         try:
-            with opened_path(path.parent, path) as descriptor:
-                with os.fdopen(os.dup(descriptor), 'rb') as stream:
-                    try:
-                        return stream.read().decode('utf-8')
-                    except UnicodeError:
-                        raise ValueError(f'{path.name} 必须采用 UTF-8 编码') from None
+            if os.name == 'nt':
+                from agent_core.core.files import opened_path
+
+                descriptor = handles.enter_context(opened_path(path.parent, path))
+            else:
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                                     | getattr(os, 'O_NONBLOCK', 0))
+                handles.callback(os.close, descriptor)
         except FileNotFoundError:
             if optional:
-                return None
+                return None, None
             raise
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
-                             | getattr(os, 'O_NONBLOCK', 0))
-    except FileNotFoundError:
-        if optional:
-            return None
-        raise
-    with os.fdopen(descriptor, 'rb') as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
             raise ValueError(f'{path.name} 必须是普通文件')
-        try:
-            return stream.read().decode('utf-8')
-        except UnicodeError:
-            raise ValueError(f'{path.name} 必须采用 UTF-8 编码') from None
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            try:
+                return stream.read().decode('utf-8'), file_stat
+            except UnicodeError:
+                raise ValueError(f'{path.name} 必须采用 UTF-8 编码') from None
 
 
 def _parse(text: str, label: str):
@@ -253,7 +263,8 @@ def _write_locked(target: Path, text: str, original: str | None):
             stream.flush()
             os.fsync(stream.fileno())
         # 发布前检查目标未变；不创建持有秘密的备份副本。
-        if _read(target, optional=True) != original:
+        current, _ = _read(target, optional=True)
+        if current != original:
             raise ValueError('本地配置在同步期间发生变化，请重新运行')
         os.replace(temporary, target)
     finally:
@@ -264,10 +275,23 @@ def _write_locked(target: Path, text: str, original: str | None):
 def sync_env(template: Path, target: Path, *, write: bool = False) -> dict:
     """检查/同步模板键与布局，返回键名和计数，不返回任何配置值。"""
     template, target = Path(template), Path(target)
+    if os.name == 'nt':
+        with ExitStack() as handles:
+            template = _windows_path(template, handles)
+            target = _windows_path(target, handles)
+            return _sync_paths(template, target, write=write)
     if template.resolve() == target.resolve():
         raise ValueError('模板与本地文件必须不同')
-    reference = _read(template)
-    original = _read(target, optional=True)
+    return _sync_paths(template, target, write=write)
+
+
+def _sync_paths(template: Path, target: Path, *, write: bool) -> dict:
+    if template == target:
+        raise ValueError('模板与本地文件必须不同')
+    reference, template_stat = _read(template)
+    original, target_stat = _read(target, optional=True)
+    if os.name == 'nt' and target_stat is not None and os.path.samestat(template_stat, target_stat):
+        raise ValueError('模板与本地文件必须不同')
     template_bindings, template_keys = _parse(reference, '模板')
     if not template_keys:
         raise ValueError('模板不能为空')

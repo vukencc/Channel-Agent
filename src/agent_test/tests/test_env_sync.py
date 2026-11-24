@@ -201,10 +201,12 @@ def test_symbolic_link_input_is_rejected_without_touching_referent(tmp_path, lin
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows junction')
-def test_windows_reparse_parent_is_rejected_without_touching_referent(tmp_path):
+@pytest.mark.parametrize('with_parent_reference', [False, True])
+def test_windows_reparse_parent_is_rejected_without_touching_referent(tmp_path, with_parent_reference):
     referent = tmp_path / 'referent'
     referent.mkdir()
-    template, target = _paths(referent, 'A=one\n', 'A=local\n')
+    fixture_dir = tmp_path if with_parent_reference else referent
+    template, target = _paths(fixture_dir, 'A=one\n', 'A=local\n')
     junction = tmp_path / 'junction'
     result = subprocess.run(
         ['cmd.exe', '/d', '/c', 'mklink', '/j', str(junction), str(referent)],
@@ -214,10 +216,22 @@ def test_windows_reparse_parent_is_rejected_without_touching_referent(tmp_path):
     try:
         before = target.read_bytes()
         with pytest.raises(PermissionError):
-            _sync(junction / template.name, target, write=True)
+            route = junction / '..' if with_parent_reference else junction
+            _sync(route / template.name, target, write=True)
         assert target.read_bytes() == before
     finally:
         junction.rmdir()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows path handles')
+def test_windows_ordinary_parent_reference_can_read_and_write(tmp_path):
+    template, target = _paths(tmp_path, 'A=default\nB=default\n', 'A=local\n')
+    nested = tmp_path / 'nested'
+    nested.mkdir()
+    template_path = nested / '..' / template.name
+    target_path = nested / '..' / target.name
+    assert _sync(template_path, target_path, write=True)['changed'] is True
+    assert target.read_bytes() == b'A=local\nB=default\n'
 
 
 def _assert_private(target):
