@@ -1,13 +1,16 @@
 """从节点岗位指令识别明确的读取步骤；不授予工具执行权限。"""
 from __future__ import annotations
 
-import re
+import hashlib
 import json
+import re
+from collections import defaultdict
 
 from agent_core.core.custom_tool_results import custom_result_outcome
 from agent_core.core.flow_action_preflight import selection_only
 from agent_core.core.execution_guidance import READ_TOOLS
-from agent_core.core.tool_observations import extract_observation
+from agent_core.core.messages import is_user_request
+from agent_core.core.tool_observations import extract_observation, validate_observation
 
 _BUILTIN_READS = READ_TOOLS | {"web_search"}
 _CONDITION = re.compile(r"(?:如果|若|假如|倘若|当.{0,20}时|仅在.{0,20}时|必要时|需要时|可选|可以|可调用|可使用|建议|例如|示例|不要|别调用|禁止|无需|不必|不需要|二选一|\b(?:if|when|unless|optional|example|suggest|avoid|do not|don't)\b)", re.I)
@@ -134,3 +137,100 @@ def required_reads(task: str, definitions: list[dict] | None) -> set[str]:
             if name in known and not (alternative and alternative.group(1) in known):
                 result.add(name)
     return result
+
+
+def required_read_reference(name: str, call_index: int, result_index: int, message: dict) -> dict:
+    """记录已验证回执在会话日志中的位置及正文摘要。"""
+    return {'name': name, 'call_index': call_index, 'result_index': result_index,
+            'event_id': message['_event_id'],
+            'sha256': hashlib.sha256(message['content'].encode('utf-8', 'surrogatepass')).hexdigest()}
+
+
+def resume_required_reads(record: dict, checkpoint: dict, required: set[str],
+                          custom: set[str], *, require_commit: bool) -> tuple[set[str], dict[str, dict]]:
+    """仅使用原待续跑 Flow 的成功读取，重新核对请求、事件和原始回执。"""
+    messages = record['messages']
+    limit = record['last_run']['input_index']
+    if 'required_reads' in checkpoint:
+        saved = checkpoint['required_reads']
+    else:
+        saved = _legacy_read_checkpoint(record, checkpoint['turn_id'], required, custom,
+                                        require_commit=require_commit)
+    if not isinstance(saved, dict) or not isinstance(saved.get('seen'), list) or not isinstance(saved.get('calls'), dict):
+        return set(), {}
+    seen = {identifier for identifier in saved['seen'] if isinstance(identifier, str) and identifier}
+    verified = {}
+    for identifier, reference in saved['calls'].items():
+        if identifier not in seen or not isinstance(reference, dict):
+            continue
+        name, event_id = reference.get('name'), reference.get('event_id')
+        call_index, result_index = reference.get('call_index'), reference.get('result_index')
+        if (not isinstance(name, str) or name not in required or not isinstance(event_id, str) or not event_id
+                or type(call_index) is not int or type(result_index) is not int
+                or not 0 < call_index < result_index < limit):
+            continue
+        request, result = messages[call_index], messages[result_index]
+        calls = request.get('tool_calls')
+        if request.get('role') != 'assistant' or not isinstance(calls, list):
+            continue
+        match = [call for call in calls if isinstance(call, dict) and call.get('id') == identifier]
+        if (len(match) != 1 or match[0].get('type') != 'function'
+                or not isinstance(match[0].get('function'), dict) or match[0]['function'].get('name') != name
+                or result.get('tool_call_id') != identifier or result.get('_event_id') != event_id
+                or result.get('_provenance') != 'executed' or not isinstance(result.get('content'), str)
+                or any(message.get('role') != 'tool' for message in messages[call_index + 1:result_index + 1])
+                or (name in custom and not successful_custom_result(result['content']))):
+            continue
+        if required_read_reference(name, call_index, result_index, result) == reference:
+            verified[identifier] = reference
+    return seen, verified
+
+
+def _legacy_read_checkpoint(record: dict, turn_id: str, required: set[str],
+                            custom: set[str], *, require_commit: bool) -> dict:
+    """旧检查点从已绑定的终态轮次恢复，不能把完成名称摘要当作证据。"""
+    messages = record['messages']
+    runs = [row for row in record.get('run_history', ())
+            if isinstance(row, dict) and row.get('turn_id') == turn_id]
+    if len(runs) != 1:
+        return {}
+    run = runs[0]
+    start, limit = run.get('input_index'), record['last_run']['input_index']
+    if (run.get('status') != 'checkpoint' or run.get('stop_reason') not in {'model_connection', 'model_timeout'}
+            or type(start) is not int or not 0 < start < limit
+            or not is_user_request(messages[start]) or not isinstance(run.get('tools'), list)):
+        return {}
+    calls, replies, events = defaultdict(list), defaultdict(list), defaultdict(list)
+    for index in range(start + 1, limit):
+        message = messages[index]
+        if is_user_request(message):
+            return {}
+        if message.get('role') == 'assistant' and isinstance(message.get('tool_calls'), list):
+            for call in message['tool_calls']:
+                if isinstance(call, dict) and isinstance(call.get('id'), str) and call['id']:
+                    calls[call['id']].append(index)
+        elif message.get('role') == 'tool' and isinstance(message.get('tool_call_id'), str):
+            replies[message['tool_call_id']].append(index)
+    for event in run['tools']:
+        if isinstance(event, dict) and isinstance(event.get('tool_call_id'), str):
+            events[event['tool_call_id']].append(event)
+    verified = {}
+    for identifier, positions in calls.items():
+        if len(positions) != 1 or len(replies[identifier]) != 1 or len(events[identifier]) != 1:
+            continue
+        event = events[identifier][0]
+        name, result_index = event.get('name'), replies[identifier][0]
+        result = messages[result_index]
+        content = result.get('content')
+        if (not isinstance(name, str) or name not in required or event.get('turn_id') != turn_id
+                or event.get('source') != 'executed' or event.get('outcome') != 'completed'
+                or event.get('execution_progress') is not True or not isinstance(content, str)
+                or not isinstance(result.get('_event_id'), str) or result['_event_id'] != event.get('event_id')
+                or (require_commit and name in custom and event.get('action_stage') != 'commit')):
+            continue
+        observation = validate_observation(content, result.get('_context_observation')) if name == 'read_file' else None
+        if ((observation is None or observation.reader_tool != name)
+                and ('[输出已截断]' in content or '已截断）' in content)):
+            continue
+        verified[identifier] = required_read_reference(name, positions[0], result_index, result)
+    return {'seen': list(calls), 'calls': verified}

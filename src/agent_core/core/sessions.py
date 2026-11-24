@@ -1345,10 +1345,6 @@ class SessionManager:
         if self.flow_workspace_scope(session) and session.flow_required_task:
             from agent_core.core.flow_required_reads import required_reads
             required_read_names = required_reads(session.flow_required_task, session.record.get('custom_tools'))
-            if required_read_names:
-                session.record['last_run']['flow_required_reads'] = {
-                    'required': sorted(required_read_names), 'completed': [],
-                    'missing': sorted(required_read_names), 'status': 'pending'}
         if self.flow_workspace_scope(session):
             from agent_core.core.flow_draft_gate import FlowDraftGate
             from agent_core.core.flow_staged_actions import FlowStagedActions
@@ -1362,6 +1358,22 @@ class SessionManager:
                 staged_actions.restore_checkpoint(saved['actions'])
                 if receipt_index is not None:
                     receipt_index.restore_checkpoint(saved['receipts'])
+                if required_read_names:
+                    from agent_core.core.flow_required_reads import resume_required_reads
+
+                    allowed = self._effective_session_tools(session)
+                    custom = set(self._session_custom_registry(session))
+                    eligible = required_read_names & (set(TOOL_REGISTRY) | custom)
+                    if allowed is not None:
+                        eligible.intersection_update(allowed)
+                    seen_read_call_ids, verified_read_calls = resume_required_reads(
+                        session.record, saved, eligible, custom, require_commit=staged_actions.requires_preview)
+                    completed_reads = {reference['name'] for reference in verified_read_calls.values()}
+        if required_read_names:
+            missing = required_read_names - completed_reads
+            session.record['last_run']['flow_required_reads'] = {
+                'required': sorted(required_read_names), 'completed': sorted(completed_reads),
+                'missing': sorted(missing), 'status': 'pending' if missing else 'completed'}
 
         def checkpoint(reason, message):
             session.record['status'] = 'checkpoint'
@@ -2095,8 +2107,11 @@ class SessionManager:
                                     and metrics['execution_progress'] and not (gate and gate.blocked)
                                     and (name in TOOL_REGISTRY or not staged_actions.requires_preview
                                          or metrics.get('action_stage') == 'commit')):
-                                verified_read_calls[call_id] = name
-                            completed_reads = set(verified_read_calls.values())
+                                from agent_core.core.flow_required_reads import required_read_reference
+
+                                verified_read_calls[call_id] = required_read_reference(
+                                    name, reply_index, len(session.record['messages']) - 1, message)
+                            completed_reads = {reference['name'] for reference in verified_read_calls.values()}
                             state = session.record['last_run']['flow_required_reads']
                             state['completed'] = sorted(completed_reads)
                             state['missing'] = sorted(required_read_names - completed_reads)
@@ -2198,6 +2213,7 @@ class SessionManager:
                     'flow_run_id': session.record['flow_run_id'], 'turn_id': run['turn_id'],
                     'actions': staged_actions.checkpoint_state(),
                     'receipts': receipt_index.checkpoint_state() if receipt_index is not None else None,
+                    'required_reads': {'seen': sorted(seen_read_call_ids), 'calls': verified_read_calls},
                 }
             else:
                 session.record.pop('_flow_action_checkpoint', None)

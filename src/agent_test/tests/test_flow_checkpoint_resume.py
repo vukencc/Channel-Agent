@@ -1,6 +1,7 @@
 """项目 Flow 检查点恢复的受控离线回归。"""
 import asyncio
 import copy
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -345,6 +346,141 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
                 if outcome == 'duplicate':
                     assert [event['status'] for event in session.record['last_run']['action_preflights']] == ['already_completed']
         finally:
+            await manager.shutdown()
+
+    manager = None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', [
+    'success', 'legacy', 'twice', 'failed', 'unpaired', 'tampered', 'duplicate', 'duplicate_after_resume',
+])
+def test_resume_requires_only_reads_without_verifiable_completion(runtime_store, monkeypatch, case):
+    store, project = runtime_store
+    monkeypatch.setattr(config, 'FLOW_AUTO_ARCHIVE', False)
+    monkeypatch.setattr(config, 'MODEL_RECOVERY_LIMIT', 0)
+    if case == 'twice':
+        monkeypatch.setattr(config, 'RUN_HISTORY_LIMIT', 1)
+    complete = case in {'success', 'legacy', 'twice'}
+    (project / 'feedback.json').write_text('{"items":[]}', encoding='utf-8')
+    # 纯读但有独立变量，不匹配特殊只读代码的结构。运行结果仍能满足必做读取。
+    reader = {
+        'name': 'read_feedback', 'description': '只读取当前工作区反馈记录。',
+        'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+        'code': chr(10).join(('def main(arguments):', '    import json',
+                              "    with open('feedback.json', 'r', encoding='utf-8') as stream:",
+                              '        data = json.load(stream)',
+                              "    return {'items': data['items']}")),
+    }
+    if case == 'failed':
+        reader['code'] = 'def main(arguments):' + chr(10) + "    return {'ok': False, 'error': '读取失败'}"
+    if os.name == 'nt' and os.environ.get('RUN_WINDOWS_WSL_TESTS') != '1':
+        from agent_core.core.custom_tools import CustomTool
+
+        original_run = CustomTool.run
+
+        def controlled_native_run(tool, arguments):
+            if tool.name != 'read_feedback':
+                return original_run(tool, arguments)
+            assert tool.definition['code'] == reader['code'] and arguments == '{}'
+            value = ('{"ok":false,"error":"读取失败"}' if case == 'failed'
+                     else (project / 'feedback.json').read_text(encoding='utf-8'))
+            return chr(10).join(('[退出码] 0', '[stdout]', value))
+
+        monkeypatch.setattr(CustomTool, 'run', controlled_native_run)
+    initial_calls = 0
+    resumed_calls = 0
+    resumed = False
+
+    async def model(history, *, session_id, emit):
+        nonlocal initial_calls, resumed_calls
+        session = manager.sessions[session_id]
+        if session.record['flow_node_id'] == 'next':
+            return assistant('已收到交接')
+        names = {row['function']['name'] for row in selected_schemas(TOOL_SCHEMAS)}
+        if not resumed:
+            initial_calls += 1
+            if initial_calls == 1:
+                assert 'draft_read_feedback' in names
+                return assistant(calls=[call('initial-draft', 'draft_read_feedback')])
+            if initial_calls == 2:
+                assert names == {'read_feedback'}
+                return assistant(calls=[call('initial-read', 'read_feedback')])
+            if case == 'duplicate' and initial_calls == 3:
+                return assistant(calls=[call('initial-read', 'read_file', path='feedback.json')])
+            raise TimeoutError('受控离线超时')
+        resumed_calls += 1
+        if case == 'twice' and resumed_calls == 1:
+            raise ModelConnectionError('受控第二次断线')
+        if case == 'duplicate_after_resume' and resumed_calls == 1:
+            return assistant(calls=[call('initial-read', 'read_file', path='feedback.json')])
+        if resumed_calls == 2 and case == 'success':
+            assert 'draft_read_feedback' in names
+            return assistant(calls=[call('unnecessary-redraft', 'draft_read_feedback')])
+        return assistant('{"read_checked":true}')
+
+    async def run():
+        nonlocal manager, resumed
+        def setup():
+            loaded_manager = SessionManager(store, model=model)
+            flows = FlowService(loaded_manager)
+            return loaded_manager, flows, ProjectService(loaded_manager, flows)
+
+        manager, service, projects = setup()
+        try:
+            project_record = projects.create('必做读取续跑', str(project), permission_policy='full_access')
+            fid = project_record['flow_id']
+            flow = service.get(fid)
+            flow.update(nodes=[
+                {'id': 'work', 'title': '读取', 'prompt': '调用 read_feedback 读取工作区反馈。',
+                 'tool_names': ['read_file', 'read_feedback'], 'custom_tools': [reader],
+                 'handoff_contract': {'fields': {'read_checked': {'type': 'boolean'}}}},
+                {'id': 'next', 'title': '下游', 'prompt': '核对交接', 'tool_names': []},
+            ], edges=[{'source': 'work', 'target': 'next'}])
+            service.save(flow)
+            service.start(fid)
+            await service.tasks[fid]
+            before = service.get(fid)['run']
+            assert before['resume_available']
+            sid = before['nodes']['work']['session_id']
+            if case == 'legacy':
+                original = manager.sessions[sid]
+                original.record['_flow_action_checkpoint'].pop('required_reads')
+                await manager.save(original)
+            await manager.shutdown()
+            manager, service, projects = setup()
+            assert service.get(fid)['run']['resume_available']
+            record = manager.sessions[sid].record
+            if case in {'unpaired', 'tampered'}:
+                message = next(row for row in record['messages'] if row.get('tool_call_id') == 'initial-read')
+                if case == 'unpaired':
+                    message['_event_id'] = 'unpaired'
+                else:
+                    message['content'] = message['content'].replace('"items": []', '"items": [1]').replace('"items":[]', '"items":[1]')
+            if case == 'success':
+                node = service.records[fid]['nodes'][0]
+                field = node['handoff_contract']['fields']['read_checked']
+                field['type'] = 'integer'
+                assert not service.get(fid)['run']['resume_available']
+                field['type'] = 'boolean'
+                binding = manager.workspaces.owner_binding(manager.sessions[sid])
+                manager.workspaces.bindings[sid] = replace(binding, identity=(0, 0))
+                assert not service.get(fid)['run']['resume_available']
+                manager.workspaces.bindings[sid] = binding
+            resumed = True
+            for _ in range(2 if case == 'twice' else 1):
+                service.resume(fid, run_id=before['id'])
+                await service.tasks[fid]
+            after = service.get(fid)['run']
+            if complete:
+                assert after['status'] == 'completed', after['nodes']['work']['error']
+                assert after['nodes']['next']['session_id'] and resumed_calls == (2 if case == 'twice' else 1)
+                assert record['last_run']['flow_required_reads']['completed'] == ['read_feedback']
+            else:
+                assert after['nodes']['next']['status'] == 'blocked'
+                assert record['last_run']['flow_required_reads']['completed'] == []
+        finally:
+            await service.shutdown()
             await manager.shutdown()
 
     manager = None
