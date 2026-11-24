@@ -61,7 +61,16 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
     second_approved = {"reason": "客户表示页面无法提交，建议记录故障排查。"}
     if unidentified:
         approved = {"reason": "客户表示页面无法提交，建议安排人工排查。"}
-    if mode in {"source_change", "source_change_end"}:
+    repeat_after_source = mode.startswith("repeat_after_source_")
+    repeated_selector = mode == "repeat_after_source_selector"
+    spec = tool_spec()
+    if repeat_after_source:
+        approved = {"item_ref": "case-1", "reason": "记录页面故障。"}
+    if repeated_selector:
+        approved = {"id": "case-1"}
+        spec["parameters"] = {"type": "object", "properties": {"id": {"type": "string"}},
+                              "required": ["id"], "additionalProperties": False}
+    if repeat_after_source or mode in {"source_change", "source_change_end"}:
         (project / "extra-source.txt").write_text("补充资料：本事项尚待排查。", encoding="utf-8")
     if mode == "blind_batch":
         approved["reason"] = "客户表示页面无法提交，建议安排人工排查。"
@@ -113,6 +122,24 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
             preview_name = previews[0]
             assert preview_name != "record_case"
             return assistant(calls=[call("source", "read_file", path="source.txt")])
+        if repeat_after_source:
+            changed = (dict(approved, reason="记录补充材料。") if mode.endswith("_distinct")
+                       else dict(reversed(approved.items())))
+            if normal_index == 2:
+                return assistant(calls=[call("draft-first", preview_name, **approved)])
+            if normal_index == 3:
+                assert names == {"record_case"}
+                return assistant(calls=[call("formal-first", "record_case", **approved)])
+            if normal_index == 4:
+                assert "read_file" in names and "record_case" not in names
+                return assistant(calls=[call("extra-source", "read_file", path="extra-source.txt")])
+            if normal_index == 5:
+                assert any(row.get("path") == "extra-source.txt"
+                           for row in review_sources(session.record, char_limit=24000))
+                return assistant(calls=[call("draft-after-read", preview_name, **changed)])
+            if normal_index == 6 and names == {"record_case"}:
+                return assistant(calls=[call("formal-after-read", "record_case", **changed)])
+            return assistant("已核对回执。")
         if unidentified:
             if normal_index == 2:
                 calls = [call("draft-first", preview_name, **approved)]
@@ -285,6 +312,9 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         if mode == "two_unidentified_rejected" and arguments == approved:
             return "[已拒绝] 受控确认拒绝，尚未执行。"
         writes.append(arguments)
+        if repeated_selector:
+            evidence["source"] = "executed"
+            return '[退出码] 0\n[stdout]\n{"items":[]}'
         (project / "staged-record.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
         if mode == "formal_failure" or (mode == "two_unidentified_failure" and arguments == approved):
             evidence["source"] = "executed"
@@ -299,7 +329,7 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         project_record = projects.create("两阶段离线验证", str(project), permission_policy=permission)
         flow = service.get(project_record["flow_id"])
         flow["nodes"] = [{"id": "a", "title": "原业务", "prompt": "读取原文并记录排查建议后交接",
-                          "tool_names": ["read_file", "record_case"], "custom_tools": [tool_spec()]}]
+                          "tool_names": ["read_file", "record_case"], "custom_tools": [spec]}]
         flow["edges"] = []
         if mode == "source_change_end" or mode in {"two_unidentified_failure", "two_unidentified_rejected"}:
             flow["nodes"].append({"id": "downstream", "title": "下游", "prompt": "不得接收未提交交接", "tool_names": []})
@@ -774,3 +804,26 @@ def test_confirmation_return_can_explicitly_replace_unidentified_draft(runtime_s
 
     manager = None
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ["duplicate", "distinct", "selector"])
+def test_completed_write_cannot_be_repeat_approved_after_source_refresh(runtime_store, monkeypatch, operation):
+    record, run, _, schemas, invocations, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "repeat_after_source_" + operation))
+    assert run["status"] == "completed", run["error"]
+    assert_paired(record)
+    assert len(invocations) == (1 if operation == "duplicate" else 2)
+    if operation == "selector":
+        assert invocations == [{"id": "case-1"}] * 2
+        assert not (runtime_store[1] / "staged-record.json").exists()
+    elif operation == "distinct":
+        assert invocations[0]["item_ref"] == invocations[1]["item_ref"]
+        assert invocations[0]["reason"] != invocations[1]["reason"]
+    events = {row["tool_call_id"]: row for row in record["last_run"]["action_preflights"]}
+    if operation == "duplicate":
+        assert all("record_case" not in names for names in schemas[3:])
+        assert events["draft-after-read"]["status"] == "already_completed"
+        assert "formal-after-read" not in events
+    else:
+        assert events["draft-after-read"]["status"] == "approved"
+        assert events["formal-after-read"]["draft_id"] == events["draft-after-read"]["draft_id"]

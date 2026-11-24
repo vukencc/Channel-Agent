@@ -101,7 +101,6 @@ class FlowStagedActions:
         self._last_offered_id = None
         self._revision_tool_name = _REVISION_TOOL_NAME
         self._revision_targets: dict[str, tuple[str, str]] = {}
-        self._resumed_commits: set[tuple[str, str]] = set()
         self._completed_commits: set[tuple[str, str]] = set()
 
     def expire_for_resume(self) -> None:
@@ -115,7 +114,7 @@ class FlowStagedActions:
             'pending': sorted(self.unresolved | set(self.receipts.values())),
             'disputed': sorted(self.gate.pending_tools),
             'unsuccessful': sorted(self.unsuccessful),
-            'completed': sorted(self._resumed_commits | self._completed_commits),
+            'completed': sorted(self._completed_commits),
             'revisions': {identifier: key for identifier, key in self._revision_targets.items()
                           if key in self.unresolved and key not in self.unsuccessful},
         }
@@ -127,7 +126,7 @@ class FlowStagedActions:
         self.gate.pending_tools = keys['disputed']
         self.unsuccessful = keys['unsuccessful']
         self.invalidated = self.unresolved - self.unsuccessful
-        self._resumed_commits = keys['completed']
+        self._completed_commits = keys['completed']
         self._revision_targets = {identifier: tuple(key) for identifier, key in state.get('revisions', {}).items()}
 
     def _queue_audit(self, event: dict, stage: str, status: str) -> None:
@@ -419,14 +418,14 @@ class FlowStagedActions:
             event['revision_of'] = revision_id
             event['arguments_sha256'] = hashlib.sha256(arguments.encode('utf-8', 'surrogatepass')).hexdigest()
         definition = self._authorized().get(name)
-        if definition is not None and definition == self.definitions.get(name) and self._resumed_commits:
+        if definition is not None and definition == self.definitions.get(name) and self._completed_commits:
             try:
                 signature = (name, _argument_digest(_object(arguments, definition['parameters'])))
             except ValueError:
                 # 非法参数由常规预审路径记入未决草稿。
                 pass
             else:
-                if signature in self._resumed_commits:
+                if signature in self._completed_commits:
                     event['status'] = 'already_completed'
                     return '[已拒绝] 同一流程已成功执行相同操作，请查阅原工具回执。'
         self.unresolved.add(prior)
