@@ -3,9 +3,9 @@ import copy
 import json
 import re
 
+from agent_core.core.custom_tool_results import custom_result_is_business_error, custom_stdout_body
 from agent_core.core.flow_handoff import _depth, _exact_float, _unique
 
-_PREFIX = "[退出码] 0\n[stdout]\n"
 _FIELD = re.compile(r"(?:submitted|created|issued|processed|registered|opened)_([a-z][a-z0-9_]*)_ids\Z")
 _KEY = re.compile(r"[a-z][a-z0-9_]{0,63}_id\Z")
 _LIMIT = 16384
@@ -102,17 +102,18 @@ class FlowHandoffReceipts:
             self._uncertain = True
             return
         self._seen.add(identifier)
-        if not isinstance(result, str) or len(result) > _LIMIT or not result.startswith(_PREFIX):
+        body = custom_stdout_body(result) if isinstance(result, str) and len(result) <= _LIMIT else None
+        if body is None:
             self._uncertain = True
             return
         try:
-            data = json.loads(result[len(_PREFIX):], object_pairs_hook=_unique, parse_float=_exact_float,
+            data = json.loads(body, object_pairs_hook=_unique, parse_float=_exact_float,
                               parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
             _depth(data)
         except (ValueError, RecursionError):
             self._uncertain = True
             return
-        if not isinstance(data, dict) or data.get("ok") is not True:
+        if not isinstance(data, dict) or data.get("ok") is not True or custom_result_is_business_error(data):
             self._uncertain = True
             return
         entities = set(matching.values())
