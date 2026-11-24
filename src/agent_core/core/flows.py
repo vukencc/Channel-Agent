@@ -572,6 +572,8 @@ class FlowService:
                     or not isinstance(action_checkpoint.get('actions'), dict)
                     or (node['handoff_contract'] is not None and not isinstance(action_checkpoint.get('receipts'), dict))):
                 raise ValueError('原检查点动作或回执状态无法验证')
+            from agent_core.core.flow_staged_actions import read_action_checkpoint
+            read_action_checkpoint(action_checkpoint['actions'])
         elif node['custom_tools']:
             # 旧版未记录待办与回执状态；只有能确认没有预审、提交的轮次可直接续跑。
             if attempts is not None and not isinstance(attempts, list):

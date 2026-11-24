@@ -51,7 +51,8 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
     normal_index = 0
     preview_name = None
     approved = {"reason": CORRECTED, "item_ref": "case-1"}
-    unidentified = mode in {"source_change", "source_change_end", "two_unidentified"}
+    unidentified_batch = mode.startswith("two_unidentified")
+    unidentified = unidentified_batch or mode in {"source_change", "source_change_end"}
     second_approved = {"reason": "客户表示页面无法提交，建议记录故障排查。"}
     if unidentified:
         approved = {"reason": "客户表示页面无法提交，建议安排人工排查。"}
@@ -103,7 +104,7 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         if unidentified:
             if normal_index == 2:
                 calls = [call("draft-first", preview_name, **approved)]
-                if mode == "two_unidentified":
+                if unidentified_batch:
                     calls.append(call("draft-second", preview_name, **second_approved))
                 return assistant(calls=calls)
             if mode == "source_change_end" and normal_index == 3:
@@ -257,9 +258,11 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
                 or (manager.permission_override or session.record["permission_policy"]) == "readonly"):
             return await original_tool(session, tool_call, evidence=evidence)
         arguments = json.loads(tool_call["function"]["arguments"])
+        if mode == "two_unidentified_rejected" and arguments == approved:
+            return "[已拒绝] 受控确认拒绝，尚未执行。"
         writes.append(arguments)
         (project / "staged-record.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
-        if mode == "formal_failure":
+        if mode == "formal_failure" or (mode == "two_unidentified_failure" and arguments == approved):
             evidence["source"] = "executed"
             return "[失败] 受控工具在写入后未返回成功回执。"
         if mode == "audit_cancel":
@@ -274,7 +277,7 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         flow["nodes"] = [{"id": "a", "title": "原业务", "prompt": "读取原文并记录排查建议后交接",
                           "tool_names": ["read_file", "record_case"], "custom_tools": [tool_spec()]}]
         flow["edges"] = []
-        if mode == "source_change_end":
+        if mode == "source_change_end" or mode in {"two_unidentified_failure", "two_unidentified_rejected"}:
             flow["nodes"].append({"id": "downstream", "title": "下游", "prompt": "不得接收未提交交接", "tool_names": []})
             flow["edges"] = [{"source": "a", "target": "downstream"}]
         flow = service.save(flow)
@@ -399,6 +402,21 @@ def test_distinct_unidentified_approved_drafts_can_each_be_consumed(runtime_stor
     assert events["formal-first"]["draft_id"] == events["draft-first"]["draft_id"]
     assert events["formal-second"]["draft_id"] == events["draft-second"]["draft_id"]
     assert events["draft-first"]["draft_id"] != events["draft-second"]["draft_id"]
+
+
+@pytest.mark.parametrize("outcome", ["failure", "rejected"])
+def test_success_of_distinct_unidentified_draft_does_not_clear_first_failure(runtime_store, monkeypatch, outcome):
+    record, run, reviews, _, writes, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "two_unidentified_" + outcome))
+    assert len(reviews) == 2
+    assert len(writes) == (2 if outcome == "failure" else 1)
+    assert_paired(record)
+    results = {row["tool_call_id"]: row for row in record["last_run"]["tools"]}
+    assert not results["formal-first"]["execution_progress"]
+    assert results["formal-second"]["execution_progress"]
+    assert run["nodes"]["downstream"]["session_id"] is None
+    assert not run["nodes"]["a"]["output_handoff"]
+    assert record["last_run"]["stop_reason"] == "flow_action_tool_unsuccessful"
 
 
 def test_stop_during_model_preparation_prevents_provider_call(runtime_store, monkeypatch):

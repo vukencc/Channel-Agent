@@ -30,6 +30,29 @@ ACTION_CHECKPOINT_MESSAGES = {
 }
 
 
+_EMPTY_MATTER_DIGEST = hashlib.sha256(b'{}').hexdigest()
+_ARGUMENTS_KEY_PREFIX = 'arguments:'
+
+
+def read_action_checkpoint(state: dict) -> dict[str, set[tuple[str, str]]]:
+    """校验私有动作状态，避免将旧版未标识事项猜成某个待办动作。"""
+    keys = {}
+    for field in ('pending', 'disputed', 'unsuccessful', 'completed'):
+        rows = state.get(field)
+        if not isinstance(rows, list) or any(
+            not isinstance(row, (list, tuple)) or len(row) != 2
+            or not all(isinstance(value, str) for value in row)
+            or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,63}', row[0])
+            or not re.fullmatch(r'(?:arguments:)?[a-f0-9]{64}', row[1])
+            for row in rows
+        ):
+            raise ValueError('Flow 检查点动作约束无效')
+        if field != 'completed' and any(row[1] == _EMPTY_MATTER_DIGEST for row in rows):
+            raise ValueError('旧检查点无法区分未标识动作，请核对正式工具回执和实际状态')
+        keys[field] = {tuple(row) for row in rows}
+    return keys
+
+
 class FlowStagedActions:
     def __init__(self, gate):
         self.gate = gate
@@ -74,23 +97,12 @@ class FlowStagedActions:
 
     def restore_checkpoint(self, state: dict) -> None:
         """在空预审目录上恢复业务约束，旧批准一律失效。"""
-        def keys(field: str) -> set[tuple[str, str]]:
-            rows = state[field]
-            if not isinstance(rows, list) or any(
-                not isinstance(row, (list, tuple)) or len(row) != 2
-                or not all(isinstance(value, str) for value in row)
-                or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,63}', row[0])
-                or not re.fullmatch(r'[a-f0-9]{64}', row[1])
-                for row in rows
-            ):
-                raise ValueError('Flow 检查点动作约束无效')
-            return {tuple(row) for row in rows}
-
-        self.unresolved = keys('pending')
-        self.gate.pending_tools = keys('disputed')
-        self.unsuccessful = keys('unsuccessful')
+        keys = read_action_checkpoint(state)
+        self.unresolved = keys['pending']
+        self.gate.pending_tools = keys['disputed']
+        self.unsuccessful = keys['unsuccessful']
         self.invalidated = self.unresolved - self.unsuccessful
-        self._resumed_commits = keys('completed')
+        self._resumed_commits = keys['completed']
 
     def _queue_audit(self, event: dict, stage: str, status: str) -> None:
         self._audit_queue.append({'time': datetime.now(timezone.utc).isoformat(), 'event': 'flow_action',
@@ -142,6 +154,17 @@ class FlowStagedActions:
             if self.receipts and not self.unresolved:
                 return 'flow_action_pending', ACTION_CHECKPOINT_MESSAGES['flow_action_pending']
         return 'flow_source_review', self.gate.blocked or '待提交草稿尚无正式执行回执，请核对后继续。'
+
+    def _action_key(self, name: str, arguments: str) -> tuple[str, str]:
+        """已标识事项可修订，无事项编号的动作按完整参数各自跟踪。"""
+        key = self.gate.tool_key(name, arguments)
+        if key[1] != _EMPTY_MATTER_DIGEST:
+            return key
+        try:
+            digest = _argument_digest(_object(arguments, {}))
+        except ValueError:
+            digest = hashlib.sha256(arguments.encode('utf-8', 'surrogatepass')).hexdigest()
+        return name, _ARGUMENTS_KEY_PREFIX + digest
 
     def _authorized(self):
         allowed = self.manager._effective_session_tools(self.session)
@@ -317,7 +340,7 @@ class FlowStagedActions:
         event = self._event(call, name, 'preview')
         evidence['action_stage'] = 'preview'
         self.previewed.add(name)
-        key = self.gate.tool_key(name, fn['arguments'])
+        key = self._action_key(name, fn['arguments'])
         definition = self._authorized().get(name)
         if definition is not None and definition == self.definitions.get(name) and self._resumed_commits:
             try:
@@ -344,7 +367,7 @@ class FlowStagedActions:
         event['draft_id'] = identifier
         self.invalidated.discard(key)
         # 新草稿校验通过后才撤销同事项的旧批准。
-        if key != self.gate.tool_key(name, '{}'):
+        if not key[1].startswith(_ARGUMENTS_KEY_PREFIX):
             for prior, prior_key in list(self.receipts.items()):
                 if prior_key == key:
                     self._queue_audit(self._receipt_events.pop(prior), 'preview', 'superseded')
@@ -423,7 +446,7 @@ class FlowStagedActions:
                 event = self._event(call, name, 'commit')
                 event['status'] = 'authorization_changed'
                 evidence['action_stage'] = 'commit'
-                self.unresolved.add(self.gate.tool_key(name, fn['arguments']))
+                self.unresolved.add(self._action_key(name, fn['arguments']))
                 return '[已拒绝] 本轮模型请求没有该动作的预审入口，请刷新工具列表后先提交草稿。'
             return await self.gate.execute_tool(call, evidence)
         # 旧版无项目绑定的直接调用仍经过原独立核验。使用预审协议后不得切回直接调用。
@@ -431,7 +454,7 @@ class FlowStagedActions:
             return await self.gate.execute_tool(call, evidence)
         evidence['action_stage'] = 'commit'
         event = self._event(call, name, 'commit')
-        key = self.gate.tool_key(name, fn['arguments'])
+        key = self._action_key(name, fn['arguments'])
         self.unresolved.add(key)
         definition = self._authorized().get(name)
         policy = self.manager.permission_override or self.session.record.get('permission_policy')

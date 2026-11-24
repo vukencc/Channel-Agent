@@ -1,6 +1,7 @@
 """项目 Flow 检查点恢复的受控离线回归。"""
 import asyncio
 import copy
+import hashlib
 import json
 
 import pytest
@@ -139,6 +140,7 @@ def test_start_releases_reservation_if_run_metadata_fails(tmp_path, monkeypatch,
 @pytest.mark.parametrize('checkpoint_stage, outcome', [
     ('pending', 'blocked'),
     ('pending', 'restaged'),
+    ('unidentified', 'restaged'),
     ('signed', 'blocked'),
     ('signed', 'verified'),
     ('signed', 'duplicate'),
@@ -154,6 +156,11 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
     resume_calls = 0
     resumed = False
     action = {'feedback_id': 'CF-01', 'diagnosis': '页面显示空白'}
+    definition = ticket_tool()
+    if checkpoint_stage == 'unidentified':
+        action = {'customer': 'CF-01', 'diagnosis': '页面显示空白'}
+        definition['parameters']['properties']['customer'] = definition['parameters']['properties'].pop('feedback_id')
+        definition['parameters']['required'] = ['customer', 'diagnosis']
     contract = {'fields': {'submitted_ticket_ids': {'type': 'array'}}}
 
     async def model(history, *, session_id, emit):
@@ -185,7 +192,8 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
                 return assistant(calls=[call('new-preview', preview, **action)])
         if outcome == 'restaged' and resume_calls == 2:
             assert names == {'submit_ticket'}
-            return assistant(calls=[call('new-commit', 'submit_ticket', **action)])
+            reordered = dict(reversed(action.items()))
+            return assistant(calls=[call('new-commit', 'submit_ticket', **reordered)])
         if outcome == 'duplicate':
             assert names != {'submit_ticket'}
         if outcome == 'blocked':
@@ -221,7 +229,7 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             flow = flows.get(fid)
             flow.update(nodes=[
                 {'id': 'work', 'title': '办理', 'prompt': '提交工单，输出签发编号。', 'y': 0.0,
-                 'tool_names': ['submit_ticket'], 'custom_tools': [ticket_tool()],
+                 'tool_names': ['submit_ticket'], 'custom_tools': [definition],
                  'handoff_contract': contract},
                 {'id': 'next', 'title': '下游', 'prompt': '核对交接', 'x': 120.0, 'y': 0.0, 'tool_names': []},
             ], edges=[{'source': 'work', 'target': 'next'}])
@@ -247,7 +255,17 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
             node['x'] = 1.0
             assert not flows.get(fid)['run']['resume_available']
             node['x'] = 0
-            assert manager.sessions[sid].record['_flow_action_checkpoint'] == json.loads(json.dumps(expected_checkpoint))
+            session_record = manager.sessions[sid].record
+            assert session_record['_flow_action_checkpoint'] == json.loads(json.dumps(expected_checkpoint))
+            if checkpoint_stage == 'unidentified':
+                action_state = session_record['_flow_action_checkpoint']['actions']
+                pending = action_state['pending']
+                assert len(pending) == 1 and pending[0][1].startswith('arguments:')
+                action_state['pending'] = [['submit_ticket', hashlib.sha256(b'{}').hexdigest()]]
+                assert not flows.get(fid)['run']['resume_available']
+                with pytest.raises(ValueError, match='无法区分未标识动作'):
+                    flows.resume(fid, run_id=before['id'])
+                action_state['pending'] = pending
             resumed = True
             flows.resume(fid, run_id=before['id'])
             await asyncio.wait_for(flows.tasks[fid], 5)
