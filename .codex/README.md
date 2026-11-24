@@ -8,11 +8,12 @@
 
 | 设置 | 当前值 | 用途 |
 | --- | --- | --- |
+| `model` / `model_reasoning_effort` | `gpt-6.2-sol` / `medium` | 主代理的项目默认模型与推理强度；显式启动参数可覆盖。 |
 | `project_doc_max_bytes` | `16384` | 项目指令读取预算；详细运行状态放在交接文档，避免塞入常驻指令。 |
 | `agents.enabled` | `true` | 启用 Codex 子代理工具。 |
 | `agents.max_concurrent_threads_per_session` | `3` | 最多三个并发子代理，不包括主代理；实际还受宿主限制。 |
 
-认证、根模型、审批和沙箱由调用端管理，项目配置只维护上述协作参数。主代理按任务选择调用端可用的模型，避免仓库覆盖个人设置。旧的 `max_threads` 是兼容别名；本地配置已使用明确的新键，不再依赖旧的 feature 或深度开关。配置层仅在受信任项目中加载，参见 [官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+认证、审批和沙箱由调用端管理。主代理模型与推理强度使用项目默认值，可由显式启动参数覆盖；宿主不支持该型号时应选择可用型号。旧的 `max_threads` 是兼容别名；本地配置已使用明确的新键，不再依赖旧的 feature 或深度开关。配置层仅在受信任项目中加载，参见 [官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
 
 ## 角色文件与协作
 

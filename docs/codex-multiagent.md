@@ -9,6 +9,8 @@
 `.codex/config.toml` 的当前项目配置为：
 
 ```toml
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"
 project_doc_max_bytes = 16384
 
 [agents]
@@ -20,7 +22,7 @@ max_concurrent_threads_per_session = 3
 
 代理定义位于 `.codex/agents/*.toml`。每个定义必须提供 `name`、`description` 和 `developer_instructions`；名称用于选择角色。模型和推理强度只在这些 TOML 文件中维护。角色指令要求只读角色不写文件；这一职责由指令约束，不能当作沙箱级只读保证。代理继承父会话的 provider、沙箱和审批边界，角色配置不能自行提升权限。具名角色的模型和推理强度优先于派生参数及 agents 默认值；要改变设置，应选择其他角色或修改对应文件，不能依靠派生参数临时覆盖。
 
-`.codex/` 和根 `AGENTS.md` 是随仓库提供的项目级默认配置；`docs/dev/` 是不随 clone 分发的本地资料。认证、根模型与权限由调用端管理。此页描述项目约定，官方配置格式以[子代理配置说明](https://learn.chatgpt.com/docs/agent-configuration/subagents)和[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)为准。
+`.codex/` 和根 `AGENTS.md` 是随仓库提供的项目级默认配置；`docs/dev/` 是不随 clone 分发的本地资料。主代理默认使用 6.2 Sol 和 medium 推理强度，显式启动参数可以覆盖；认证和权限由调用端管理。此页描述项目约定，官方配置格式以[子代理配置说明](https://learn.chatgpt.com/docs/agent-configuration/subagents)和[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)为准。
 
 ## 角色分工
 
@@ -39,7 +41,7 @@ max_concurrent_threads_per_session = 3
 | `ui_specialist` | 界面复现、视觉和交互修复及实际界面检查。 |
 | `architecture_advisor` | 已有针对性证据后，针对未解决的跨模块决策提供只读建议。 |
 
-当前选择将 6.2 Sol 用于有界实现、RAG 和安全及代码审查，Terra 用于界面和文档，6.1 Sol 用于测试和性能测量，Luna 用于范围明确的只读探查；遇到尚未解决的困难架构决策时按需使用 6.2 Astra。主代理模型仍由调用端选择，按任务复杂度调整，避免项目配置覆盖用户偏好。这是按当前会话展示的模型定位做出的工程选择，并非性能或费用基准。角色的实际配置以 TOML 为准，可在仓库根目录只打印角色名、模型和推理强度：
+当前选择将 6.2 Sol 用于有界实现、RAG、测试、性能测量及安全和代码审查，Terra 用于界面和文档，Luna 用于范围明确的只读探查；遇到尚未解决的困难架构决策时按需使用 6.2 Astra。这是按当前会话展示的模型定位做出的工程选择，并非性能或费用基准。角色的实际配置以 TOML 为准，可在仓库根目录只打印角色名、模型和推理强度：
 
 ```bash
 python3 -c 'import pathlib,tomllib; [(lambda d: print(d["name"], d.get("model"), d.get("model_reasoning_effort")))(tomllib.loads(p.read_text())) for p in sorted(pathlib.Path(".codex/agents").glob("*.toml"))]'
