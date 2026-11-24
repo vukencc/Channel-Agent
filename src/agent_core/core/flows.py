@@ -557,8 +557,29 @@ class FlowService:
         if row.get('error') != expected_error or prior_error != expected_error:
             raise ValueError('原检查点原因不匹配')
         node = nodes[current]
+        messages = record.get('messages')
+        action_checkpoint = record.get('_flow_action_checkpoint')
+        if action_checkpoint is not None:
+            if (not isinstance(action_checkpoint, dict) or action_checkpoint.get('turn_id') != turn_id
+                    or action_checkpoint.get('flow_run_id') != run_id
+                    or not isinstance(action_checkpoint.get('actions'), dict)
+                    or (node['handoff_contract'] is not None and not isinstance(action_checkpoint.get('receipts'), dict))):
+                raise ValueError('原检查点动作或回执状态无法验证')
+        elif node['custom_tools']:
+            # 旧版未记录待办与回执状态；只有能确认没有预审、提交的轮次可直接续跑。
+            if attempts is not None and not isinstance(attempts, list):
+                raise ValueError('原检查点续跑历史无效')
+            previous_turns = tuple(attempt.get('turn_id') for attempt in attempts or ()
+                                   if isinstance(attempt, dict) and attempt.get('node') == current
+                                   and attempt.get('turn_id') != turn_id)
+            old_runs = {item['turn_id']: item for item in record.get('run_history', ())
+                        if isinstance(item, dict) and isinstance(item.get('turn_id'), str)}
+            if (last_run.get('action_preflights') or any(
+                    not isinstance(prior, str) or prior not in old_runs or old_runs[prior].get('action_preflights')
+                    for prior in previous_turns)):
+                raise ValueError('旧检查点有无法验证的动作状态，请核对已保存的正式回执')
         prompt = node['prompt'] + (handoff_output_instruction(node['handoff_contract']) if node['handoff_contract'] is not None else '')
-        if (not record.get('messages') or record['messages'][0] != {'role': 'system', 'content': prompt}
+        if (not messages or messages[0] != {'role': 'system', 'content': prompt}
                 or self.manager.execution_environment(session) != (settings['execution_environment'] or config.COMMAND_EXECUTION_ENVIRONMENT)
                 or record.get('permission_policy') != settings['permission_policy']
                 or record.get('model_profile') != (node['model_profile'] or settings['model_profile'])
@@ -901,7 +922,7 @@ class FlowService:
                     self._write(value)
                     previous_count = len(session.record['messages'])
                     self.manager.submit(session, '继续', flow_id=value['id'], handoff_contract=node['handoff_contract'],
-                                        flow_node_task=node['prompt'])
+                                        flow_node_task=node['prompt'], resume_flow_turn=result['turn_id'])
                 else:
                     if os.name == 'nt':
                         from agent_core.core.windows_files import pinned_scope

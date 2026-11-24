@@ -1,4 +1,5 @@
 """从本轮正式执行的完整结构化回执提取有限的交接证据。"""
+import copy
 import json
 import re
 
@@ -33,6 +34,39 @@ class FlowHandoffReceipts:
         self._rows: list[dict] = []
         self._seen: set[str] = set()
         self._uncertain = False
+        self._established_fields: set[str] = set()
+
+    def checkpoint_state(self) -> dict:
+        """保存已配对回执提取出的编号事实，不复制工具原文或参数。"""
+        return {'rows': copy.deepcopy(self._rows), 'seen': sorted(self._seen),
+                'uncertain': self._uncertain, 'established': sorted(self._established_fields | self.expectations().keys())}
+
+    def restore_checkpoint(self, state: dict) -> None:
+        rows, seen, uncertain, established = (state[name] for name in ('rows', 'seen', 'uncertain', 'established'))
+        if (not isinstance(rows, list) or len(rows) > _MAX_RECEIPTS or not isinstance(seen, list)
+                or not len(rows) <= len(seen) <= _MAX_RECEIPTS or not all(map(_identifier, seen))
+                or len(set(seen)) != len(seen) or type(uncertain) is not bool
+                or not isinstance(established, list) or not all(
+                    isinstance(field, str) and field in self._fields for field in established)):
+            raise ValueError('Flow 检查点回执约束无效')
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {'entity', 'fields', 'id', 'keys', 'simulated', 'delivered_externally'}:
+                raise ValueError('Flow 检查点回执无效')
+            fields, keys = row['fields'], row['keys']
+            if (not isinstance(row['entity'], str) or row['entity'] not in self._fields.values()
+                    or not isinstance(fields, list) or not fields or not all(
+                        isinstance(field, str) and field in self._fields for field in fields)
+                    or (row['id'] is not None and not _identifier(row['id']))
+                    or not isinstance(keys, dict) or len(keys) > 16 or not all(
+                        isinstance(key, str) and _KEY.fullmatch(key) and _identifier(value) for key, value in keys.items())
+                    or any(row[flag] is not None and type(row[flag]) is not bool for flag in ('simulated', 'delivered_externally'))):
+                raise ValueError('Flow 检查点回执无效')
+        self._rows, self._seen, self._uncertain = copy.deepcopy(rows), set(seen), uncertain
+        self._established_fields = set(established)
+
+    def lost_checkpoint_evidence(self) -> bool:
+        """续跑时新回执若使既有编号无法核对，继续阻断交接。"""
+        return bool(self._established_fields.difference(self.expectations()))
 
     def observe(self, call: dict, result: str, metrics: dict) -> None:
         if self._uncertain or not self._fields or not isinstance(metrics, dict) or metrics.get("action_stage") != "commit":

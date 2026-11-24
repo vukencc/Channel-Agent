@@ -405,7 +405,7 @@ class SessionManager:
     def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
                completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None,
                handoff_span: tuple[int, int] | None = None, user_input_span: tuple[int, int] | None = None,
-               flow_node_task: str = ''):
+               flow_node_task: str = '', resume_flow_turn: str | None = None):
         contract = (HandoffContract.model_validate(handoff_contract).model_dump(exclude_none=True)
                     if handoff_contract is not None else None)
         if self.sessions.get(session.id) is not session:
@@ -415,6 +415,13 @@ class SessionManager:
         if session.busy:
             raise ValueError('此会话正在运行，请等待、停止，或切换到其他会话')
         self.assert_project_available(session, submitting=True, flow_id=flow_id)
+        if resume_flow_turn is not None:
+            previous = session.record.get('last_run', {})
+            if (not flow_id or flow_id != session.record.get('flow_id')
+                    or session.record.get('status') != 'checkpoint'
+                    or previous.get('turn_id') != resume_flow_turn
+                    or previous.get('stop_reason') not in {'model_connection', 'model_timeout'}):
+                raise ValueError('原会话检查点已变化')
         if not text.strip():
             raise ValueError('消息不能为空')
         if self.store.session_bytes(session.id) + len(text.encode('utf-8')) > config.SESSION_MAX_MB * 1024 * 1024:
@@ -435,6 +442,8 @@ class SessionManager:
         if session.summary_task and not session.summary_task.done():
             session.summary_task.cancel()
         session.record.pop('assessment', None)
+        if resume_flow_turn is None:
+            session.record.pop('_flow_action_checkpoint', None)
         session.flow_review_task = flow_node_task[:8192] if flow_id else ''
         session.flow_required_task = flow_node_task if flow_id else ''
         session.record['last_run'] = {'turn_id': uuid.uuid4().hex, 'model_calls': [], 'tools': []}
@@ -1344,6 +1353,11 @@ class SessionManager:
                 receipt_index = FlowHandoffReceipts(handoff_contract)
             gate = FlowDraftGate(self, session, reserve_review_round, receipt_index=receipt_index)
             staged_actions = FlowStagedActions(gate)
+            saved = session.record.get('_flow_action_checkpoint')
+            if saved is not None:
+                staged_actions.restore_checkpoint(saved['actions'])
+                if receipt_index is not None:
+                    receipt_index.restore_checkpoint(saved['receipts'])
 
         def checkpoint(reason, message):
             session.record['status'] = 'checkpoint'
@@ -1464,6 +1478,10 @@ class SessionManager:
                     if not return_to_drafting:
                         offer = await staged_actions.confirmation_offer()
                     return_to_drafting = False
+                    if (offer is None and staged_actions.pending
+                            and session.record.get('_flow_action_checkpoint') is not None):
+                        budget_text += ('\n续跑前有待办草稿。请核对已保存的工具回执；旧批准已经失效，'
+                                        '未提交的草稿需要重新预审，已有成功回执的操作无需再提交。')
                     if not await staged_actions.flush_audit():
                         checkpoint('flow_action_audit', gate.blocked)
                         break
@@ -1780,6 +1798,10 @@ class SessionManager:
                     content = reply.get('content')
                     failure = (validate_handoff(content if isinstance(content, str) else '', handoff_contract)[1]
                                if handoff_contract is not None else None)
+                    if receipt_index is not None and receipt_index.lost_checkpoint_evidence():
+                        session.record['last_run']['handoff_validation_failed'] = True
+                        checkpoint('flow_handoff_receipts', '续跑后的回执无法与此前签发编号一并核对，请检查已保存的正式回执。')
+                        break
                     expected_ids = receipt_index.expectations() if receipt_index is not None else {}
                     correction = (receipt_field_correction(content, handoff_contract, expected_ids)
                                   if expected_ids and isinstance(content, str) else None)
@@ -2155,10 +2177,23 @@ class SessionManager:
         finally:
             if required_read_names and required_read_names - completed_reads:
                 session.record['last_run']['flow_required_reads']['status'] = 'blocked'
+            run = session.record['last_run']
+            resume_checkpoint = (staged_actions is not None and session.record.get('flow_run_id')
+                                 and run.get('stop_reason') in {'model_connection', 'model_timeout'})
+            if resume_checkpoint:
+                staged_actions.expire_for_resume()
             if staged_actions is not None and not await staged_actions.flush_audit():
                 if session.record['last_run'].get('stop_reason') != 'flow_action_audit':
                     finish_pending_tools(session.record['messages'])
                     checkpoint('flow_action_audit', gate.blocked)
+            if resume_checkpoint and run.get('stop_reason') != 'flow_action_audit':
+                session.record['_flow_action_checkpoint'] = {
+                    'flow_run_id': session.record['flow_run_id'], 'turn_id': run['turn_id'],
+                    'actions': staged_actions.checkpoint_state(),
+                    'receipts': receipt_index.checkpoint_state() if receipt_index is not None else None,
+                }
+            else:
+                session.record.pop('_flow_action_checkpoint', None)
 
     async def _finish_turn(self, session: Session, *, workspace_memory_allowed: bool = False) -> None:
         record = session.record

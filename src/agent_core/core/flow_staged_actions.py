@@ -3,11 +3,14 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 
 from agent_core import config
 from agent_core.core.audit_writer import append_audit
-from agent_core.core.flow_action_preflight import FlowActionPreflight
+from agent_core.core.flow_action_preflight import (
+    FlowActionPreflight, _argument_digest, _object, selection_only,
+)
 from agent_core.core.flow_review_claims import action_review_context
 from agent_core.core.flow_review_sources import review_sources
 from agent_core.core.instrumentation import tool_outcome
@@ -52,6 +55,42 @@ class FlowStagedActions:
         self._receipt_args = {}
         self._confirmation_id = None
         self._last_offered_id = None
+        self._resumed_commits: set[tuple[str, str]] = set()
+        self._completed_commits: set[tuple[str, str]] = set()
+
+    def expire_for_resume(self) -> None:
+        """关闭当前确认窗口，并为待续跑草稿记录批准失效。"""
+        for identifier in list(self.receipts):
+            self._revoke_confirmation(identifier, 'context_changed')
+
+    def checkpoint_state(self) -> dict:
+        """只保存待办、复核及去重约束；批准令牌和参数不跨请求。"""
+        return {
+            'pending': sorted(self.unresolved | set(self.receipts.values())),
+            'disputed': sorted(self.gate.pending_tools),
+            'unsuccessful': sorted(self.unsuccessful),
+            'completed': sorted(self._resumed_commits | self._completed_commits),
+        }
+
+    def restore_checkpoint(self, state: dict) -> None:
+        """在空预审目录上恢复业务约束，旧批准一律失效。"""
+        def keys(field: str) -> set[tuple[str, str]]:
+            rows = state[field]
+            if not isinstance(rows, list) or any(
+                not isinstance(row, (list, tuple)) or len(row) != 2
+                or not all(isinstance(value, str) for value in row)
+                or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,63}', row[0])
+                or not re.fullmatch(r'[a-f0-9]{64}', row[1])
+                for row in rows
+            ):
+                raise ValueError('Flow 检查点动作约束无效')
+            return {tuple(row) for row in rows}
+
+        self.unresolved = keys('pending')
+        self.gate.pending_tools = keys('disputed')
+        self.unsuccessful = keys('unsuccessful')
+        self.invalidated = self.unresolved - self.unsuccessful
+        self._resumed_commits = keys('completed')
 
     def _queue_audit(self, event: dict, stage: str, status: str) -> None:
         self._audit_queue.append({'time': datetime.now(timezone.utc).isoformat(), 'event': 'flow_action',
@@ -279,9 +318,19 @@ class FlowStagedActions:
         evidence['action_stage'] = 'preview'
         self.previewed.add(name)
         key = self.gate.tool_key(name, fn['arguments'])
+        definition = self._authorized().get(name)
+        if definition is not None and definition == self.definitions.get(name) and self._resumed_commits:
+            try:
+                signature = (name, _argument_digest(_object(fn['arguments'], definition['parameters'])))
+            except ValueError:
+                # 非法参数由常规预审路径记入未决草稿。
+                pass
+            else:
+                if signature in self._resumed_commits:
+                    event['status'] = 'already_completed'
+                    return '[已拒绝] 同一流程已成功执行相同操作，请查阅原工具回执。'
         self.unresolved.add(key)
         self.unsuccessful.discard(key)
-        definition = self._authorized().get(name)
         if definition is None or definition != self.definitions.get(name):
             event['status'] = 'authorization_changed'
             return '[已拒绝] 工具选择或定义已变化，请重新查看可用工具。'
@@ -447,6 +496,9 @@ class FlowStagedActions:
             self.invalidated.discard(key)
             self.unsuccessful.discard(key)
             self.gate.pending_tools.discard(key)
+            if not selection_only(definition['parameters']):
+                signature = (name, _argument_digest(_object(fn['arguments'], definition['parameters'])))
+                self._completed_commits.add(signature)
         else:
             self.unsuccessful.add(key)
         return result
