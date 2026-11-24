@@ -29,6 +29,8 @@ Keep `main` protected. Continue the existing branch unless a new branch is neede
 
 ## Codex Delegation
 
+See the repository-wide review rules below when evaluating a pull request.
+
 Use named specialists for independent substantial work; skip delegation for a small, obvious edit. Up to three workers may run concurrently, subject to the runtime limit. Assign disjoint file ownership and tell writers they share the checkout. Children return follow-ups to the parent instead of spawning more agents. The parent owns integration and final verification.
 
 | Role | Responsibility |
@@ -46,4 +48,12 @@ Use named specialists for independent substantial work; skip delegation for a sm
 
 Models and effort live only in `.codex/agents/*.toml`. Prefer `fork_turns="none"` with a concrete scope; use `"all"` only when shared history is necessary. Return findings, changed files, commands/results and residual risks, not raw transcripts. If custom roles are unavailable, use a built-in worker/explorer with the relevant role instructions. Read-only is an instruction-level duty; custom roles inherit the parent sandbox and cannot grant themselves permissions. Codex delegation and the application's own sub-Agent system are separate; see [docs/codex-multiagent.md](docs/codex-multiagent.md).
 
+The project defaults the parent to GPT-6.2 Sol with medium reasoning; explicit client startup overrides can select another model or effort. Check model availability in the current host: model IDs may be unavailable on older clients or other accounts. If needed, override the parent or adjust local role configuration; configuration parsing alone does not prove a model can run.
+
 Choose `implementation_worker` for a clearly specified fix and `ui_specialist` for work that needs screenshots or UI interaction. Use the RAG, test, performance, review and sandbox specialists for their corresponding reasoning-heavy work. Reserve `architecture_advisor` for an unresolved decision after focused evidence collection; do not add an architecture pass to routine changes. A named role's configured model and effort take precedence over spawn overrides; select the right role instead of assuming an override changes it.
+
+## Code Review Rules
+
+- 检查文件、命令和动态工具在路径解析失败或隔离不可用时是否拒绝执行。用户选择的确认策略应覆盖实际执行的操作。
+- 检查 Flow 在取消、重试和恢复后是否仍把每次工具调用与自己的回执配对。下游只能取得完成校验的交接。
+- 依赖更新需要兼容受支持的 Linux 和 Windows 环境。检查锁文件是否保留项目版本、可选依赖和打包入口。

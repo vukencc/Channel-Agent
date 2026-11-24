@@ -103,6 +103,8 @@ jobs:
             'src/agent_test/tests/test_retrieval_attempt_ledger.py',
             'src/agent_test/tests/test_web_sse_terminal.py',
             'src/agent_test/tests/test_config.py',
+            'src/agent_test/tests/test_env_sync.py',
+            'src/agent_test/tests/test_perf09_inference_pool.py',
             'src/agent_test/tests/test_unknown_model_input_override.py',
             'src/agent_test/tests/test_model_context_capacity.py',
             'src/agent_test/tests/test_fallback_context_capacity.py',

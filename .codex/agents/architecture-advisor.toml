@@ -1,6 +1,6 @@
 name = "architecture_advisor"
 description = "Read-only escalation for unresolved cross-module architecture and difficult tradeoffs."
-model = "gpt-6-astra"
+model = "gpt-6.2-astra"
 model_reasoning_effort = "low"
 
 developer_instructions = """

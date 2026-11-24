@@ -1,6 +1,6 @@
 name = "sandbox_auditor"
 description = "Read-only audit of sandbox, permissions, paths, confirmations and audit pairing."
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "high"
 
 developer_instructions = """
