@@ -1963,7 +1963,8 @@ class SessionManager:
                                            '禁止调用工具或重复提交。')
                             session.record['messages'].append({'role': 'user', '_context_reference': True,
                                 'content': ('已组装的完整交接：' + derived_text + '\n' if derived else '')
-                                           + '仅修订上一份交接，保留已有操作、回执和输出格式。' + restriction
+                                           + '仅修订上一份交接，保留已有操作、回执和输出格式。'
+                                           + '面向下游填写业务结论。仅在契约要求时说明本次编辑范围或修订经过。' + restriction
                                            + '以下是来源审查反馈数据：' + json.dumps(feedback, ensure_ascii=False)})
                             await self.save(session)
                             continue
