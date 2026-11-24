@@ -124,6 +124,7 @@ async def confirmation_scenario(runtime_store, monkeypatch, mode="success", stru
     index = 0
     preview = None
     expected_confirmations = []
+    invalid_attempt = mode in {"invalid_preview", "invalid_commit"}
     if mode in {"timeout_once", "timeout"}:
         monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 1)
     if mode == "early_once_single_stage":
@@ -146,17 +147,29 @@ async def confirmation_scenario(runtime_store, monkeypatch, mode="success", stru
                        if "confirm_record" in row["function"].get("description", "")]
             assert len(matches) == 1
             preview = matches[0]
+            if invalid_attempt:
+                attempted = preview if mode == "invalid_preview" else "confirm_record"
+                return assistant(calls=[raw_call("invalid-attempt", attempted, '{"amount":1.00}')])
             calls = [raw_call("draft-first", preview, RAW_FIRST)]
             if mode == "batch":
                 calls.append(raw_call("draft-second", preview, RAW_SECOND))
             return assistant(calls=calls)
+        if invalid_attempt and index == 2:
+            assert "confirm_record" not in names and preview in names
+            rejected = next(row for row in history if row.get("tool_call_id") == "invalid-attempt")
+            assert rejected["_provenance"] == "not_executed"
+            return assistant(calls=[
+                raw_call("draft-first", preview, RAW_FIRST),
+                raw_call("invalid-same-item", preview, '{"item_ref":"case-1","amount":1.00}'),
+            ])
         if mode == "revise" and index == 3:
             assert "read_file" in names and preview in names and "confirm_record" not in names
             return assistant(calls=[call("additional-source", "read_file", path="additional.txt")])
         if mode == "revise" and index == 4:
             assert "read_file" in names and preview in names and "confirm_record" not in names
             return assistant(calls=[raw_call("draft-renewed", preview, RAW_FIRST)])
-        confirming = (index == 2 or (mode in {"batch", "timeout_once", "timeout", "early_once_single_stage"} and index == 3)
+        confirming = ((invalid_attempt and index == 3) or (not invalid_attempt and index == 2)
+                      or (mode in {"batch", "timeout_once", "timeout", "early_once_single_stage"} and index == 3)
                       or (mode == "revise" and index == 5))
         if confirming:
             raw = RAW_SECOND if mode == "batch" and index == 3 else RAW_FIRST
@@ -243,7 +256,9 @@ async def confirmation_scenario(runtime_store, monkeypatch, mode="success", stru
 
 
 @pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured"])
-@pytest.mark.parametrize("mode", ["success", "batch", "revise", "timeout_once", "reasoning_stop"])
+@pytest.mark.parametrize("mode", [
+    "success", "batch", "revise", "timeout_once", "reasoning_stop", "invalid_preview", "invalid_commit",
+])
 def test_each_approved_action_gets_dedicated_explicit_confirmation(runtime_store, monkeypatch, structured, mode):
     record, run, requests, writes, confirmations = asyncio.run(
         confirmation_scenario(runtime_store, monkeypatch, mode, structured))
@@ -253,12 +268,19 @@ def test_each_approved_action_gets_dedicated_explicit_confirmation(runtime_store
     assert confirmations == ([RAW_FIRST, RAW_SECOND] if mode == "batch" else [RAW_FIRST, RAW_FIRST] if mode in {"revise", "timeout_once"} else [RAW_FIRST])
     calls = [entry for row in record["messages"] for entry in row.get("tool_calls", [])]
     formal = [entry for entry in calls if entry["function"]["name"] == "confirm_record"]
+    formal = [entry for entry in formal if entry["id"] != "invalid-attempt"]
     assert [entry["function"]["arguments"] for entry in formal] == ([RAW_FIRST, RAW_SECOND] if mode == "batch" else [RAW_FIRST])
     receipts = {row["tool_call_id"]: row for row in record["messages"] if row["role"] == "tool"}
     assert all(receipts[entry["id"]]["_provenance"] == "executed" and "[退出码] 0" in receipts[entry["id"]]["content"] for entry in formal)
     if mode == "revise":
         assert receipts["additional-source"]["_provenance"] == "executed"
         assert len([entry for entry in calls if entry["function"]["name"] != "confirm_record" and entry["id"].startswith("draft-")]) == 2
+    if mode in {"invalid_preview", "invalid_commit"}:
+        for identifier in ("invalid-attempt", "invalid-same-item"):
+            assert receipts[identifier]["_provenance"] == "not_executed"
+        events = {event["tool_call_id"]: event for event in record["last_run"]["action_preflights"]}
+        assert events["invalid-same-item"]["status"] == "invalid_draft"
+        assert events["formal-3"]["draft_id"] == events["draft-first"]["draft_id"]
 
 
 @pytest.mark.parametrize("mode", ["stop", "unrelated", "duplicate", "wrong_arguments", "revoke", "source_change", "timeout", "mixed_stop", "mixed_revise", "mixed_stop_text"])

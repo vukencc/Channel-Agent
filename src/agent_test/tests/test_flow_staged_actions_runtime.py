@@ -67,6 +67,7 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
         "repeat_after_source_business_retry": {"ok": False, "error": "办理暂未成功"},
         "repeat_after_source_business_blocked": {"success": False, "error": "办理暂未成功"},
         "repeat_after_source_business_status": {"status": "failed", "message": "办理暂未成功"},
+        "repeat_after_source_invalid_keeps_failure": {"ok": False, "error": "办理暂未成功"},
         "repeat_after_source_error_envelope": {"error": "办理暂未成功"},
         "repeat_after_source_error_data": {"id": "case-1", "error": "页面显示错误"},
     }.get(mode)
@@ -137,6 +138,10 @@ async def staged_scenario(runtime_store, monkeypatch, mode="success"):
             if normal_index == 3:
                 assert names == {"record_case"}
                 return assistant(calls=[call("formal-first", "record_case", **approved)])
+            if mode == "repeat_after_source_invalid_keeps_failure":
+                if normal_index == 4:
+                    return assistant(calls=[call("invalid-followup", preview_name, item_ref=approved["item_ref"])])
+                return assistant("已核对回执。")
             if normal_index == 4:
                 assert "read_file" in names and "record_case" not in names
                 if mode in {"repeat_after_source_business_blocked", "repeat_after_source_business_status",
@@ -872,3 +877,14 @@ def test_business_error_json_only_affects_dynamic_tools():
     output = chr(10).join(("[退出码] 0", "[stdout]", '{"ok":false,"error":"检查失败"}'))
     assert tool_outcome(output, tool_name="run_command") == "completed"
     assert tool_outcome(output, custom_tool=True) == "error"
+
+
+def test_invalid_draft_preserves_existing_formal_failure(runtime_store, monkeypatch):
+    record, run, _, _, invocations, _, _ = asyncio.run(
+        staged_scenario(runtime_store, monkeypatch, "repeat_after_source_invalid_keeps_failure"))
+    assert len(invocations) == 1 and not run["nodes"]["a"]["output_handoff"]
+    stages = {event["tool_call_id"]: event for event in record["last_run"]["action_preflights"]}
+    assert stages["formal-first"]["status"] == "error"
+    assert stages["invalid-followup"]["status"] == "invalid_draft"
+    assert record["last_run"]["stop_reason"] == "flow_action_tool_unsuccessful"
+    assert_paired(record)

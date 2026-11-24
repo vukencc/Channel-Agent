@@ -412,8 +412,6 @@ class FlowStagedActions:
         event = self._event(call, name, 'preview')
         evidence['action_stage'] = 'preview'
         self.previewed.add(name)
-        key = self._action_key(name, arguments)
-        prior = self._revision_targets[revision_id] if revision_id is not None else key
         if revision_id is not None:
             event['revision_of'] = revision_id
             event['arguments_sha256'] = hashlib.sha256(arguments.encode('utf-8', 'surrogatepass')).hexdigest()
@@ -422,14 +420,12 @@ class FlowStagedActions:
             try:
                 signature = (name, _argument_digest(_object(arguments, definition['parameters'])))
             except ValueError:
-                # 非法参数由常规预审路径记入未决草稿。
+                # 非法参数仍通过常规预审路径生成拒绝回执。
                 pass
             else:
                 if signature in self._completed_commits:
                     event['status'] = 'already_completed'
                     return '[已拒绝] 同一流程已成功执行相同操作，请查阅原工具回执。'
-        self.unresolved.add(prior)
-        self.unsuccessful.discard(prior)
         if definition is None or definition != self.definitions.get(name):
             event['status'] = 'authorization_changed'
             return '[已拒绝] 工具选择或定义已变化，请重新查看可用工具。'
@@ -440,6 +436,11 @@ class FlowStagedActions:
         except ValueError as exc:
             event['status'] = 'invalid_draft'
             return f'[已拒绝] 草稿未获受理：{exc}。'
+        key = self._action_key(name, arguments)
+        prior = self._revision_targets[revision_id] if revision_id is not None else key
+        # 参数无效时只保留拒绝回执，不新增待办或修改旧草稿、批准与失败状态。
+        self.unresolved.add(prior)
+        self.unsuccessful.discard(prior)
         event['draft_id'] = identifier
         self.invalidated.discard(prior)
         # 新草稿校验通过后才撤销同事项的旧批准。
@@ -521,6 +522,16 @@ class FlowStagedActions:
                 return '[失败] 审计失败：' + self.gate.blocked
         return result
 
+    @staticmethod
+    def _valid_proposal(arguments: str, definition: dict | None) -> bool:
+        if definition is None:
+            return False
+        try:
+            _object(arguments, definition['parameters'])
+        except ValueError:
+            return False
+        return True
+
     async def _execute(self, call: dict, evidence: dict) -> str:
         fn = call['function']
         name = fn['name']
@@ -531,11 +542,13 @@ class FlowStagedActions:
             return await self._preview(call, original, evidence, fn['arguments'])
         preview = self.preflight.preview_for_original(name)
         if not preview:
-            if self.requires_preview and name not in TOOL_REGISTRY and name in self._authorized():
+            definition = self._authorized().get(name) if self.requires_preview and name not in TOOL_REGISTRY else None
+            if definition is not None:
                 event = self._event(call, name, 'commit')
                 event['status'] = 'authorization_changed'
                 evidence['action_stage'] = 'commit'
-                self.unresolved.add(self._action_key(name, fn['arguments']))
+                if self._valid_proposal(fn['arguments'], definition):
+                    self.unresolved.add(self._action_key(name, fn['arguments']))
                 return '[已拒绝] 本轮模型请求没有该动作的预审入口，请刷新工具列表后先提交草稿。'
             return await self.gate.execute_tool(call, evidence)
         # 旧版无项目绑定的直接调用仍经过原独立核验。使用预审协议后不得切回直接调用。
@@ -544,8 +557,9 @@ class FlowStagedActions:
         evidence['action_stage'] = 'commit'
         event = self._event(call, name, 'commit')
         key = self._action_key(name, fn['arguments'])
-        self.unresolved.add(key)
         definition = self._authorized().get(name)
+        if self._valid_proposal(fn['arguments'], definition):
+            self.unresolved.add(key)
         policy = self.manager.permission_override or self.session.record.get('permission_policy')
         # 动态工具最终通过 run_command；readonly 策略在沙箱中一律拒绝该命令。
         if self.gate.blocked or self.session.cancelled.is_set() or not definition or policy == 'readonly':
