@@ -1,4 +1,7 @@
+import asyncio
 import json
+
+import pytest
 
 from agent_core.core.flow_review_items import review_units, tool_review_sources
 
@@ -282,3 +285,36 @@ def test_shared_claim_general_determiners_are_not_anaphora():
     units = review_units(dump(draft), [])
     assert units is not None and len(units) == 1
     assert json.loads(units[0]["draft"])["claims"] == [draft["memo"]]
+
+
+@pytest.mark.parametrize("field,text", [
+    ("客户", "明确希望退款。"),
+    ("权限政策", "必须由管理员操作。"),
+    ("明确请求", "由用户本人办理退款。"),
+    ("必须办理", "按退款政策执行。"),
+])
+def test_shared_field_name_and_value_require_full_review(monkeypatch, field, text):
+    from agent_core.core.flow_draft_review import needs_review
+    from agent_test.tests.test_flow_draft_receipt_review import make_gate
+    from agent_test.tests.test_flow_whole_claim_batches import reply
+
+    draft = {"items": [{"id": "A1", "text": "蓝色标记。"}, {"id": "A2", "text": "绿色标记。"}], field: text}
+    encoded = dump(draft)
+    assert needs_review(encoded) and not needs_review(field) and not needs_review(text)
+    gate, _, histories = make_gate(monkeypatch)
+
+    async def model(history, **kwargs):
+        assert kwargs["disable_tools"]
+        histories.append(history)
+        target, = json.loads(history[1]["content"])["targets"]
+        return reply("revise", issues=[{"target_id": target["id"], "draft_quote": text,
+                                       "source_id": "s1", "quote": "原始证据", "reason": "归属缺少依据"}])
+
+    gate.manager._call_model = model
+    assert asyncio.run(gate.check(encoded, stage="handoff"))
+    history, = histories
+    payload = json.loads(history[1]["content"])
+    assert json.loads(payload["draft"]) == draft
+    assert payload["sources"] == [{"id": "s1", "kind": "read_file", "text": "原始证据"}]
+    assert [target["field"] for target in payload["targets"]] == ["/" + field]
+    assert review_units(encoded, payload["sources"]) is None

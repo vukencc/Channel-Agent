@@ -241,6 +241,13 @@ def _dependent_shared_context(value: str, disputed: list[str]) -> bool:
     return False
 
 
+def _split_assertion(left: str, right: str) -> bool:
+    """识别分别落在两段文本中的来源归属或规则约束。"""
+    return any((re.search(subject, left, re.I) and re.search(predicate, right, re.I))
+               or (re.search(subject, right, re.I) and re.search(predicate, left, re.I))
+               for subject, predicate in ((_CUSTOMER, _ASSERTION), (_RULE, _MANDATE)))
+
+
 def _shared(data: object, records: list[tuple[str | None, dict]], required: frozenset[str]) -> tuple[dict, set[str], list[dict]]:
     if not isinstance(data, dict):
         return {}, set(), []
@@ -258,6 +265,9 @@ def _shared(data: object, records: list[tuple[str | None, dict]], required: froz
         elif isinstance(value, str):
             if len(value) > 32_000 or _CROSS.search(value):
                 raise ValueError("ambiguous shared text")
+            if _split_assertion(key, value):
+                # 字段名也是断言的一部分，按值拆句无法证明事项归属。
+                raise ValueError("shared assertion spans field name and value")
             unit_id = "shared_claim:" + hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()
             if unit_id in ids:
                 raise ValueError("shared identifier collision")
@@ -363,10 +373,7 @@ def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str
                 copied = False
             other = json.dumps({key: value for key, value in row.items() if key not in {"id", "text"}}, ensure_ascii=False)
             # 原话与其他字段共同构成同一行断言时仍须复核。
-            cross = copied and ((re.search(_CUSTOMER, text, re.I) and re.search(_ASSERTION, other, re.I))
-                                or (re.search(_ASSERTION, text, re.I) and re.search(_CUSTOMER, other, re.I))
-                                or (re.search(_RULE, text, re.I) and re.search(_MANDATE, other, re.I))
-                                or (re.search(_MANDATE, text, re.I) and re.search(_RULE, other, re.I)))
+            cross = copied and _split_assertion(text, other)
             filtered = {key: value for key, value in row.items() if not (key == "text" and copied)}
             if identifier not in required_ids and identifier not in owners and not cross and not needs_review(json.dumps(filtered, ensure_ascii=False)):
                 continue
