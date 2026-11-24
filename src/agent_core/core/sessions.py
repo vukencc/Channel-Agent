@@ -41,6 +41,8 @@ from agent_core.tools.sandbox import ToolContext, tool_context, CancellationFlag
 
 logger = get_logger(__name__)
 
+RestoredUserInput = Callable[[], tuple[str, str] | None]
+
 
 @dataclass
 class Session:
@@ -406,7 +408,8 @@ class SessionManager:
     def submit(self, session: Session, text: str, *, attachments=None, flow_id: str | None = None,
                completion_error: asyncio.Future[str] | None = None, handoff_contract: dict | None = None,
                handoff_span: tuple[int, int] | None = None, user_input_span: tuple[int, int] | None = None,
-               flow_node_task: str = '', resume_flow_turn: str | None = None):
+               flow_node_task: str = '', resume_flow_turn: str | None = None,
+               resume_user_input: tuple[str, str] | None = None):
         contract = (HandoffContract.model_validate(handoff_contract).model_dump(exclude_none=True)
                     if handoff_contract is not None else None)
         if self.sessions.get(session.id) is not session:
@@ -460,19 +463,29 @@ class SessionManager:
         if attachments:
             message['_attachments'] = copy.deepcopy(attachments)
         session.record['messages'].append(message)
+        restored_input: RestoredUserInput | None = None
+        if resume_flow_turn is not None and resume_user_input is not None:
+            same_authority = self._restored_workspace_scope(session)
+
+            def scoped_input() -> tuple[str, str] | None:
+                return resume_user_input if same_authority() else None
+
+            restored_input = scoped_input
         queued_save = self.save(session)
         if self.observer.enabled:
             self.observer.event('turn.started', session_id=session.id,
                 turn_id=session.record['last_run']['turn_id'],
                 parent_session_id=session.record.get('delegated_from'), state='queued')
-        session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error, contract))
+        session.task = asyncio.create_task(
+            self._run_submitted(session, queued_save, completion_error, contract, restored_input))
 
         def finish(task: asyncio.Task) -> None:
             if task is session.task and task.cancelled() and session.turn_active:
                 # 直接取消未启动的任务时，由同一轮继续排空保存。
                 session.cancelled.set()
                 session.record['status'] = 'stopping'
-                session.task = asyncio.create_task(self._run_submitted(session, queued_save, completion_error, contract))
+                session.task = asyncio.create_task(
+                    self._run_submitted(session, queued_save, completion_error, contract, restored_input))
                 session.task.add_done_callback(finish)
             self.notify()
 
@@ -1257,7 +1270,8 @@ class SessionManager:
     @traced('agent.run')
     async def _run_submitted(self, session: Session, queued_save: asyncio.Future[None],
                              completion_error: asyncio.Future[str] | None = None,
-                             handoff_contract: dict | None = None) -> None:
+                             handoff_contract: dict | None = None,
+                             restored_input: RestoredUserInput | None = None) -> None:
         input_committed = False
         try:
             # 已提交的 queued 快照包含本轮输入。先验证写入结果，再允许任何模型调用或工具副作用。
@@ -1269,7 +1283,7 @@ class SessionManager:
             input_committed = True
             if session.cancelled.is_set():
                 raise asyncio.CancelledError
-            await self._run_with_budget(session, handoff_contract)
+            await self._run_with_budget(session, handoff_contract, restored_input)
         except asyncio.CancelledError:
             if session.record['last_run'].get('stop_reason') != 'flow_action_audit':
                 session.record.update(status='cancelled', error='任务已停止；已执行的文件操作不会自动回滚。')
@@ -1285,13 +1299,15 @@ class SessionManager:
         if completion_error is not None and not completion_error.done():
             completion_error.set_result(session.record.get('error', ''))
 
-    async def _run_with_budget(self, session, handoff_contract=None):
+    async def _run_with_budget(self, session, handoff_contract=None, restored_input: RestoredUserInput | None = None):
         from agent_core.core.images import image_scope
         profile = session.record.get('model_profile')
         endpoint = self.model_registry.resolve(profile)
         with model_profile(profile, endpoint), budget_scope(self.budget_ledger, session.record.get('budget_owner_id', session.id)), limits_scope(session.record, endpoint=endpoint), image_scope(self.store.directory(session.id) / 'attachments'):
             with observation_context(turn_id=session.record.get('last_run', {}).get('turn_id')):
-                if handoff_contract is None:
+                if restored_input is not None:
+                    await self._run(session, handoff_contract, restored_input=restored_input)
+                elif handoff_contract is None:
                     await self._run(session)
                 else:
                     await self._run(session, handoff_contract)
@@ -1312,26 +1328,39 @@ class SessionManager:
         session.record['inbox_cursor'] = page['next_seq']
         await self.save(session)
 
-    def _restored_read_scope(self, session: Session, verified: dict[str, dict]) -> Callable[[], dict[str, dict]]:
-        """只在同一恢复轮与原工作区、权限下向审查暴露指定回执。"""
-        restored_ids = frozenset(verified)
-        definitions = {name: copy.deepcopy(tool.definition)
-                       for name, tool in self._session_custom_registry(session).items()}
-
+    def _restored_workspace_scope(self, session: Session) -> Callable[[], bool]:
+        """只在同一恢复轮与工作区、权限范围内向审查提供原来源。"""
         def authority():
             record = session.record
             binding = self.workspaces.owner_binding(session)
             return (record.get('flow_id'), record.get('flow_node_id'), record.get('flow_run_id'),
-                    record['last_run'].get('turn_id'), session.flow_required_task,
+                    record.get('flow_project_id'), record['last_run'].get('turn_id'), session.flow_required_task,
                     binding, self.workspaces.path(session), self.execution_environment(session),
                     self.permission_override or record.get('permission_policy') or config.TOOL_PERMISSION_POLICY)
 
-        original = authority()
+        try:
+            original = authority()
+        except (OSError, ValueError):
+            return lambda: False
+
+        def same_authority() -> bool:
+            try:
+                return authority() == original
+            except (OSError, ValueError):
+                return False
+
+        return same_authority
+
+    def _restored_read_scope(self, session: Session, verified: dict[str, dict]) -> Callable[[], dict[str, dict]]:
+        same_authority = self._restored_workspace_scope(session)
+        restored_ids = frozenset(verified)
+        definitions = {name: copy.deepcopy(tool.definition)
+                       for name, tool in self._session_custom_registry(session).items()}
 
         def sources() -> dict[str, dict]:
+            if not same_authority():
+                return {}
             try:
-                if authority() != original:
-                    return {}
                 allowed = self._effective_session_tools(session)
                 current = self._session_custom_registry(session)
             except (OSError, ValueError):
@@ -1343,7 +1372,7 @@ class SessionManager:
 
         return sources
 
-    async def _run(self, session, handoff_contract=None):
+    async def _run(self, session, handoff_contract=None, *, restored_input: RestoredUserInput | None = None):
         contexts = []
         # 仅在此运行中产生并完整交付的观察可用于后续工作窗口。
         trusted_observations = {}
@@ -1391,6 +1420,7 @@ class SessionManager:
                 from agent_core.core.flow_handoff_receipts import FlowHandoffReceipts
                 receipt_index = FlowHandoffReceipts(handoff_contract)
             gate = FlowDraftGate(self, session, reserve_review_round, receipt_index=receipt_index)
+            gate.restored_input = restored_input
             staged_actions = FlowStagedActions(gate)
             saved = session.record.get('_flow_action_checkpoint')
             if saved is not None:

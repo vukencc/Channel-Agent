@@ -35,6 +35,7 @@ class FlowDraftGate:
         self.reserve_round = reserve_round
         self.receipt_index = receipt_index
         self.restored_reads: Callable[[], dict[str, dict]] | None = None
+        self.restored_input: Callable[[], tuple[str, str] | None] | None = None
         self.blocked = ''
         self.needs_sources = False
         self.handoff_feedback_valid = False
@@ -68,8 +69,10 @@ class FlowDraftGate:
                 copy.deepcopy(allowed(self.session)) if allowed else None)
 
     def source_rows(self, char_limit: int) -> list[dict]:
-        restored = self.restored_reads() if self.restored_reads is not None else None
-        return review_sources(self.session.record, char_limit=char_limit, restored_reads=restored)
+        reads = self.restored_reads() if self.restored_reads is not None else None
+        user_input = self.restored_input() if self.restored_input is not None else None
+        return review_sources(self.session.record, char_limit=char_limit, restored_reads=reads,
+                              restored_input=user_input)
 
     def _whole_binding(self, sources: list[dict] | None = None) -> tuple:
         limit = session_limit('MODEL_INPUT_CHARS')

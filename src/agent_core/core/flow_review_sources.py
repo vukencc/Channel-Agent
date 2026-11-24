@@ -1,4 +1,4 @@
-"""从本轮已执行的只读工具结果中收集可核验的原文片段。"""
+"""收集当前 Flow 可核验的直接输入和工具结果原文。"""
 from collections import Counter
 from collections.abc import Iterator
 import hashlib
@@ -309,7 +309,8 @@ def _resumed_source_pairs(messages: list[dict], current: int, restored: dict[str
 
 
 def review_sources(record: dict, *, char_limit: int,
-                   restored_reads: dict[str, dict] | None = None) -> list[dict]:
+                   restored_reads: dict[str, dict] | None = None,
+                   restored_input: tuple[str, str] | None = None) -> list[dict]:
     """返回完整观察区间；预算按正文字符计，不表示整个文件完整。"""
     if type(char_limit) is not int or char_limit <= 0 or not isinstance(record, dict):
         return []
@@ -403,7 +404,12 @@ def review_sources(record: dict, *, char_limit: int,
             if identity is not None:
                 seen_spans.add(identity)
             remaining -= len(text)
-    remaining = _append_user_input(record, messages[current], turn, rows, remaining)
+    fragment = _verified_user_input(record, messages[current], turn)
+    if restored_input is not None and '_flow_user_input' not in messages[current]:
+        fragment = _verified_restored_input(record, messages, current, restored_input)
+    if fragment is not None and len(fragment) <= remaining:
+        rows.append({"id": "U1", "kind": "user_input", "text": fragment, "scope": "user_report"})
+        remaining -= len(fragment)
     # 工具报告使用剩余预算，且最多占总预算的一半。
     budget = min(remaining, char_limit // 2)
     strong = {(row.get("path"), row["text"]) for row in rows if row.get("kind") == "read_file"}
@@ -434,32 +440,43 @@ def review_sources(record: dict, *, char_limit: int,
     return rows
 
 
-def _append_user_input(record: dict, message: dict, turn: str, rows: list[dict], remaining: int) -> int:
+def _verified_user_input(record: dict, message: dict, turn: str) -> str | None:
     marker, text, owner = message.get("_flow_user_input"), message.get("content"), record.get("id")
     if (not isinstance(marker, dict) or set(marker) != {"owner", "turn", "start", "end", "full_digest", "span_digest"}
             or not isinstance(owner, str) or not owner or marker.get("owner") != owner
             or marker.get("turn") != turn or not isinstance(text, str)):
-        return remaining
+        return None
     start, end = marker.get("start"), marker.get("end")
     if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(text):
-        return remaining
+        return None
     handoff = message.get("_flow_handoff")
     if handoff is not None:
         if not isinstance(handoff, dict):
-            return remaining
+            return None
         handoff_start, handoff_end = handoff.get("start"), handoff.get("end")
         if (type(handoff_start) is not int or type(handoff_end) is not int
                 or not 0 <= handoff_start < handoff_end <= len(text)
                 or start < handoff_end and handoff_start < end):
-            return remaining
+            return None
     fragment = text[start:end]
     try:
         full_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         span_digest = hashlib.sha256(fragment.encode("utf-8")).hexdigest()
     except UnicodeEncodeError:
-        return remaining
-    if (marker.get("full_digest") == full_digest and marker.get("span_digest") == span_digest
-            and len(fragment) <= remaining):
-        rows.append({"id": "U1", "kind": "user_input", "text": fragment, "scope": "user_report"})
-        remaining -= len(fragment)
-    return remaining
+        return None
+    if marker.get("full_digest") == full_digest and marker.get("span_digest") == span_digest:
+        return fragment
+    return None
+
+
+def _verified_restored_input(record: dict, messages: list[dict], current: int,
+                             restored_input: tuple[str, str]) -> str | None:
+    turn, original_text = restored_input
+    # 如果原轮的标记不唯一，不从历史中挑选一个作为来源。
+    candidates = [message for index, message in enumerate(messages) if index < current
+                  and isinstance(marker := message.get('_flow_user_input'), dict) and marker.get('turn') == turn]
+    if len(candidates) == 1 and is_user_request(candidates[0]):
+        fragment = _verified_user_input(record, candidates[0], turn)
+        if fragment == original_text:
+            return fragment
+    return None

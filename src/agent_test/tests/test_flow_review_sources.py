@@ -159,6 +159,32 @@ def test_direct_input_without_tool_sources_allows_adjacent_handoff():
     assert review_sources(data, char_limit=5) == []
 
 
+@pytest.mark.parametrize('invalid', [None, 'wrong_turn', 'different_run_input', 'duplicate', 'agent_message', 'handoff'])
+def test_restored_user_input_requires_exact_origin_and_complete_budget(invalid):
+    text = '客户直接输入'
+    data = with_user_input(record(), text=text)
+    original = data['messages'][0]
+    ordinary = with_user_input(record(), text='来自另一轮的历史')['messages'][0]
+    ordinary['_flow_user_input']['turn'] = 'unrelated'
+    data['messages'] = [ordinary, original, {'role': 'user', 'content': '继续'}]
+    data['last_run'] = {'turn_id': 'continuation', 'input_index': 2, 'tools': []}
+    restore = ('turn', text)
+    if invalid == 'wrong_turn':
+        restore = ('missing', text)
+    elif invalid == 'different_run_input':
+        restore = ('turn', '已修改的运行输入')
+    elif invalid == 'duplicate':
+        ordinary['_flow_user_input']['turn'] = 'turn'
+    elif invalid == 'agent_message':
+        original['_agent_message'] = {}
+    elif invalid == 'handoff':
+        marker = original['_flow_user_input']
+        original['_flow_handoff'] = {'start': marker['start'], 'end': marker['end']}
+    rows = review_sources(data, char_limit=len(text), restored_input=restore)
+    assert rows == ([] if invalid else [{'id': 'U1', 'kind': 'user_input', 'scope': 'user_report', 'text': text}])
+    assert review_sources(data, char_limit=len(text) - 1, restored_input=restore) == []
+
+
 def test_agent_message_does_not_start_new_user_turn():
     data = with_user_input(record())
     data["messages"].append({"role": "user", "content": "上游自述", "_agent_message": {}})

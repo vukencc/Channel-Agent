@@ -545,3 +545,86 @@ def test_resume_requires_only_reads_without_verifiable_completion(runtime_store,
 
     manager = None
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('case', ['once', 'twice', 'tampered', 'missing', 'revoked'])
+def test_resume_restores_only_verified_direct_user_input(runtime_store, monkeypatch, case):
+    store, project = runtime_store
+    monkeypatch.setattr(config, 'FLOW_AUTO_ARCHIVE', False)
+    monkeypatch.setattr(config, 'MODEL_RECOVERY_LIMIT', 0)
+    monkeypatch.setattr(config, 'RUN_HISTORY_LIMIT', 1)
+    direct = '客户说页面无法提交。'
+    upstream = '供应方称退款未到账。'
+    note = '{"notes":"客户明确说明页面无法提交。"}'
+    attempts = 0
+    observed = []
+
+    async def model(history, *, session_id, emit):
+        nonlocal attempts
+        session = manager.sessions[session_id]
+        node = session.record['flow_node_id']
+        if node == 'upstream':
+            return assistant(upstream)
+        if node == 'next':
+            return assistant('收到交接')
+        payload = review_payload(history)
+        if payload is not None:
+            observed.append(payload['sources'])
+            return assistant('{"status":"pass"}')
+        attempts += 1
+        if attempts <= (2 if case == 'twice' else 1):
+            raise ModelConnectionError('受控离线')
+        if case == 'revoked':
+            manager.permission_override = 'readonly'
+        return assistant(note)
+
+    def setup():
+        manager = SessionManager(store, model=model)
+        service = FlowService(manager)
+        return manager, service, ProjectService(manager, service)
+
+    async def run():
+        nonlocal manager
+        manager, service, projects = setup()
+        try:
+            project_record = projects.create('直接输入续跑', str(project), permission_policy='full_access')
+            fid = project_record['flow_id']
+            flow = service.get(fid)
+            flow.update(nodes=[
+                {'id': 'upstream', 'title': '上游', 'prompt': '提交自己的观察。', 'tool_names': []},
+                {'id': 'work', 'title': '业务', 'prompt': '按已提供的原文填写客户陈述。', 'tool_names': [],
+                 'handoff_contract': {'fields': {'notes': {'type': 'string'}}}},
+                {'id': 'next', 'title': '下游', 'prompt': '核对交接。', 'tool_names': []},
+            ], edges=[{'source': 'upstream', 'target': 'work'}, {'source': 'work', 'target': 'next'}])
+            service.save(flow)
+            service.start(fid, input_text=direct)
+            await service.tasks[fid]
+            before = service.get(fid)['run']
+            assert before['resume_available']
+            sid = before['nodes']['work']['session_id']
+            for _ in range(2 if case == 'twice' else 1):
+                await manager.shutdown()
+                manager, service, projects = setup()
+                original = next(row for row in manager.sessions[sid].record['messages']
+                                if '_flow_user_input' in row)
+                assert upstream in original['content'] and direct in original['content']
+                if case == 'tampered':
+                    original['_flow_user_input']['span_digest'] = 'invalid'
+                elif case == 'missing':
+                    original.pop('_flow_user_input')
+                service.resume(fid, run_id=before['id'])
+                await service.tasks[fid]
+            after = service.get(fid)['run']
+            if case in {'once', 'twice'}:
+                assert after['status'] == 'completed', after['nodes']['work']['error']
+                assert observed == [[{'id': 'U1', 'kind': 'user_input', 'scope': 'user_report',
+                                      'text': direct}]]
+            else:
+                assert after['nodes']['next']['status'] == 'blocked'
+                assert observed == []
+        finally:
+            await service.shutdown()
+            await manager.shutdown()
+
+    manager = None
+    asyncio.run(run())

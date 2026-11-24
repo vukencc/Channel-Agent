@@ -930,8 +930,17 @@ class FlowService:
                     run.update(status='running', current_node=key)
                     self._write(value)
                     previous_count = len(session.record['messages'])
+                    # 同节点第一次续跑留下的轮次指向原输入，后续的「继续」轮不覆盖它。
+                    original_turn = next((attempt.get('turn_id') for attempt in run['resume_attempts']
+                                          if isinstance(attempt, dict) and attempt.get('node') == key), None)
+                    direct_input = run.get('input_text')
+                    restored_input = ((original_turn, direct_input)
+                                      if isinstance(original_turn, str) and re.fullmatch(r'[a-f0-9]{32}', original_turn)
+                                      and isinstance(direct_input, str) and 0 < len(direct_input) <= MAX_FLOW_INPUT_CHARS
+                                      else None)
                     self.manager.submit(session, '继续', flow_id=value['id'], handoff_contract=node['handoff_contract'],
-                                        flow_node_task=node['prompt'], resume_flow_turn=result['turn_id'])
+                                        flow_node_task=node['prompt'], resume_flow_turn=result['turn_id'],
+                                        resume_user_input=restored_input)
                 else:
                     if os.name == 'nt':
                         from agent_core.core.windows_files import pinned_scope
