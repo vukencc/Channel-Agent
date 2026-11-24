@@ -53,4 +53,4 @@ uv run --no-sync python -m agent_test.scripts.ci_sandbox_probe
 - **客服反馈证据复核实验**保留在 PR #62，并已标记 `hold`。最近的五岗业务验收为 10/20，合入仍需完成整条流程的真实验证。可独立验证的 dotenv 换行和 Windows 文件权限修复已提取到维护 PR。[实验 PR #62](https://github.com/vukencc/Channel-Agent/pull/62) · [维护 PR #66](https://github.com/vukencc/Channel-Agent/pull/66)
 - **主分支维护**已启用 GitHub 规则集，要求 PR 跟上主线、通过 `offline` 和 `windows`、解决审查讨论。Codex Cloud 已在 #66 创建时自动审查。主代理和工程角色的模型配置见 [Codex 协作说明](codex-multiagent.md)。
 
-版本、任务或验证结论变化时，更新上面三项，把详细测量放进对应报告。需要追溯早期环境和逐轮结果时，可查历史索引和交接旧版。[历史会话交接](session-history.md) · [v0.6.3 标签中的交接旧版](https://github.com/vukencc/Channel-Agent/blob/v0.6.3/docs/session-handoff.md)
+版本、任务或验证结论变化时，更新对应条目，把详细测量放进对应报告。需要追溯早期环境和逐轮结果时，可查历史索引和交接旧版。[历史会话交接](session-history.md) · [v0.6.3 标签中的交接旧版](https://github.com/vukencc/Channel-Agent/blob/v0.6.3/docs/session-handoff.md)

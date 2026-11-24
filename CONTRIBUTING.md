@@ -64,3 +64,9 @@ Node 用于 Web/Debug 的 JavaScript 回归；WSL 中应检查 Linux/nvm PATH。
 ## 发布与容器
 
 版本冻结和标签流程见[发布说明](docs/release.md)；Docker 构建与运行见[Docker 指南](docs/docker.md)。
+
+## Codex 云端审查与合并
+
+在 [Codex 审查设置](https://chatgpt.com/codex/cloud/settings/code-review) 选择本仓库，启用自动代码审查，并按需要选择所有 PR 和每次推送。新提交尚无审查时，有写权限的维护者可在 PR 评论中发送 `@codex review`。审查使用连接到 GitHub 的 ChatGPT 账户。
+
+GitHub Actions 收到官方 Codex 审查摘要或回归工作流完成事件后，会核对同一 PR、提交及主线版本上的 Linux `offline` 和 Windows `windows` 作业。只有最新提交完成审查、零发现、讨论已解决、分支与主线同步，才会调用 GitHub 合并接口。每小时复查仍开放的 PR。没有可验证的机器人摘要、无法关联 CI 的 fork、草稿、带 `hold` 标签的实验会继续保持开放。修改工作流、仓库内 GitHub Action 或门禁脚本的 PR 由维护者单独审查合并。[工作流](.github/workflows/codex-automerge.yml) · [官方审查说明](https://learn.chatgpt.com/docs/third-party/github)
