@@ -264,14 +264,21 @@ def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict
     history = claim_messages(draft, sources, targets=targets, node_task=node_task, per_item=per_item, shared=shared)
     base_system = history[0]["content"]
     payload = json.loads(history[1]["content"])
+    action_guidance = (" action_context 是当前工具的字段定义，只解释用途，不能证明事实。区分三种说法："
+                       "客户在原文中报告的现象、节点基于现象作出的分级或可疑原因、节点建议下一步核查的资料。"
+                       "只有草稿把判断或建议说成客户已表态、政策强制或行动已完成时，才按这种归属核实。")
     if whole_batch:
         payload.pop("review_field_hints", None)
+        if action_context:
+            payload["action_context"] = action_context
         if receipt_facts:
             payload["action_receipt_summary"] = receipt_facts
         scope = (" 本次裁决范围是本批 targets。使用完整草稿与全部来源核对主体、范围、条件、否定和指代。"
                  "逐项核对本批。多处有据的独立错误在一次 revise 中分别列出各自的目标和引文，最多五项。"
                  "结合上下文指出实质差异，资料不足时说明具体缺口。")
         receipt_guidance = RECEIPT_GUIDANCE if receipt_facts else ""
+        if action_context:
+            scope += action_guidance
         ranges = source_record_ranges(sources)
         known = {ref for spans in ranges.values() for _, _, ref in spans}
         links = target_record_references(draft, targets, known)[1] if len(known) > 1 else {}
@@ -320,12 +327,9 @@ def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict
 
     if action_context:
         payload["action_context"] = action_context
-        guidance = (" action_context 是当前工具的字段定义，只解释用途，不能证明事实。区分三种说法："
-                    "客户在原文中报告的现象、节点基于现象作出的分级或可疑原因、节点建议下一步核查的资料。"
-                    "只有草稿把判断或建议说成客户已表态、政策强制或行动已完成时，才按这种归属核实。")
-        contextual = messages(base_system + guidance)
+        contextual = messages(base_system + action_guidance)
         if fits(contextual):
-            base_system += guidance
+            base_system += action_guidance
             history = contextual
         else:
             payload.pop("action_context")

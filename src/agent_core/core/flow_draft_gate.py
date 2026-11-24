@@ -73,6 +73,21 @@ class FlowDraftGate:
                 copy.deepcopy(receipt.review_facts()) if receipt else None,
                 limit, session_limit('MODEL_INPUT_TOKENS'))
 
+    def _binding_guard(self, sources: list[dict] | None = None) -> Callable[[], bool]:
+        binding = self._whole_binding(sources)
+        context_changed = False
+
+        def unchanged() -> bool:
+            nonlocal context_changed
+            if not context_changed:
+                try:
+                    context_changed = binding != self._whole_binding()
+                except Exception:
+                    context_changed = True
+            return not context_changed
+
+        return unchanged
+
     @staticmethod
     def tool_key(name: str, arguments: str) -> tuple[str, str]:
         try:
@@ -147,18 +162,7 @@ class FlowDraftGate:
         start = len(events)
         char_limit = session_limit('MODEL_INPUT_CHARS')
         sources = review_sources(self.session.record, char_limit=min(24000, char_limit // 2))
-        binding = self._whole_binding(sources)
-
-        context_changed = False
-
-        def unchanged() -> bool:
-            nonlocal context_changed
-            if not context_changed:
-                try:
-                    context_changed = binding != self._whole_binding()
-                except Exception:
-                    context_changed = True
-            return not context_changed
+        unchanged = self._binding_guard(sources)
 
         with model_dispatch_guard(unchanged):
             feedback = await self._check_handoff(draft, sources, force, call_id, unchanged)
@@ -253,24 +257,33 @@ class FlowDraftGate:
         targets = claim_targets(draft)
         # 与原整稿审查使用相同的全局编号，在切成各批后不重新编号。
         selected = targets if force else focal_targets(targets)
-        if not sources or not selected or len(selected) <= 4 or len(selected) > 64:
+        if sources and 4 < len(selected) <= 64:
+            feedback = await self._check_batches(
+                draft, sources, selected, stage='handoff', call_id=call_id, unchanged=unchanged)
+        else:
             feedback = await self._check_one(draft, stage='handoff', force=force, call_id=call_id,
                                              sources_override=sources, recheck=force, dispatch_allowed=unchanged)
-            if not feedback:
-                self._whole_pending = False
-                self.pending_items.clear()
-            return feedback
+        if not feedback:
+            self._whole_pending = False
+            self.pending_items.clear()
+        return feedback
+
+    async def _check_batches(self, draft: str, sources: list[dict], selected: list[dict], *,
+                             stage: str, call_id: str | None, unchanged: Callable[[], bool],
+                             action_context: dict | None = None) -> str | None:
         if config.FLOW_REVIEW_CONCURRENCY == 2:
             try:
-                return await self._check_whole_parallel(draft, sources, selected, force=force,
-                                                        call_id=call_id, unchanged=unchanged)
+                return await self._check_parallel_batches(draft, sources, selected, stage=stage,
+                                                         call_id=call_id, unchanged=unchanged,
+                                                         action_context=action_context)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.blocked = '来源复核未能完成，草稿尚未提交。'
                 self.session.record['last_run'].setdefault('draft_reviews', []).append({
-                    'stage': 'handoff', 'status': type(exc).__name__,
+                    'stage': stage, 'status': type(exc).__name__,
                     'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
+                    **({'tool_call_id': call_id} if call_id else {}),
                 })
                 return self.blocked
         events = self.session.record['last_run'].setdefault('draft_reviews', [])
@@ -282,8 +295,8 @@ class FlowDraftGate:
         for offset in range(0, len(selected), 4):
             batch = selected[offset:offset + 4]
             try:
-                feedback = await self._check_one(draft, stage='handoff', force=True, call_id=call_id,
-                    sources_override=sources, recovery=recovery, recheck=force,
+                feedback = await self._check_one(draft, stage=stage, force=True, call_id=call_id,
+                    sources_override=sources, recovery=recovery, action_context=action_context,
                     batch_targets=batch, dispatch_allowed=unchanged)
             except asyncio.CancelledError:
                 cancelled = True
@@ -291,7 +304,7 @@ class FlowDraftGate:
             summary.append(self._batch_summary(child, offset // 4 + 1))
             if cancelled or feedback:
                 break
-        event = {'stage': 'handoff', 'status': summary[-1]['status'] if feedback or cancelled else 'passed',
+        event = {'stage': stage, 'status': summary[-1]['status'] if feedback or cancelled else 'passed',
                  'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
                  'batch_count': (len(selected) + 3) // 4, 'target_count': len(selected), 'batches': summary,
                  'attempts': [attempt for row in summary for attempt in row.get('attempts', [])]}
@@ -300,13 +313,11 @@ class FlowDraftGate:
         events.insert(start, event)
         if cancelled:
             raise asyncio.CancelledError
-        if not feedback:
-            self._whole_pending = False
-            self.pending_items.clear()
         return feedback
 
-    async def _check_whole_parallel(self, draft: str, sources: list[dict], targets: list[dict], *,
-                                    force: bool, call_id: str | None, unchanged: Callable[[], bool]) -> str | None:
+    async def _check_parallel_batches(self, draft: str, sources: list[dict], targets: list[dict], *,
+                                      stage: str, call_id: str | None, unchanged: Callable[[], bool],
+                                      action_context: dict | None) -> str | None:
         """每批隔离状态及审计；只共享轮次、恢复名额和原会话的模型费用。"""
         events = self.session.record['last_run'].setdefault('draft_reviews', [])
         original_run = self.session.record['last_run']
@@ -321,7 +332,7 @@ class FlowDraftGate:
         sources = copy.deepcopy(sources)
         task_snapshot = self.session.flow_review_task
         receipt_index = getattr(self, 'receipt_index', None)
-        if receipt_index is not None:
+        if stage == 'handoff' and receipt_index is not None:
             facts = copy.deepcopy(receipt_index.review_facts())
             receipt_index = SimpleNamespace(revision=getattr(receipt_index, 'revision', 0),
                                             review_facts=lambda: facts)
@@ -351,8 +362,8 @@ class FlowDraftGate:
                 from agent_core.core.model_settings import model_dispatch_guard
                 with model_dispatch_guard(may_dispatch):
                     result = await local_gate._check_one(
-                        draft, stage='handoff', force=True, call_id=call_id, sources_override=sources,
-                        recovery=recovery, recheck=force, batch_targets=batch,
+                        draft, stage=stage, force=True, call_id=call_id, sources_override=sources,
+                        recovery=recovery, action_context=action_context, batch_targets=batch,
                         phase_session=self.session, dispatch_allowed=may_dispatch,
                         observed_run=original_run)
             except asyncio.CancelledError:
@@ -364,7 +375,7 @@ class FlowDraftGate:
                 was_cancelled = False
                 if not local_run['draft_reviews']:
                     local_run['draft_reviews'].append({
-                        'stage': 'handoff',
+                        'stage': stage,
                         'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
                     })
                 local_run['draft_reviews'][-1]['status'] = type(exc).__name__
@@ -432,7 +443,7 @@ class FlowDraftGate:
                 if local_gate.blocked and not self.blocked and not child.get('superseded'):
                     self.blocked = local_gate.blocked
                 summary.append(self._batch_summary(child, index))
-                valid_feedback = local_gate.handoff_feedback_valid
+                valid_feedback = 'verdict_status' in child
                 if child_feedback and (feedback is None or (valid_feedback and not has_verdict_feedback)):
                     feedback = child_feedback
                 if valid_feedback and child_feedback and child_feedback not in verdict_feedback:
@@ -448,14 +459,15 @@ class FlowDraftGate:
         if not feedback and len(summary) != len(batches):
             feedback = '来源复核尚未覆盖全部目标，草稿尚未批准。'
         if not cancelled and verdict_feedback and not self.blocked:
-            self.handoff_feedback_valid = True
+            if stage == 'handoff':
+                self.handoff_feedback_valid = True
             if len(verdict_feedback) == 2:
                 combined = '\n'.join(verdict_feedback)
                 message = [{'role': 'user', 'content': combined}]
                 if (history_size(message) <= session_limit('MODEL_INPUT_CHARS')
                         and request_tokens(message) <= session_limit('MODEL_INPUT_TOKENS')):
                     feedback = combined
-        event = {'stage': 'handoff', 'status': 'cancelled' if cancelled else
+        event = {'stage': stage, 'status': 'cancelled' if cancelled else
                  next((row['status'] for row in summary if row['status'] != 'passed'),
                       'context_changed' if feedback else 'passed'),
                  'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
@@ -466,9 +478,6 @@ class FlowDraftGate:
         events.append(event)
         if cancelled:
             raise asyncio.CancelledError
-        if not feedback:
-            self._whole_pending = False
-            self.pending_items.clear()
         return feedback
 
     async def _check_one(self, draft: str, *, stage: str, force: bool = False, call_id: str | None = None,
@@ -491,7 +500,7 @@ class FlowDraftGate:
         char_limit = session_limit('MODEL_INPUT_CHARS')
         sources = (sources_override if sources_override is not None else
                    review_sources(self.session.record, char_limit=min(24000, char_limit // 2)))
-        if stage in {'tool', 'preview'}:
+        if stage in {'tool', 'preview'} and batch_targets is None:
             from agent_core.core.flow_review_items import tool_review_sources
             sources = tool_review_sources(draft, sources)
         read_paths = {row.get('path') for row in sources if row['kind'] == 'read_file'}
@@ -541,6 +550,23 @@ class FlowDraftGate:
             candidates = targets
             targets = focal_targets(candidates)
             event['background_count'] = len(candidates) - len(targets)
+        if stage == 'preview' and batch_targets is None and 4 < len(targets) <= 64:
+            from agent_core.core.model_settings import model_dispatch_guard
+
+            events = run['draft_reviews']
+            events.pop()
+            start = len(events)
+            unchanged = self._binding_guard()
+            with model_dispatch_guard(unchanged):
+                feedback = await self._check_batches(
+                    draft, sources, targets, stage=stage, call_id=call_id,
+                    unchanged=unchanged, action_context=action_context)
+            if self.session.cancelled.is_set():
+                raise asyncio.CancelledError
+            if not unchanged():
+                events[start]['status'] = 'context_changed'
+                return '复核期间草稿上下文已改变，草稿尚未批准，请重新核对。'
+            return feedback
         event['target_count'] = len(targets)
         passages = []
         include_receipts = stage == 'handoff' and unit_kind != 'item' and receipt_index is not None
