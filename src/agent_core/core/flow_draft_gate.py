@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 from agent_core import config
@@ -53,9 +53,9 @@ class FlowDraftGate:
                 'draft_sha256': child['draft_sha256'], 'source_digest': child.get('source_digest'),
                 'task_digest': child.get('task_digest'), 'attempts': child.get('attempts', [])}
 
-    def _review_authority(self) -> tuple:
+    def _review_authority(self, observed_run: dict | None = None) -> tuple:
         record = self.session.record
-        run = record['last_run']
+        run = record['last_run'] if observed_run is None else observed_run
         environment = getattr(self.manager, 'execution_environment', None)
         allowed = getattr(self.manager, '_effective_session_tools', None)
         return (id(run), self.session.id, run.get('turn_id'), record.get('flow_id'), record.get('flow_node_id'),
@@ -214,18 +214,28 @@ class FlowDraftGate:
         cancelled = False
         authority = self._review_authority()
         budget = (session_limit('MODEL_INPUT_CHARS'), session_limit('MODEL_INPUT_TOKENS'))
+        plans = []
         for unit in units:
+            kind = unit.get('kind', 'item')
+            receipt_revision = getattr(self.receipt_index, 'revision', 0) if kind != 'item' else 0
+            key = hashlib.sha256(json.dumps([kind, unit['item_id'], unit['draft'], unit['sources'],
+                authority, receipt_revision, budget], ensure_ascii=True, sort_keys=True,
+                separators=(',', ':')).encode()).hexdigest()
+            plans.append((unit, key))
+        item_count = next((i for i, unit in enumerate(units) if unit.get('kind', 'item') != 'item'), len(units))
+        pending_count = sum(key not in self.passed_items or unit['item_id'] in self.pending_items
+                            for unit, key in plans[:item_count])
+        if config.FLOW_REVIEW_CONCURRENCY == 2 and pending_count > 1:
+            summary, feedback, cancelled = await self._check_independent_items(
+                plans[:item_count], call_id, unchanged, recovery)
+            plans = plans[item_count:]
+        for unit, key in plans:
+            if cancelled or feedback:
+                break
             item_id = unit['item_id']
             kind = unit.get('kind', 'item')
-            receipt_index = getattr(self, 'receipt_index', None)
-            receipt_revision = getattr(receipt_index, 'revision', 0) if kind != 'item' else 0
-            key = hashlib.sha256(json.dumps([kind, item_id, unit['draft'], unit['sources'], authority,
-                receipt_revision, budget],
-                ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-            item_digest = hashlib.sha256(item_id.encode('utf-8', 'surrogatepass')).hexdigest()
             if key in self.passed_items and item_id not in self.pending_items:
-                summary.append({'item_sha256': item_digest, 'status': 'reused', 'draft_sha256': hashlib.sha256(
-                    unit['draft'].encode('utf-8', 'surrogatepass')).hexdigest()})
+                summary.append(self._unit_summary(unit, {'status': 'reused'}))
                 continue
             try:
                 feedback = await self._check_one(unit['draft'], stage='handoff', force=True,
@@ -233,11 +243,7 @@ class FlowDraftGate:
                     recheck=item_id in self.pending_items, revision_key=(kind, item_id), dispatch_allowed=unchanged)
             except asyncio.CancelledError:
                 cancelled = True
-            child = events.pop()
-            summary.append({'item_sha256': item_digest, 'kind': kind, 'status': child['status'],
-                            'target_count': child.get('target_count', 0),
-                            'invalid_reasons': child.get('invalid_reasons', []),
-                            'draft_sha256': child['draft_sha256'], 'attempts': child.get('attempts', [])})
+            summary.append(self._unit_summary(unit, events.pop()))
             if cancelled:
                 break
             if feedback:
@@ -245,7 +251,11 @@ class FlowDraftGate:
                 break
             self.pending_items.discard(item_id)
             self.passed_items.add(key)
-        event = {'stage': 'handoff', 'status': summary[-1]['status'] if feedback or cancelled else 'passed',
+        status = 'cancelled' if cancelled else 'passed'
+        if feedback and not cancelled:
+            status = next((row['status'] for row in summary if row['status'] not in {'passed', 'reused'}),
+                          'context_changed')
+        event = {'stage': 'handoff', 'status': status,
                  'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
                  'unit_count': len(units), 'units': summary,
                  'attempts': [attempt for row in summary for attempt in row.get('attempts', [])]}
@@ -253,6 +263,159 @@ class FlowDraftGate:
         if cancelled:
             raise asyncio.CancelledError
         return feedback
+
+    @staticmethod
+    async def _run_two_review_slots[Entry, Result](
+        work: list[Entry], review: Callable[[Entry], Awaitable[Result]],
+        may_dispatch: Callable[[], bool], stopped: list[bool],
+    ) -> tuple[list[asyncio.Task[Result]], bool]:
+        """滚动填充两个槽，按派发顺序返回任务；取消时等待在途收尾。"""
+        async def guarded(entry: Entry) -> Result:
+            try:
+                return await review(entry)
+            except BaseException:
+                stopped[0] = True
+                raise
+
+        tasks = []
+        pending = set()
+        cancelled = False
+        while pending or (len(tasks) < len(work) and not stopped[0] and not cancelled):
+            while len(pending) < 2 and len(tasks) < len(work) and may_dispatch():
+                task = asyncio.create_task(guarded(work[len(tasks)]))
+                tasks.append(task)
+                pending.add(task)
+            if not pending:
+                break
+            try:
+                _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                stopped[0] = True
+                if not cancelled:
+                    for task in pending:
+                        if not task.done():
+                            task.cancel()
+                cancelled = True
+        return tasks, cancelled
+
+    @staticmethod
+    def _unit_summary(unit: dict, child: dict) -> dict:
+        return {'item_sha256': hashlib.sha256(unit['item_id'].encode('utf-8', 'surrogatepass')).hexdigest(),
+                'kind': unit.get('kind', 'item'), 'status': child['status'],
+                'target_count': child.get('target_count', 0),
+                'invalid_reasons': child.get('invalid_reasons', []),
+                'draft_sha256': child.get('draft_sha256') or hashlib.sha256(
+                    unit['draft'].encode('utf-8', 'surrogatepass')).hexdigest(),
+                'attempts': child.get('attempts', [])}
+
+    async def _check_independent_items(self, plans: list[tuple[dict, str]], call_id: str | None,
+                                       unchanged: Callable[[], bool], recovery: list[bool]) -> tuple[list[dict], str | None, bool]:
+        from agent_core.core.model_settings import model_dispatch_guard
+
+        original_run = self.session.record['last_run']
+        stopped = [False]
+        previous_phase = self.session.phase
+        self.session.phase = '独立核对草稿来源'
+        self.manager._observe_phase(self.session, 'flow_draft_review')
+        self.manager.notify()
+
+        def may_dispatch():
+            if stopped[0] or self.session.cancelled.is_set():
+                return False
+            if not unchanged():
+                stopped[0] = True
+            return not stopped[0]
+
+        async def review(plan):
+            unit, key = plan
+            item_id = unit['item_id']
+            if key in self.passed_items and item_id not in self.pending_items:
+                return None, {'status': 'reused'}, None, False
+            local_session = copy.copy(self.session)
+            local_run = {**original_run, 'draft_reviews': [], 'recovery_attempts': 0}
+            local_session.record = {**self.session.record, 'last_run': local_run}
+            local_gate = FlowDraftGate(self.manager, local_session, self.reserve_round)
+            state_key = ('handoff', ('item', item_id))
+            if state_key in self._revisions:
+                local_gate._revisions[state_key] = self._revisions[state_key]
+            cancelled = False
+            feedback = None
+            try:
+                with model_dispatch_guard(may_dispatch):
+                    feedback = await local_gate._check_one(unit['draft'], stage='handoff', force=True, call_id=call_id,
+                        sources_override=unit['sources'], unit_kind='item', recovery=recovery,
+                        recheck=item_id in self.pending_items, revision_key=('item', item_id), dispatch_allowed=may_dispatch,
+                        phase_session=self.session, observed_run=original_run)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception as exc:
+                local_gate.blocked = feedback = '来源复核未能完成，草稿尚未提交。'
+                if not local_run['draft_reviews']:
+                    local_run['draft_reviews'].append({})
+                local_run['draft_reviews'][-1]['status'] = type(exc).__name__
+            if feedback or cancelled:
+                stopped[0] = True
+            original_run['recovery_attempts'] = (
+                original_run.get('recovery_attempts', 0) + local_run['recovery_attempts'])
+            child = local_run['draft_reviews'][-1] if local_run['draft_reviews'] else {'status': 'cancelled'}
+            return local_gate, child, feedback, cancelled
+
+        try:
+            tasks, cancelled = await self._run_two_review_slots(plans, review, may_dispatch, stopped)
+        finally:
+            if (self.session.record.get('last_run') is original_run
+                    and self.session.phase == '独立核对草稿来源'):
+                self.session.phase = previous_phase
+            self.manager.notify()
+        cancelled = cancelled or self.session.cancelled.is_set()
+        summary = []
+        feedback = None
+        verdicts = []
+        for task, (unit, key) in zip(tasks, plans):
+            try:
+                local_gate, child, item_feedback, item_cancelled = task.result()
+            except asyncio.CancelledError:
+                cancelled = True
+                summary.append(self._unit_summary(unit, {'status': 'cancelled'}))
+                continue
+            except Exception as exc:
+                self.blocked = '来源复核未能完成，草稿尚未提交。'
+                summary.append(self._unit_summary(unit, {'status': type(exc).__name__}))
+                continue
+            summary.append(self._unit_summary(unit, child))
+            cancelled = cancelled or item_cancelled
+            if local_gate is None:
+                continue
+            self.needs_sources = self.needs_sources or local_gate.needs_sources
+            self.blocked = self.blocked or local_gate.blocked
+            if item_cancelled:
+                continue
+            item_id = unit['item_id']
+            state_key = ('handoff', ('item', item_id))
+            self._revisions.pop(state_key, None)
+            if item_feedback:
+                self.pending_items.add(item_id)
+                if state_key in local_gate._revisions and len(self._revisions) < 16:
+                    self._revisions[state_key] = local_gate._revisions[state_key]
+                feedback = feedback or item_feedback
+                if local_gate.handoff_feedback_valid and item_feedback not in verdicts:
+                    verdicts.append(item_feedback)
+            elif child['status'] == 'passed':
+                self.pending_items.discard(item_id)
+                self.passed_items.add(key)
+        if self.blocked:
+            return summary, self.blocked, cancelled
+        if not cancelled and verdicts:
+            self.handoff_feedback_valid = True
+            combined = '\n'.join(verdicts)
+            message = [{'role': 'user', 'content': combined}]
+            if history_size(message) <= session_limit('MODEL_INPUT_CHARS') and request_tokens(message) <= session_limit('MODEL_INPUT_TOKENS'):
+                feedback = combined
+            else:
+                feedback = verdicts[0]
+        if not feedback and len(summary) != len(plans):
+            feedback = '来源复核尚未覆盖全部事项，草稿尚未批准。'
+        return summary, feedback, cancelled
 
     async def _check_whole(self, draft: str, sources: list[dict], *, force: bool,
                            call_id: str | None, unchanged: Callable[[], bool]) -> str | None:
@@ -399,33 +562,8 @@ class FlowDraftGate:
                 original_run.get('recovery_attempts', 0) + local_run.get('recovery_attempts', 0))
             return local_gate, child, result, was_cancelled
 
-        async def guarded_batch(batch):
-            try:
-                return await run_batch(batch)
-            except BaseException:
-                stopped[0] = True
-                raise
-
         try:
-            tasks = []
-            pending = set()
-            while pending or (len(tasks) < len(batches) and not stopped[0] and not cancelled):
-                while len(pending) < 2 and len(tasks) < len(batches) and may_dispatch():
-                    task = asyncio.create_task(guarded_batch(batches[len(tasks)]))
-                    tasks.append(task)
-                    pending.add(task)
-                if not pending:
-                    break
-                try:
-                    _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                except asyncio.CancelledError:
-                    # 仅取消仍在途的请求，已返回的结果仍按批次顺序记录。
-                    stopped[0] = True
-                    if not cancelled:
-                        for task in pending:
-                            if not task.done():
-                                task.cancel()
-                    cancelled = True
+            tasks, cancelled = await self._run_two_review_slots(batches, run_batch, may_dispatch, stopped)
             for index, task in enumerate(tasks, 1):
                 try:
                     result = task.result()
@@ -537,7 +675,7 @@ class FlowDraftGate:
         receipt_revision = (getattr(receipt_index, 'revision', 0)
                             if stage == 'handoff' and unit_kind != 'item' else 0)
         receipt_budget = (char_limit, session_limit('MODEL_INPUT_TOKENS')) if receipt_revision else None
-        authority = self._review_authority() if state_key is not None else None
+        authority = self._review_authority(observed_run) if state_key is not None else None
         fingerprint = hashlib.sha256(json.dumps([sources, task, action_context, unit_kind, revision_definition,
             authority, receipt_revision, receipt_budget],
             ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
