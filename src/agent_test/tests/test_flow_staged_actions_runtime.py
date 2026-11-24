@@ -649,3 +649,128 @@ def test_public_error_distinguishes_expired_source_approval(runtime_store, monke
     assert all(text not in error for text in (SOURCE, DISPUTED, CORRECTED,
         "客户表示页面无法提交，建议安排人工排查。", "补充资料：本事项尚待排查。"))
     assert_paired(record)
+
+
+@pytest.mark.parametrize("decision, name", [
+    ("revise", "record_case"),
+    ("revise", "revise_flow_draft"),
+    ("resume", "record_case"),
+    ("stop", "record_case"),
+    ("deny", "record_case"),
+])
+def test_confirmation_return_can_explicitly_replace_unidentified_draft(runtime_store, monkeypatch, decision, name):
+    store, workspace = runtime_store
+    first = {"reason": "记录页面故障。"}
+    corrected = {"reason": "记录页面故障并补充复核结果。"}
+    attempts, writes, ordinary = [], [], []
+    preview_name = "draft_" + name
+    revision_name = "revise_flow_draft" + ("_" if name == "revise_flow_draft" else "")
+    model_calls = 0
+    resumed = False
+    revising = decision in {"revise", "resume"}
+    if decision == "resume":
+        monkeypatch.setattr(config, "MODEL_RECOVERY_LIMIT", 0)
+
+    async def model(history, *, session_id, emit):
+        nonlocal model_calls
+        if manager.sessions[session_id].record["flow_node_id"] == "downstream":
+            return assistant("已核对交接。")
+        model_calls += 1
+        names = {row["function"]["name"] for row in selected_schemas(TOOL_SCHEMAS)}
+        if model_calls == 1:
+            assert preview_name in names and name not in names and revision_name not in names
+            return assistant(calls=[call("initial-preview", preview_name, **first)])
+        if model_calls == 2:
+            assert names == {name}
+            if revising or decision == "stop":
+                return assistant(json.dumps({"decision": "revise" if revising else "stop"}))
+            return assistant(calls=[call("denied", name, **first)])
+        ordinary.append(names)
+        if model_calls == 3 and revising:
+            if decision == "resume" and not resumed:
+                raise TimeoutError("受控退审后模型超时")
+            assert preview_name in names and name not in names
+            if revision_name not in names:
+                return assistant(calls=[call("changed-preview", preview_name, **corrected)])
+            message = next(row for row in reversed(history)
+                           if row.get("_context_reference") and "revision_id" in row.get("content", ""))
+            reference = re.search(r'"revision_id":"([A-Za-z0-9_-]+)"', message["content"]).group(1)
+            assert not is_user_request(message)
+            return assistant(calls=[call("changed-preview", revision_name,
+                                         revision_id=reference, arguments_json=json.dumps(corrected, ensure_ascii=False))])
+        if model_calls == 4 and revising:
+            assert names == {name}
+            assert json.dumps(corrected, ensure_ascii=False) in history[-1]["content"]
+            return assistant(calls=[call("final-commit", name, **corrected)])
+        assert name not in names and revision_name not in names
+        return assistant("已核对回执。")
+
+    async def run():
+        nonlocal manager, resumed, model_calls
+        manager = SessionManager(store, model=model)
+        service = FlowService(manager)
+        projects = ProjectService(manager, service)
+        original_tool = manager._tool
+
+        async def write(session, tool_call, *, evidence=None):
+            if tool_call["function"]["name"] != name:
+                return await original_tool(session, tool_call, evidence=evidence)
+            arguments = json.loads(tool_call["function"]["arguments"])
+            attempts.append(arguments)
+            if decision == "deny":
+                return "[已取消] 用户拒绝，命令尚未执行。"
+            writes.append(arguments)
+            (workspace / "returned-action.json").write_text(json.dumps(writes, ensure_ascii=False), encoding="utf-8")
+            evidence["source"] = "executed"
+            return "办理完成。"
+
+        monkeypatch.setattr(manager, "_tool", write)
+        try:
+            project = projects.create("确认轮退审", str(workspace), permission_policy="full_access")
+            fid = project["flow_id"]
+            flow = service.get(fid)
+            spec = dict(tool_spec(), name=name)
+            flow.update(nodes=[
+                {"id": "work", "title": "办理", "prompt": "记录页面故障。", "tool_names": [name],
+                 "custom_tools": [spec]},
+                {"id": "downstream", "title": "下游", "prompt": "核对交接。", "tool_names": []},
+            ], edges=[{"source": "work", "target": "downstream"}])
+            service.save(flow)
+            service.start(fid)
+            await service.tasks[fid]
+            run = service.get(fid)["run"]
+            if decision == "resume":
+                assert run["resume_available"], run["nodes"]["work"]["error"]
+                sid = run["nodes"]["work"]["session_id"]
+                persisted = store.read_record(store.directory(sid) / "session.json")
+                actions = persisted["_flow_action_checkpoint"]["actions"]
+                assert list(actions["revisions"].values()) == actions["pending"]
+                assert len(actions["pending"]) == 1 and not actions["disputed"]
+                resumed = True
+                model_calls = 2
+                service.resume(fid, run_id=run["id"])
+                await service.tasks[fid]
+                run = service.get(fid)["run"]
+            record = manager.sessions[run["nodes"]["work"]["session_id"]].record
+            assert_paired(record)
+            if revising:
+                assert run["status"] == "completed", run["nodes"]["work"]["error"]
+                assert attempts == writes == [corrected]
+                stages = {row["tool_call_id"]: row for turn in record["run_history"]
+                          for row in turn.get("action_preflights", [])}
+                assert stages["changed-preview"]["revision_of"] == stages["initial-preview"]["draft_id"]
+                assert stages["final-commit"]["draft_id"] == stages["changed-preview"]["draft_id"]
+            else:
+                assert not any(revision_name in names for names in ordinary)
+                assert not any("revision_id" in row.get("content", "") for row in record["messages"]
+                               if isinstance(row.get("content"), str))
+                assert not writes and run["nodes"]["downstream"]["session_id"] is None
+                assert attempts == ([first] if decision == "deny" else [])
+                reason = "flow_action_stopped" if decision == "stop" else "flow_action_tool_unsuccessful"
+                assert record["last_run"]["stop_reason"] == reason
+        finally:
+            await service.shutdown()
+            await manager.shutdown()
+
+    manager = None
+    asyncio.run(run())

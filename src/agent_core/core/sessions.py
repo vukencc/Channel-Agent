@@ -1727,7 +1727,8 @@ class SessionManager:
                                 break
                             return_to_drafting = True
                             session.record['messages'].append({'role': 'user', '_context_reference': True,
-                                'content': '这笔草稿已退回，业务尚未执行。请按原任务核对来源、修订并重新预审。'})
+                                'content': ('这笔草稿已退回，业务尚未执行。请按原任务核对来源、修订并重新预审。'
+                                            + staged_actions.revision_hint(offer['draft_id']))})
                             await self.save(session)
                             continue
                         if retried_confirmation != offer['draft_id'] and (

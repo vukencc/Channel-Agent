@@ -66,7 +66,8 @@ def read_action_checkpoint(state: dict) -> dict[str, set[tuple[str, str]]]:
         not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9_-]{32}', identifier)
         or not isinstance(key, (list, tuple)) or len(key) != 2
         or not all(isinstance(value, str) for value in key)
-        or tuple(key) not in (keys['pending'] & keys['disputed']) - keys['unsuccessful']
+        or not key[1].startswith(_ARGUMENTS_KEY_PREFIX)
+        or tuple(key) not in keys['pending'] - keys['unsuccessful']
         for identifier, key in revisions.items()
     ):
         raise ValueError('Flow 检查点草稿修订约束无效')
@@ -337,11 +338,26 @@ class FlowStagedActions:
         identifier = self._confirmation_id
         if status not in {'returned', 'stopped'} or identifier is None or identifier not in self.receipts:
             return False
+        key = self.receipts[identifier]
         self._revoke_confirmation(identifier, status)
-        return await self.flush_audit()
+        if not await self.flush_audit():
+            return False
+        if status == 'returned' and key[1].startswith(_ARGUMENTS_KEY_PREFIX):
+            self._revision_targets[identifier] = key
+        return True
+
+    def revision_hint(self, identifier: str) -> str:
+        if identifier not in self._revision_targets:
+            return ''
+        data = json.dumps({'revision_id': identifier}, separators=(',', ':'))
+        return f' 可使用 {self._revision_tool_name} 修订这一笔，引用 {data}。'
+
+    def _is_revision_tool(self, name: str) -> bool:
+        return (name == self._revision_tool_name and name not in TOOL_REGISTRY
+                and name not in self.manager._session_custom_registry(self.session))
 
     def is_preview(self, name: str) -> bool:
-        return name == self._revision_tool_name or self.preflight.original_for_preview(name) is not None
+        return self._is_revision_tool(name) or self.preflight.original_for_preview(name) is not None
 
     def _expire_changed(self, binding: dict) -> None:
         if self.receipts and binding != self.receipt_binding:
@@ -381,8 +397,8 @@ class FlowStagedActions:
             payload = {}
         identifier = payload.get('revision_id')
         prior = self._revision_targets.get(identifier)
-        if (prior is not None and prior in self.unresolved and prior in self.gate.pending_tools
-                and prior not in self.unsuccessful and prior[0] in self._authorized()):
+        if (prior is not None and prior in self.unresolved and prior not in self.unsuccessful
+                and prior[0] in self._authorized()):
             arguments = payload['arguments_json']
             candidate = self._action_key(prior[0], arguments)
             other_pending = self.unresolved | self.gate.pending_tools | set(self.receipts.values())
@@ -451,8 +467,7 @@ class FlowStagedActions:
                     target = next((target for target, constrained in self._revision_targets.items() if constrained == prior),
                                   identifier)
                     self._revision_targets[target] = prior
-                    hint = (' 可使用 ' + self._revision_tool_name + ' 修订这一笔，引用 ' +
-                            json.dumps({'revision_id': target}, separators=(',', ':')) + '。')
+                    hint = self.revision_hint(target)
                 return '[已拒绝] 草稿待修订，业务操作尚未执行。' + hint + feedback
             if (self._authorized().get(name) != definition
                     or not self.preflight.approve(identifier, self._binding())):
@@ -510,7 +525,7 @@ class FlowStagedActions:
     async def _execute(self, call: dict, evidence: dict) -> str:
         fn = call['function']
         name = fn['name']
-        if name == self._revision_tool_name and name not in TOOL_REGISTRY and name not in self._authorized():
+        if self._is_revision_tool(name):
             return await self._revise(call, evidence)
         original = self.preflight.original_for_preview(name)
         if original is not None:
