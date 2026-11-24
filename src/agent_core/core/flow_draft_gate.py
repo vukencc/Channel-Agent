@@ -62,7 +62,7 @@ class FlowDraftGate:
         allowed = getattr(self.manager, '_effective_session_tools', None)
         return (id(run), self.session.id, run.get('turn_id'), record.get('flow_id'), record.get('flow_node_id'),
                 record.get('workspace_path'), self.session.flow_review_task, record.get('model_profile'),
-                record.get('thinking_mode'), record.get('reasoning_effort'),
+                record.get('thinking_mode'), record.get('reasoning_effort'), config.FLOW_REVIEW_THINKING_MODE,
                 getattr(self.manager, 'permission_override', None) or record.get('permission_policy'),
                 environment(self.session) if environment else None,
                 copy.deepcopy(allowed(self.session)) if allowed else None)
@@ -790,6 +790,8 @@ class FlowDraftGate:
                 self.manager.emit(observed_session, kind, {**data, 'purpose': 'flow_draft_review'})
 
         attempts = event['attempts'] = []
+        review_options = ({'flow_review_thinking_disabled': True}
+                          if config.FLOW_REVIEW_THINKING_MODE == 'disabled' else {})
         try:
             retry_status = None
             for attempt in range(2):
@@ -814,7 +816,7 @@ class FlowDraftGate:
                 attempts.append('pending')
                 try:
                     answer = await self.manager._call_model(history, disable_tools=True,
-                                                            session_id=self.session.id, emit=emit)
+                                                            session_id=self.session.id, emit=emit, **review_options)
                 except TimeoutError:
                     retry_status = attempts[-1] = 'TimeoutError'
                     can_retry = (not attempt and not (recovery and recovery[0])

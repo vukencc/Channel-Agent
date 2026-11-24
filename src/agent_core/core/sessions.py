@@ -9,7 +9,7 @@ import threading
 import time
 import sys
 from contextvars import copy_context
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from dataclasses import dataclass, field
 from typing import Callable
@@ -31,7 +31,8 @@ from agent_core.core.task_plans import EvidenceCapacityError
 from agent_core.core.delegation_guidance import delegation_guide
 from agent_core.core.log import get_logger
 from agent_core.core.instrumentation import NullObserver, RuntimeObserver, observation_context, operation_span, traced, trace_function, tool_outcome
-from agent_core.core.model_settings import model_profile, model_thinking, active_profile, active_endpoint, check_model_dispatch
+from agent_core.core.model_settings import (model_profile, model_thinking, model_fallbacks, active_profile,
+                                            active_endpoint, check_model_dispatch)
 from agent_core.core.tool_settings import filter_schemas, bounded_schemas, model_tools, effective_tool_names
 from agent_core.core.budgets import BudgetLedger, BudgetExceeded, budget_scope
 from agent_core.rag.assess import assess_rag
@@ -862,7 +863,8 @@ class SessionManager:
 
     @traced('model.total')
     async def _call_model(self, history, *, disable_tools=False, source_reads=False, staged_actions=None,
-                          flow_confirmation=None, recovery_tools: set[str] | None = None, **kwargs):
+                          flow_confirmation=None, recovery_tools: set[str] | None = None,
+                          flow_review_thinking_disabled: bool = False, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
             check_model_dispatch()
@@ -909,9 +911,15 @@ class SessionManager:
                     names = [row['function']['name'] for row in schemas]
                 if session is not None and session.cancelled.is_set():
                     raise asyncio.CancelledError
-                with model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode), limits_scope(session.record if session else {}, endpoint=endpoint):
-                    with operation_span('model.request'):
-                        return await self.model(history, **kwargs)
+                fallback_scope = nullcontext()
+                if flow_review_thinking_disabled:
+                    # 显式关闭独立复核思考时，仅向原服务发送该选项。失败沿用原返回路径。
+                    mode = 'disabled'
+                    fallback_scope = model_fallbacks(False)
+                with (model_profile(profile, endpoint), model_tools(names, schemas), model_thinking(effort, mode),
+                      fallback_scope, limits_scope(session.record if session else {}, endpoint=endpoint),
+                      operation_span('model.request')):
+                    return await self.model(history, **kwargs)
             finally:
                 with self._concurrency_lock:
                     self._active_model_calls -= 1
