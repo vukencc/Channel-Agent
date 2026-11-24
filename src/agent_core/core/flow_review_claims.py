@@ -285,7 +285,7 @@ def prepare_claim_request(draft: str, sources: list[dict], *, targets: list[dict
         passages = relevant_passages(sources, targets, draft, target_refs=links or None)
         evidence = [{key: part[key] for key in ("id", "source_id", "text")} for part in passages]
         focused = [{**{key: row[key] for key in ("id", "field", "start", "end")},
-                    "excerpt": row["text"]} for row in targets]
+                    "excerpt": row["text"], **({"location": "/context"} if shared else {})} for row in targets]
         labelled_targets = [{**row, "record_refs": links[row["id"]]} if row["id"] in links else row
                             for row in focused]
         labelled_evidence = []

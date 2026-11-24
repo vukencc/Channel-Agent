@@ -22,6 +22,7 @@ from agent_core.core.flow_review_sources import review_sources
 from agent_core.core.instrumentation import tool_outcome
 from agent_core.tools import TOOL_REGISTRY
 from agent_core.core.llm import ModelConnectionError, ModelResponseError, RuntimeModelRequestError
+from agent_core.core.model_settings import ModelDispatchStopped
 from agent_core.core.session_limits import limit as session_limit
 
 
@@ -306,7 +307,8 @@ class FlowDraftGate:
                 'invalid_reasons': child.get('invalid_reasons', []),
                 'draft_sha256': child.get('draft_sha256') or hashlib.sha256(
                     unit['draft'].encode('utf-8', 'surrogatepass')).hexdigest(),
-                'attempts': child.get('attempts', [])}
+                'attempts': child.get('attempts', []),
+                **({'batch_count': child['batch_count'], 'batches': child['batches']} if 'batches' in child else {})}
 
     async def _check_independent_items(self, plans: list[tuple[dict, str]], call_id: str | None,
                                        unchanged: Callable[[], bool], recovery: list[bool]) -> tuple[list[dict], str | None, bool]:
@@ -437,9 +439,12 @@ class FlowDraftGate:
 
     async def _check_batches(self, draft: str, sources: list[dict], selected: list[dict], *,
                              stage: str, call_id: str | None, unchanged: Callable[[], bool],
-                             action_context: dict | None = None,
-                             revision_context: dict | None = None) -> str | None:
-        if config.FLOW_REVIEW_CONCURRENCY == 2:
+                             action_context: dict | None = None, revision_context: dict | None = None,
+                             unit_kind: str | None = None, recovery: list[bool] | None = None,
+                             revision_key: object = None, phase_session=None,
+                             observed_run: dict | None = None) -> str | None:
+        # 事项已经由外层调度；在占用的槽内依次发出各批，避免并发嵌套。
+        if unit_kind is None and config.FLOW_REVIEW_CONCURRENCY == 2:
             try:
                 return await self._check_parallel_batches(draft, sources, selected, stage=stage,
                                                          call_id=call_id, unchanged=unchanged,
@@ -456,7 +461,8 @@ class FlowDraftGate:
                 return self.blocked
         events = self.session.record['last_run'].setdefault('draft_reviews', [])
         start = len(events)
-        recovery = [False]
+        if recovery is None:
+            recovery = [False]
         summary = []
         feedback = None
         cancelled = False
@@ -465,7 +471,8 @@ class FlowDraftGate:
             try:
                 feedback = await self._check_one(draft, stage=stage, force=True, call_id=call_id,
                     sources_override=sources, recovery=recovery, action_context=action_context,
-                    batch_targets=batch, dispatch_allowed=unchanged, revision_context=revision_context)
+                    batch_targets=batch, dispatch_allowed=unchanged, revision_context=revision_context,
+                    unit_kind=unit_kind, revision_key=revision_key, phase_session=phase_session, observed_run=observed_run)
             except asyncio.CancelledError:
                 cancelled = True
             child = events.pop()
@@ -697,6 +704,15 @@ class FlowDraftGate:
             extra = [row for row in revisions if (row['field'], row['start'], row['end']) not in spans]
             targets = _number_targets([*targets, *extra]) if len(targets) + len(extra) <= 64 else []
             revision_context = revision_navigation(previous[1], previous[2], draft, targets, sources)
+        if (stage == 'handoff' and batch_targets is None and 4 < len(targets) <= 64
+                and unit_kind in {'item', 'shared_claim'}):
+            # 目标及修订导航已基于完整事项生成；每批继续使用同一原稿和来源。
+            run['draft_reviews'].pop()
+            return await self._check_batches(
+                draft, sources, targets, stage=stage, call_id=call_id,
+                unchanged=dispatch_allowed or self._binding_guard(), action_context=action_context,
+                revision_context=revision_context, unit_kind=unit_kind, recovery=recovery,
+                revision_key=revision_key, phase_session=phase_session, observed_run=observed_run)
         if stage == 'preview' and batch_targets is None and 4 < len(targets) <= 64:
             from agent_core.core.model_settings import model_dispatch_guard
 
@@ -860,6 +876,8 @@ class FlowDraftGate:
             event['status'] = type(exc).__name__
             if attempts and attempts[-1] == 'pending':
                 attempts[-1] = event['status']
+            if unit_kind in {'item', 'shared_claim'} and isinstance(exc, ModelDispatchStopped):
+                return '交接复核已停止，草稿尚未批准。'
             self.blocked = '来源复核未能完成，草稿尚未提交。'
             return self.blocked
         finally:
