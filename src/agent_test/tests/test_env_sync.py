@@ -245,6 +245,20 @@ def test_mixed_template_and_target_newlines_are_idempotent(tmp_path):
     assert target.read_bytes() == first
 
 
+def test_matching_trailing_blank_records_are_preserved(tmp_path):
+    template, target = _paths(tmp_path, 'A=local\n\n', 'A=local\n\n')
+    assert _sync(template, target, write=True)['changed'] is False
+    assert target.read_bytes() == b'A=local\n\n'
+
+
+def test_record_newlines_include_indented_blank_lines(tmp_path):
+    template, target = _paths(tmp_path,
+        'A=default\r\n   \r\nB="first\r\nsecond"\r\n', 'A=local\n')
+    _sync(template, target, write=True)
+    assert target.read_bytes() == b'A=local\n   \nB="first\r\nsecond"\n'
+    assert _sync(template, target, write=True)['changed'] is False
+
+
 def test_multiline_value_crlf_does_not_change_record_newline(tmp_path):
     template, target = _paths(tmp_path,
         'A=default\r\nMULTI="first\r\nsecond"\r\n', 'A=local\n')

@@ -15,6 +15,8 @@ from agent_core.project_paths import project_root
 
 
 LOCAL_SECTION = '# ---- 本地额外设置与注释 ----'
+RECORD_NEWLINE = re.compile(r'\r\n|\r|\n')
+LEADING_BLANK_LINES = re.compile(r'(?:[^\S\r\n]*(?:\r\n|\r|\n))*')
 
 
 def _read(path: Path, *, optional: bool = False) -> str | None:
@@ -74,19 +76,21 @@ def _render(template_bindings, local_bindings, local_keys, newline):
                          for line in item.original.string.splitlines() if line.strip()}
     for item in template_bindings:
         original = item.original.string
-        body = original.lstrip('\r\n')
-        prefix = original[:len(original) - len(body)]
-        prefix = prefix.replace('\r\n', '\n').replace('\n', newline)
+        blank_end = LEADING_BLANK_LINES.match(original).end()
+        prefix = RECORD_NEWLINE.sub(newline, original[:blank_end])
+        body = original[blank_end:]
         if item.key in local_keys:
-            chunks.append(prefix + local_keys[item.key].original.string.strip('\r\n') + newline)
-        else:
-            chunks.append(prefix + body.rstrip('\r\n') + newline)
+            local = local_keys[item.key].original.string
+            body = local[LEADING_BLANK_LINES.match(local).end():]
+        # 已匹配的空白记录包含行尾。只为实际赋值和注释补齐行尾。
+        chunks.append(prefix + (body.rstrip('\r\n') + newline if body.strip() else body))
     # 保留独有注释及额外键的相对顺序；模板注释和自动分组标题不重复追加。
     extras = []
     for item in local_bindings:
         if item.key is not None:
             if item.key not in known:
-                extras.append(item.original.string.strip('\r\n'))
+                local = item.original.string
+                extras.append(local[LEADING_BLANK_LINES.match(local).end():].rstrip('\r\n'))
         else:
             for line in item.original.string.splitlines():
                 if line.strip() and line.strip() not in template_comments and line.strip() != LOCAL_SECTION:
@@ -272,8 +276,8 @@ def sync_env(template: Path, target: Path, *, write: bool = False) -> dict:
     newline = '\n'
     for item in local_bindings:
         record = item.original.string
-        if record.endswith('\n'):
-            newline = '\r\n' if record.endswith('\r\n') else '\n'
+        if record.endswith(('\r', '\n')):
+            newline = '\r\n' if record.endswith('\r\n') else record[-1]
             break
     rendered = _render(template_bindings, local_bindings, local_keys, newline)
     proposed, _ = _parse(rendered, '同步结果')
