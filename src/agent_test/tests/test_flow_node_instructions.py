@@ -56,6 +56,52 @@ def test_flow_role_receives_rag_protocol_only_with_effective_capability(
         store.close()
 
 
+@pytest.mark.parametrize("contract_enabled", [False, True])
+def test_node_input_guides_evidence_based_handoff(tmp_path, monkeypatch, contract_enabled):
+    monkeypatch.setattr(config, "RAG_ASSESS", False)
+    monkeypatch.setattr(config, "MEMORY_AUTO_EXTRACT", False)
+    project = tmp_path / "project"
+    project.mkdir()
+    store = SessionStore(tmp_path / "state", workspace_root=tmp_path / "private")
+    seen = []
+    contract = {"fields": {"evidence": {"type": "string"}}} if contract_enabled else None
+
+    async def model(history, *, session_id, emit):
+        seen.append(history)
+        return {"role": "assistant", "content": '{"evidence":"上游真实依据"}' if contract_enabled else "上游真实依据"}
+
+    async def run():
+        manager = SessionManager(store, model=model)
+        service = FlowService(manager)
+        try:
+            flow = service.create(workspace_path=str(project), handoff="原始背景")
+            flow["nodes"] = [
+                {"id": "a", "title": "上游", "prompt": "上游职责", "handoff_contract": contract},
+                {"id": "b", "title": "下游", "prompt": "下游职责", "handoff_contract": contract},
+            ]
+            flow["edges"] = [{"source": "a", "target": "b"}]
+            flow = service.save(flow)
+            service.start(flow["id"], input_text="本轮原始输入")
+            await service.tasks[flow["id"]]
+            assert service.get(flow["id"])["run"]["status"] == "completed"
+            for history in seen:
+                message = history[-1]["content"]
+                assert "原始背景" in message and "本轮原始输入" in message
+                assert "已有真实依据" in message and "直接结束" in message
+                assert "下游集成检查" in message and "无需等待" in message
+                assert "具体缺项" in message and "无法验证" in message
+                assert "成功回执" in message and "任务通过" in message
+            assert "上游真实依据" in seen[1][-1]["content"]
+        finally:
+            await service.shutdown()
+            await manager.shutdown()
+
+    try:
+        asyncio.run(run())
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize('structured', [False, True])
 def test_classic_prompt_does_not_duplicate_rag_protocol(tmp_path, monkeypatch, sandbox_env, structured):
     monkeypatch.setattr(config, 'ENABLE_STRUCTURED_CONTEXT', structured)

@@ -154,7 +154,7 @@ COMMAND_TIMEOUT = env_float("COMMAND_TIMEOUT", 10.0)  # 单条命令最长执行
 COMMAND_EXECUTION_ENVIRONMENT = os.getenv('COMMAND_EXECUTION_ENVIRONMENT', 'sandbox').strip().lower()
 # Windows 原生界面的隔离命令由显式 WSL 发行版与 Linux Python 执行。
 WINDOWS_WSL_DISTRIBUTION = os.getenv('WINDOWS_WSL_DISTRIBUTION', 'Ubuntu').strip()
-WINDOWS_WSL_PYTHON = os.getenv('WINDOWS_WSL_PYTHON', 'python3').strip()
+WINDOWS_WSL_PYTHON = os.getenv('WINDOWS_WSL_PYTHON', 'auto').strip()
 if not WINDOWS_WSL_DISTRIBUTION or WINDOWS_WSL_DISTRIBUTION.startswith('-') or any(
         ord(char) < 32 for char in WINDOWS_WSL_DISTRIBUTION):
     raise ValueError('WINDOWS_WSL_DISTRIBUTION 必须为有效的 WSL 发行版名称')
@@ -402,6 +402,8 @@ if not 256 <= WORKSPACE_MEMORY_INJECT_CHARS <= 12000:
     raise ValueError('WORKSPACE_MEMORY_INJECT_CHARS 必须为 256..12000')
 ENABLE_SESSION_BRANCHES = env_bool('ENABLE_SESSION_BRANCHES', False)
 ENABLE_STRUCTURED_CONTEXT = env_bool('ENABLE_STRUCTURED_CONTEXT', False)
+# auto 或空值仅在 Flow 节点启用本地归档，已有显式布尔值沿用原选择。
+FLOW_AUTO_ARCHIVE = os.getenv('ENABLE_STRUCTURED_CONTEXT', 'auto').strip().lower() in {'', 'auto'}
 CONTEXT_HISTORY_CHUNK_CHARS = env_int('CONTEXT_HISTORY_CHUNK_CHARS', 8000)
 CONTEXT_HISTORY_KEEP_GROUPS = env_int('CONTEXT_HISTORY_KEEP_GROUPS', 2)
 CONTEXT_SUMMARY_CHARS = env_int('CONTEXT_SUMMARY_CHARS', 2000)

@@ -196,3 +196,12 @@ def test_actual_wsl_cancellation_drains_descendants(bridge):
     assert audit_before_marker == [True]
     time.sleep(3)
     assert not (root / 'late').exists()
+
+
+def test_actual_wsl_default_auto_python(bridge, monkeypatch):
+    root, context = bridge
+    monkeypatch.setattr(config, 'WINDOWS_WSL_PYTHON', 'auto')
+    with tool_context(context):
+        result = run_command('printf auto-bridge-ok')
+    assert 'auto-bridge-ok' in result and '[退出码] 0' in result, result
+    assert list(root.iterdir()) == []

@@ -1,9 +1,12 @@
 """Release metadata must agree before a tag can be published."""
 
+from importlib.metadata import version
 from pathlib import Path
 import tomllib
 
 import pytest
+
+import agent_core
 
 from agent_test.scripts.check_release import validate_release
 
@@ -17,6 +20,10 @@ def test_workspace_and_core_runtime_report_the_same_version():
         project = root / 'src' / module / 'pyproject.toml'
         assert tomllib.loads(project.read_text(encoding='utf-8'))['project']['version'] == version
     assert __version__ == version
+
+
+def test_core_public_version_matches_installed_distribution():
+    assert agent_core.__version__ == version("ai-agent-core")
 
 
 @pytest.fixture

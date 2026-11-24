@@ -3,6 +3,10 @@ import json
 import importlib.util
 import math
 import os
+try:
+    import pwd
+except ImportError:  # Windows 只导入测试模块，worker 在 WSL 运行。
+    pwd = None
 import sys
 import tempfile
 import threading
@@ -223,5 +227,21 @@ def main():
         return 1
 
 
+def _auto_reexec(argv):
+    if len(argv) != 2 or argv[1] != '--auto-python':
+        return
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        home = Path()
+    executable = home / '.local/share/ChannelAgent/wsl-venv/bin/python'
+    if home.is_absolute() and executable.is_file() and os.access(executable, os.X_OK):
+        os.execv(str(executable), [str(executable), '-I', '-B', '-u', argv[0]])
+        return
+    # 系统 Python 回退保持原始启动语义，包括用户 site-packages。
+    os.execv(sys.executable, [sys.executable, '-B', '-u', argv[0]])
+
+
 if __name__ == '__main__':
+    _auto_reexec(sys.argv)
     sys.exit(main())

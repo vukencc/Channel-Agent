@@ -507,3 +507,38 @@ def test_compaction_budget_estimate_includes_new_refs_and_long_summary(context_s
         finally:
             await manager.shutdown()
     asyncio.run(run())
+
+@pytest.mark.parametrize('outcome', ['cancelled', 'error', 'rejected'])
+@pytest.mark.parametrize('name', ['run_command', 'edit_file', 'plan_update'])
+def test_failed_executed_work_does_not_clear_read_stall(outcome, name):
+    record = _progress_record(['read_file', 'list_files'] * 3 + [name])
+    record['last_run']['tools'][-1]['outcome'] = outcome
+    if name == 'plan_update':
+        record['messages'][-2]['tool_calls'][0]['function']['arguments'] = '{"status":"completed"}'
+    assert repeated_read_notice(record)
+
+
+def test_failed_receipts_keep_prior_success_and_latest_failure_and_handoff_choice():
+    from agent_core.core.execution_guidance import work_progress_context
+    record = _progress_record(['create_file', 'edit_file', 'run_command', 'run_command'])
+    for index, outcome in enumerate(['completed', 'error', 'completed', 'cancelled']):
+        record['last_run']['tools'][index]['outcome'] = outcome
+        record['messages'][2 + index * 2]['content'] = f'{outcome} receipt {index}'
+    text = work_progress_context(record)
+    for index in range(4):
+        assert f'receipt {index}' in text
+    assert '交接' in text and '缺' in text
+    notice = repeated_read_notice(_progress_record(['read_file', 'list_files'] * 3))
+    assert '交接' in notice and '缺' in notice
+
+
+def test_legacy_builtin_outcome_is_parsed_but_dynamic_requires_trusted_outcome():
+    from agent_core.core.execution_guidance import work_progress_context
+    for output in ('[失败] broken', '[已取消] stopped', '[拒绝] denied', '[退出码] 1\nfailed'):
+        record = _progress_record(['read_file', 'list_files'] * 3 + ['run_command'])
+        record['messages'][-1]['content'] = output
+        assert repeated_read_notice(record)
+        assert json.dumps(output, ensure_ascii=False) in work_progress_context(record)
+    dynamic = _progress_record(['read_file', 'list_files'] * 3 + ['custom_action'])
+    assert repeated_read_notice(dynamic, {'custom_action'})
+    assert work_progress_context(dynamic, {'custom_action'}) == ''

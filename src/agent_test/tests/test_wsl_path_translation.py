@@ -42,8 +42,9 @@ def test_translate_many_rejects_control_characters_before_launch(monkeypatch):
         bridge._translate_many(['C:\\bad\npath'])
 
 
+@pytest.mark.parametrize('python', ['auto', 'python3', '/custom/python'])
 @pytest.mark.parametrize('changed', ['none', 'round_trip', 'identity'])
-def test_dispatch_batches_paths_and_keeps_root_checks(tmp_path, monkeypatch, changed):
+def test_dispatch_batches_paths_and_keeps_root_checks(tmp_path, monkeypatch, changed, python):
     root = tmp_path / 'workspace'
     root.mkdir()
     worker = tmp_path / 'worker.py'
@@ -59,6 +60,7 @@ def test_dispatch_batches_paths_and_keeps_root_checks(tmp_path, monkeypatch, cha
     monkeypatch.setattr(bridge, '_worker_script', lambda: worker)
     monkeypatch.setattr(bridge, '_launcher', lambda: ['fake-wsl'])
     monkeypatch.setattr(bridge, 'audit', lambda *a, **kw: None)
+    monkeypatch.setattr(bridge.config, 'WINDOWS_WSL_PYTHON', python)
     monkeypatch.setattr(bridge.config, 'COMMAND_RUNTIME_PATHS', {})
     monkeypatch.setattr(bridge.config, 'TOOL_ROOTS', {'support': {'path': str(tmp_path / 'kb'), 'readonly': True}})
     forwards, reverses, sent = [], [], []
@@ -73,6 +75,9 @@ def test_dispatch_batches_paths_and_keeps_root_checks(tmp_path, monkeypatch, cha
     monkeypatch.setattr(bridge, '_exchange', lambda *a, **kw: sent.append((a, kw)) or 'done')
     if changed == 'none':
         assert bridge.execute_wsl_tool('inspect_environment', {}) == 'done'
+        argv = sent[0][0][0]
+        expected = ['python3', '-I', '-B', '-u', '/mapped/1', '--auto-python'] if python == 'auto' else [python, '-B', '-u', '/mapped/1']
+        assert argv[-len(expected):] == expected
         request = sent[0][0][1]
         assert request['root'] == '/mapped/0'
         assert request['config']['TOOL_ROOTS']['support']['readonly'] is True

@@ -201,9 +201,10 @@ Windows 负责桌面、Core、文件操作与 Flow；运行命令需要 WSL2 Lin
 2. 例如已安装 Python 3.12 时：python3.12 -m venv "$HOME/.local/share/ChannelAgent/wsl-venv"
 3. 使用该环境的 pip 安装 WSL/requirements.txt（先转换为此文件的 /mnt/... 路径）：
    "$HOME/.local/share/ChannelAgent/wsl-venv/bin/python" -m pip install --require-hashes -r "/mnt/.../WSL/requirements.txt"
-4. 在用户数据目录的 .env 设置 WINDOWS_WSL_DISTRIBUTION=Ubuntu，
-   WINDOWS_WSL_PYTHON=/home/您的用户名/.local/share/ChannelAgent/wsl-venv/bin/python
-   然后重启。系统需允许 Bubblewrap 所需的命名空间。
+4. 默认自动使用当前 WSL 用户目录中的上述环境；找不到时使用 python3。
+   可在用户数据目录的 .env 设置 WINDOWS_WSL_DISTRIBUTION=Ubuntu，
+   也可按需设置 WINDOWS_WSL_PYTHON=/home/您的用户名/.local/share/ChannelAgent/wsl-venv/bin/python 覆盖自动选择。
+   修改后重启。系统需允许 Bubblewrap 所需的命名空间。
 命令仍遵守权限、确认和审计；隔离不可用时拒绝执行，不自动回退。
 原生 local 命令、后台命令和批量维护清理尚不可用。
 

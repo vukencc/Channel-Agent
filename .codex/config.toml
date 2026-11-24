@@ -1,5 +1,6 @@
-# Project-local Codex defaults. Authentication, root model and permissions stay
-# with the user's desktop/CLI configuration. See .codex/README.md.
+# Project-local defaults; explicit client overrides take precedence.
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"
 project_doc_max_bytes = 16384
 
 [agents]

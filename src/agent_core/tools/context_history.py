@@ -56,8 +56,10 @@ def _run(operation):
     if context.caller_id is None or context.loop is None:
         raise PermissionError('历史工具仅供运行中的会话使用')
     manager = context.manager
-    history = getattr(manager, 'history_context', None)
     session = manager.sessions.get(context.caller_id)
+    selector = getattr(manager, 'context_for_session', None)
+    history = (selector(session) if session is not None and callable(selector)
+               else getattr(manager, 'history_context', None))
     if history is None or session is None:
         raise PermissionError('当前会话没有可访问的历史归档')
 

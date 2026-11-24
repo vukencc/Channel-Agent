@@ -200,6 +200,40 @@ def test_symbolic_link_input_is_rejected_without_touching_referent(tmp_path, lin
     assert referent.read_bytes() == before
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows junction')
+@pytest.mark.parametrize('with_parent_reference', [False, True])
+def test_windows_reparse_parent_is_rejected_without_touching_referent(tmp_path, with_parent_reference):
+    referent = tmp_path / 'referent'
+    referent.mkdir()
+    fixture_dir = tmp_path if with_parent_reference else referent
+    template, target = _paths(fixture_dir, 'A=one\n', 'A=local\n')
+    junction = tmp_path / 'junction'
+    result = subprocess.run(
+        ['cmd.exe', '/d', '/c', 'mklink', '/j', str(junction), str(referent)],
+        capture_output=True, timeout=5,
+    )
+    assert result.returncode == 0
+    try:
+        before = target.read_bytes()
+        with pytest.raises(PermissionError):
+            route = junction / '..' if with_parent_reference else junction
+            _sync(route / template.name, target, write=True)
+        assert target.read_bytes() == before
+    finally:
+        junction.rmdir()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows path handles')
+def test_windows_ordinary_parent_reference_can_read_and_write(tmp_path):
+    template, target = _paths(tmp_path, 'A=default\nB=default\n', 'A=local\n')
+    nested = tmp_path / 'nested'
+    nested.mkdir()
+    template_path = nested / '..' / template.name
+    target_path = nested / '..' / target.name
+    assert _sync(template_path, target_path, write=True)['changed'] is True
+    assert target.read_bytes() == b'A=local\nB=default\n'
+
+
 def _assert_private(target):
     if os.name == 'nt':
         from agent_core.core.windows_security import verify_private_path
@@ -223,6 +257,20 @@ def test_mixed_template_and_target_newlines_are_idempotent(tmp_path):
     first = target.read_bytes()
     assert _sync(template, target, write=True)['changed'] is False
     assert target.read_bytes() == first
+
+
+def test_matching_trailing_blank_records_are_preserved(tmp_path):
+    template, target = _paths(tmp_path, 'A=local\n\n', 'A=local\n\n')
+    assert _sync(template, target, write=True)['changed'] is False
+    assert target.read_bytes() == b'A=local\n\n'
+
+
+def test_record_newlines_include_indented_blank_lines(tmp_path):
+    template, target = _paths(tmp_path,
+        'A=default\r\n   \r\nB="first\r\nsecond"\r\n', 'A=local\n')
+    _sync(template, target, write=True)
+    assert target.read_bytes() == b'A=local\n   \nB="first\r\nsecond"\n'
+    assert _sync(template, target, write=True)['changed'] is False
 
 
 def test_multiline_value_crlf_does_not_change_record_newline(tmp_path):

@@ -38,14 +38,26 @@ jobs:
           enable-cache: true
       - uses: ./.github/actions/setup-linux-system
       - run: uv sync --locked --extra web --extra desktop
-      - name: 验证安装包中的前端事件循环
+      - name: 从构建的 Frontend wheel 导入三个入口
         run: |
-          uv build --wheel --package ai-agent-frontend --out-dir "$RUNNER_TEMP/frontend-wheel"
-          python -I - "$RUNNER_TEMP"/frontend-wheel/*.whl <<'PY'
+          wheel_dir=$(mktemp -d)
+          uv build --package ai-agent-frontend --wheel --out-dir "$wheel_dir"
+          uv run --no-sync python -I - "$wheel_dir" <<'PY'
           import sys
-          sys.path.insert(0, sys.argv[1])
-          from agent_frontend.runtime_loop import new_runtime_loop
-          new_runtime_loop().close()
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          output = Path(sys.argv[1])
+          (wheel,) = output.glob("*.whl")
+          with ZipFile(wheel) as archive:
+              archive.extractall(output)
+          sys.path.insert(0, str(output))
+          from agent_frontend import runtime_loop
+          from agent_frontend.cli import app
+          from agent_frontend.desktop import app as desktop
+          from agent_frontend.web import server
+          assert Path(runtime_loop.__file__).is_relative_to(output)
+          runtime_loop.new_runtime_loop().close()
           PY
       - name: 验证真实隔离能力，不静默跳过
         run: uv run python -m agent_test.scripts.ci_sandbox_probe
@@ -119,6 +131,7 @@ jobs:
             'src/agent_test/tests/test_env_sync.py',
             'src/agent_test/tests/test_web_sse_terminal.py',
             'src/agent_test/tests/test_config.py',
+            'src/agent_test/tests/test_perf09_inference_pool.py',
             'src/agent_test/tests/test_unknown_model_input_override.py',
             'src/agent_test/tests/test_model_context_capacity.py',
             'src/agent_test/tests/test_fallback_context_capacity.py',
@@ -135,6 +148,13 @@ jobs:
             'src/agent_test/tests/test_web_flow_ui.py',
             'src/agent_test/tests/test_flow_handoff_contract.py',
             'src/agent_test/tests/test_flow_handoff_context.py',
+            'src/agent_test/tests/test_flow_auto_context.py',
+            'src/agent_test/tests/test_flow_progress_review.py',
+            'src/agent_test/tests/test_flow_progress_review_integration.py',
+            'src/agent_test/tests/test_flow_checkpoint_details.py',
+            'src/agent_test/tests/test_flow_timeout_recovery.py',
+            'src/agent_test/tests/test_flow_checkpoint_resume.py',
+            'src/agent_test/tests/test_frontend_flow_resume.py',
             'src/agent_test/tests/test_flow_handoff_reference.py',
             'src/agent_test/tests/test_runtime_loop.py',
             'src/agent_test/tests/test_history_input_reference.py',
@@ -183,6 +203,7 @@ jobs:
             'src/agent_test/tests/test_working_tooltip_pointer.py',
             'src/agent_test/tests/test_dynamic_feedback_validation.py',
             'src/agent_test/tests/test_flow_designer.py',
+            'src/agent_test/tests/test_flow_designer_output.py',
             'src/agent_test/tests/test_designer_evidence_wording.py',
             'src/agent_test/tests/test_designer_request_errors.py',
             'src/agent_test/tests/test_designer_import_retry.py',

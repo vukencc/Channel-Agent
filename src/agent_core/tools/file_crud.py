@@ -131,7 +131,7 @@ def create_file(path: str, content: str = "", reason: str = "") -> str:
     try:
         _confirmed_target(path, target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open('x', encoding='utf-8') as stream:
+        with target.open('x', encoding='utf-8', newline='') as stream:
             stream.write(content)
     except (OSError, SandboxError) as exc:
         audit("failed", action="create_file", path=path, error=str(exc))
@@ -242,7 +242,7 @@ def update_file(path: str, content: str = "", reason: str = "") -> str:
     """
     try:
         with opened_tool_file(path, write=True) as (target, descriptor):
-            with os.fdopen(os.dup(descriptor), 'r', encoding='utf-8') as stream:
+            with os.fdopen(os.dup(descriptor), 'r', encoding='utf-8', newline='') as stream:
                 before = stream.read(config.FILE_READ_CHARS + 1)
     except SandboxError as exc:
         audit("blocked", action="update_file", path=path, reason=str(exc))
@@ -262,7 +262,7 @@ def update_file(path: str, content: str = "", reason: str = "") -> str:
         if cancellation_requested():
             raise SandboxError('已取消，文件未修改')
         with opened_tool_file(path, expected_path=target, writable=True) as (_, descriptor):
-            with os.fdopen(os.dup(descriptor), 'r+', encoding='utf-8') as stream:
+            with os.fdopen(os.dup(descriptor), 'r+', encoding='utf-8', newline='') as stream:
                 if stream.read(config.FILE_READ_CHARS + 1) != before:
                     raise SandboxError('确认期间文件内容发生变化，请重新读取')
                 if cancellation_requested():

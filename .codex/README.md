@@ -8,11 +8,12 @@
 
 | 设置 | 当前值 | 用途 |
 | --- | --- | --- |
+| `model` / `model_reasoning_effort` | `gpt-6.2-sol` / `medium` | 主代理的项目默认模型与推理强度；显式启动参数可覆盖。 |
 | `project_doc_max_bytes` | `16384` | 项目指令读取预算；详细运行状态放在交接文档，避免塞入常驻指令。 |
 | `agents.enabled` | `true` | 启用 Codex 子代理工具。 |
 | `agents.max_concurrent_threads_per_session` | `3` | 最多三个并发子代理，不包括主代理；实际还受宿主限制。 |
 
-认证、根模型、审批和沙箱由调用端管理，项目配置只维护上述协作参数。旧的 `max_threads` 是兼容别名；本地配置已使用明确的新键，不再依赖旧的 feature 或深度开关。配置层仅在受信任项目中加载，参见 [官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+认证、审批和沙箱由调用端管理。主代理模型与推理强度使用项目默认值，可由显式启动参数覆盖；宿主不支持该型号时应选择可用型号。旧的 `max_threads` 是兼容别名；本地配置已使用明确的新键，不再依赖旧的 feature 或深度开关。配置层仅在受信任项目中加载，参见 [官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
 
 ## 角色文件与协作
 
@@ -38,3 +39,5 @@ codex --strict-config doctor --json
 本次严格诊断返回 `config.load: ok`。它验证配置解析与本地诊断，不等于执行过每个角色的模型调用。`doctor` 的 JSON 已脱敏，交付时仍只保留相关状态；不要将完整用户配置、认证或 prompt 转录贴入报告。`--strict-config features list` 在该版本不受支持，不能作为严格校验替代命令。
 
 角色文件中的模型和推理强度优先于派生参数和 agents 默认值；要改变具名角色的设置，应选择其他角色或修改角色文件。代理继承父会话的 provider、权限与沙箱边界。修改配置后先检查当前可用角色；若宿主尚未重新发现配置，在同一工作区新开会话并核对角色列表和 `AGENTS.md` 是否载入。Windows/WSL 启动方法、Linux uv/Node 路径、工作树状态与最近验证见 [交接说明](../docs/session-handoff.md)；不要用 Windows uv 重建 WSL 的 `.venv`。完整维护约定见 [Codex 协作说明](../docs/codex-multiagent.md)。
+
+角色使用的 6.2 型号已出现在 2026-11-24 的桌面会话选项中，但 WSL CLI `0.160.0` 的内置离线目录未列出它们。不同客户端和账号可用性可能不同；需以当前宿主为准，不可把 TOML 解析当成角色启动验证。缺少型号时可调整本地角色配置或由主代理处理，详见协作说明。

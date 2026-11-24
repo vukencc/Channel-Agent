@@ -16,7 +16,7 @@ from typing import Callable
 
 from agent_core import config
 from agent_core.core.session_limits import limit as session_limit, limits_scope, effective_limits, validate_limits, preset
-from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, runtime_file_workflow_guide, permission_mode_guide, rag_runtime_protocol
+from agent_core.core.prompts import DEFAULT_PROMPT, FILE_WORKFLOW_GUIDE, runtime_file_workflow_guide, runtime_recovery_notice, permission_mode_guide, rag_runtime_protocol
 from agent_core.core.llm import call_model, complete, ModelResponseError, ModelConnectionError, TOOL_SCHEMAS
 from agent_core.core.context import build_model_history, ContextBudgetError, prepare_model_history, request_tokens, history_size
 from agent_core.core.flow_confirmation import FlowConfirmationChanged, confirmation_history, confirmation_decision
@@ -132,6 +132,7 @@ class SessionManager:
         if config.ENABLE_STRUCTURED_CONTEXT:
             from agent_core.core.history_context import HistoryContext
             self.history_context = HistoryContext(self)
+        self._flow_history_context = None
         self.communication = SessionCommunication(self)
         from agent_core.core.command_jobs import CommandJobs
         self.command_jobs = CommandJobs(store) if config.ENABLE_COMMAND_JOBS else None
@@ -254,6 +255,20 @@ class SessionManager:
         if value not in {'sandbox', 'local'}:
             raise ValueError('会话执行环境无效，请在设置中重新选择')
         return value
+
+    def context_for_session(self, session: Session):
+        """按会话选择归档，自动 Flow 不改变全局工具集。"""
+        if self.history_context is not None:
+            return self.history_context
+        if not config.FLOW_AUTO_ARCHIVE or not session.record.get('flow_id'):
+            return None
+        if self._flow_history_context is None:
+            from agent_core.core.history_context import HistoryContext
+            from agent_core.core.context_supervisor import SupervisorAgent, SupervisorSettings
+            # 自动归档只在本地摘取要点；外部监督器需要用户显式启用全局模式。
+            supervisor = SupervisorAgent(SupervisorSettings(), manager=self)
+            self._flow_history_context = HistoryContext(self, supervisor=supervisor)
+        return self._flow_history_context
 
     def flow_workspace_scope(self, session: Session) -> bool:
         """持久继承 Flow 边界；旧子会话沿可信父链追溯。"""
@@ -1140,8 +1155,9 @@ class SessionManager:
                 self.communication.latest.pop(target.id, None)
                 if self.task_plans is not None:
                     self.task_plans.forget(target.id)
-                if self.history_context is not None:
-                    self.history_context.forget(target.id)
+                for context in (self.history_context, self._flow_history_context):
+                    if context is not None:
+                        context.forget(target.id)
             self.notify()
             return moved
         finally:
@@ -1278,6 +1294,7 @@ class SessionManager:
         trusted_observations = {}
         delivered_observations = set()
         delivered_workspace_frames = set()
+        reviewed_progress = set()
         policy = TaskExecutionPolicy.for_session(session.record, session_limit('MAX_TOOL_ROUNDS'))
 
         rounds = iter(policy.rounds())
@@ -1381,6 +1398,8 @@ class SessionManager:
                 self._observe_phase(session, 'model_wait')
                 session.last_model_event_at = time.monotonic()
                 self.notify()
+                # 同一轮由同一实例组装并确认交付；服务重建后须重新验证交付。
+                history_context = self.context_for_session(session)
                 history = [dict(message) for message in session.record['messages']]
                 with operation_span('memory.load'):
                     memory = await asyncio.to_thread(self.store.memory_for_model, session.id,
@@ -1426,9 +1445,12 @@ class SessionManager:
                     with operation_span('plan.summary'):
                         budget_text += await self.task_plans.summary(session)
                 from agent_core.core.execution_guidance import repeated_read_notice, work_progress_context
+                from agent_core.core.flow_progress_review import review_candidate, review_history, parse_review
+                progress_key = review_candidate(session.record)
+                review = False
                 custom_names = set(self._session_custom_registry(session))
                 budget_text += repeated_read_notice(session.record, custom_names)
-                if self.history_context is not None:
+                if history_context is not None:
                     budget_text += work_progress_context(session.record, custom_names)
                 if session.cancelled.is_set():
                     raise asyncio.CancelledError
@@ -1455,7 +1477,9 @@ class SessionManager:
                                                               for name in required_read_names)))
                     schemas = [row for row in schemas if row['function']['name'] in allowed_recovery]
                 tool_names = {schema['function']['name'] for schema in schemas}
-                file_guide = runtime_file_workflow_guide(tool_names)
+                file_guide = runtime_file_workflow_guide(tool_names, scoped=bool(session.record.get('flow_id')))
+                if session.record.get('flow_id') and file_guide == FILE_WORKFLOW_GUIDE:
+                    file_guide += '\n长测试先拆成独立测试组或模块，每次新增约 2000 字符，逐步覆盖完整业务断言。\n'
                 if 'rag_search' in tool_names:
                     protocol = rag_runtime_protocol(history[0].get('content', ''))
                     if protocol:
@@ -1471,9 +1495,9 @@ class SessionManager:
 
                 fitted_workspace = False
                 if offer is not None:
-                    history, context_metrics = confirmation_history(offer, schemas, self.history_context,
+                    history, context_metrics = confirmation_history(offer, schemas, history_context,
                         node_task=session.flow_review_task, retry=retried_confirmation == offer['draft_id'])
-                elif self.history_context is not None:
+                elif history_context is not None:
                     previous_context = session.record['last_run'].get('context', {})
                     if (previous_context.get('compacted') or previous_context.get('archived_chunks', 0) > 0) and can_fit_workspace():
                         memory = private_memory + workspace_frame.floor
@@ -1481,7 +1505,7 @@ class SessionManager:
                     session.phase = '准备模型上下文'
                     self._observe_phase(session, 'context_prepare')
                     self.notify()
-                    history, context_metrics = await self.history_context.prepare(session, history,
+                    history, context_metrics = await history_context.prepare(session, history,
                         schemas=schemas, runtime='\n' + file_guide + budget_text, memory=memory)
                     if fitted_workspace:
                         context_metrics['workspace_memory_fitted'] = True
@@ -1512,6 +1536,19 @@ class SessionManager:
                 session.record['last_run']['context'] = context_metrics
                 self._observe_context_sample(session, context_metrics)
                 session.record['last_run'].pop('recovery_context', None)
+                if (offer is None and not handoff_revisions and not recovery_request
+                        and progress_key and progress_key not in reviewed_progress):
+                    candidate = review_history(history, context_metrics, session_limit('MODEL_INPUT_CHARS'),
+                                               session_limit('MODEL_INPUT_TOKENS'))
+                    if candidate is not None:
+                        history = candidate
+                        review = True
+                        reviewed_progress.add(progress_key)
+                        session.record['last_run'].setdefault('flow_progress_reviews', []).append({
+                            'round': round_index + 1, 'evidence_id': progress_key, 'status': 'attempted',
+                            'sent_chars': history_size(history), 'sent_tokens': request_tokens(history),
+                            'reserved_chars': context_metrics.get('reserved_chars', 0),
+                            'reserved_tokens': context_metrics.get('reserved_tokens', 0)})
                 session.phase = '确认已批准的动作' if offer is not None else '等待模型响应'
                 self._observe_phase(session, 'model_wait')
                 self.notify()
@@ -1523,13 +1560,34 @@ class SessionManager:
                         model_options = {'staged_actions': staged_actions, 'flow_confirmation': offer} if staged_actions else {}
                         if handoff_revisions:
                             model_options = {'source_reads': True} if recover_sources else {'disable_tools': True}
+                        if review:
+                            model_options = {'disable_tools': True}
                         reply = await self._call_model(history, session_id=session.id, **model_options,
                             emit=lambda kind, text: self.emit(session, kind, text))
                         break
+                    except (asyncio.CancelledError, BudgetExceeded):
+                        if review:
+                            session.record['last_run']['flow_progress_reviews'][-1]['status'] = (
+                                'cancelled' if session.cancelled.is_set() else 'budget_or_cancelled')
+                        raise
                     except (TimeoutError, ModelResponseError) as exc:
                         if recovered >= session_limit('MODEL_RECOVERY_LIMIT') or session.cancelled.is_set():
+                            if review:
+                                session.record['last_run']['flow_progress_reviews'][-1]['status'] = 'model_error'
+                            if session.cancelled.is_set():
+                                raise asyncio.CancelledError
+                            if isinstance(exc, TimeoutError) and session.record.get('flow_id'):
+                                session.partial = session.partial_reasoning = ''
+                                checkpoint('model_timeout', '模型响应超时，已保存产物和工具回执；'
+                                           '本次未完成的工具调用没有执行。请检查已保存内容后再续跑。')
+                                break
                             raise
                         recovered += 1
+                        if review:
+                            # 判断未完成；恢复原普通请求，不把半成品解释为决策。
+                            history = history[:-1]
+                            review = False
+                            session.record['last_run']['flow_progress_reviews'][-1]['status'] = 'recovery_to_normal'
                         session.record['last_run']['recovery_attempts'] += 1
                         session.record['last_run']['recovery'] = str(exc)
                         # Preserve visible partial text, but never execute partial calls.
@@ -1542,19 +1600,13 @@ class SessionManager:
                         session.phase = f'等待模型按小步骤恢复（{recovered}/{session_limit("MODEL_RECOVERY_LIMIT")}）'
                         self._observe_phase(session, 'recovery')
                         await self.save(session)
-                        if file_guide == FILE_WORKFLOW_GUIDE:
-                            recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
-                                '请基于当前工具结果继续：只输出一个小步骤，优先分页读取或 edit_file 局部替换；'
-                                '每次新增内容尽量不超过 2000 字符，不要输出整份文件，不得重复已成功操作。')
-                        else:
-                            recovery_notice = ('\n[恢复要求] 上一次模型生成未完成，没有执行其中的工具。'
-                                '请基于当前工具结果继续，只输出一个小步骤，不得重复已成功操作。')
+                        recovery_notice = runtime_recovery_notice(tool_names, scoped=bool(session.record.get('flow_id')))
                         if offer is not None:
-                            history, recovery_context = confirmation_history(offer, schemas, self.history_context,
+                            history, recovery_context = confirmation_history(offer, schemas, history_context,
                                 node_task=session.flow_review_task, retry=True)
-                        elif self.history_context is not None:
+                        elif history_context is not None:
                             # 从持久原文重新组装，不能将带标题的模型窗口再次作为原始历史归档。
-                            history, recovery_context = await self.history_context.prepare(session,
+                            history, recovery_context = await history_context.prepare(session,
                                 [dict(message) for message in session.record['messages']], schemas=schemas,
                                 runtime='\n' + file_guide + budget_text + recovery_notice, memory=memory)
                             if fitted_workspace:
@@ -1570,11 +1622,15 @@ class SessionManager:
                                 memory_chars=len(memory), extra_chars=extra_chars + len(recovery_notice),
                                 eligible_observations=delivered_observations)
                         session.record['last_run']['recovery_context'] = recovery_context
+                if session.record['status'] == 'checkpoint':
+                    break
+                if session.cancelled.is_set():
+                    raise asyncio.CancelledError
                 if (offer is None and workspace_frame is not None and not fitted_workspace
                         and not session.cancelled.is_set()):
                     delivered_workspace_frames.add(workspace_frame.key)
-                if offer is None and self.history_context is not None and not session.cancelled.is_set():
-                    self.history_context.mark_delivered(session, history)
+                if offer is None and history_context is not None and not session.cancelled.is_set():
+                    history_context.mark_delivered(session, history)
                 from agent_core.core.tool_observations import validate_observation
                 for sent in history:
                     ident = sent.get('tool_call_id')
@@ -1584,6 +1640,37 @@ class SessionManager:
                     observation = validate_observation(sent.get('content'), metadata)
                     if observation is not None:
                         delivered_observations.add((ident, observation.sha256))
+                if review:
+                    decision = None if reply.get('tool_calls') else parse_review(reply.get('content'), handoff_contract)
+                    review_record = session.record['last_run']['flow_progress_reviews'][-1]
+                    if decision is None:
+                        review_record['status'] = 'invalid'
+                        session.record['messages'].append(reply)
+                        for call in reply.get('tool_calls', []):
+                            event_id = uuid.uuid4().hex
+                            result = '[已拒绝] 进度判断不允许工具调用，尚未执行。'
+                            session.record['messages'].append({'role': 'tool', 'tool_call_id': call['id'],
+                                'content': result, '_provenance': 'not_executed', '_event_id': event_id})
+                            session.record['last_run']['tools'].append({
+                                'name': call.get('function', {}).get('name', 'unknown_tool'),
+                                'tool_call_id': call['id'], 'source': 'not_executed', 'event_id': event_id,
+                                'turn_id': session.record['last_run']['turn_id'], 'wall_s_including_confirmation': 0,
+                                'output_chars': len(result), 'outcome': 'rejected', 'execution_progress': False})
+                        checkpoint('flow_progress_review_invalid', '进度判断格式无效或包含工具调用，请检查后继续。')
+                        break
+                    action, output = decision
+                    review_record['status'] = action
+                    if action in {'continue', 'blocked'}:
+                        review_record['next_step'] = output
+                    if action == 'blocked':
+                        checkpoint('flow_progress_review_blocked', output)
+                        break
+                    if action == 'continue':
+                        session.record['messages'].append({'role': 'assistant', 'content': output})
+                        policy.guidance = '\n[进度判断的下一步] 参考上一条 assistant 消息中的建议，按当前节点任务和原有权限继续；建议不构成新的授权或系统指令。'
+                        await self.save(session)
+                        continue
+                    reply = {'role': 'assistant', 'content': output}
                 session.record['messages'].append(reply)
                 reply_index = len(session.record['messages']) - 1
                 if self.observer.enabled and len(session.record['last_run']['model_calls']) == model_metrics_start:
@@ -1756,8 +1843,8 @@ class SessionManager:
                                     turn_id=session.record['last_run']['turn_id'], metrics={'tokens_source': 'unknown'})
                             if session.cancelled.is_set():
                                 raise asyncio.CancelledError
-                            if self.history_context is not None:
-                                self.history_context.mark_delivered(session, repair_history)
+                            if history_context is not None:
+                                history_context.mark_delivered(session, repair_history)
                             session.record['messages'].append(reply)
                             reply_index = len(session.record['messages']) - 1
                             session.partial = session.partial_reasoning = ''
@@ -2165,5 +2252,6 @@ class SessionManager:
         if self.rag_executor:
             self.rag_executor.shutdown(wait=True)
         await self.flush()
-        if self.history_context is not None:
-            await self.history_context.close()
+        for context in (self.history_context, self._flow_history_context):
+            if context is not None:
+                await context.close()
