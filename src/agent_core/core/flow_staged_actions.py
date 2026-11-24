@@ -13,7 +13,6 @@ from agent_core.core.flow_action_preflight import (
     FlowActionPreflight, _argument_digest, _object,
 )
 from agent_core.core.flow_review_claims import action_review_context
-from agent_core.core.flow_review_sources import review_sources
 from agent_core.core.instrumentation import tool_outcome
 from agent_core.core.session_limits import limit as session_limit
 from agent_core.core.storage import wait_for_io_completion
@@ -373,7 +372,7 @@ class FlowStagedActions:
     def _binding(self) -> dict:
         session = self.session
         record = session.record
-        sources = review_sources(record, char_limit=min(24000, session_limit('MODEL_INPUT_CHARS') // 2))
+        sources = self.gate.source_rows(min(24000, session_limit('MODEL_INPUT_CHARS') // 2))
         encoded = json.dumps(sources, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
         digest = hashlib.sha256(encoded.encode('ascii')).hexdigest()
         return {'session': session.id, 'turn': record['last_run']['turn_id'], 'node': record.get('flow_node_id'),

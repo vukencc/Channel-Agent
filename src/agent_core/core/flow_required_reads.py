@@ -139,11 +139,50 @@ def required_reads(task: str, definitions: list[dict] | None) -> set[str]:
     return result
 
 
-def required_read_reference(name: str, call_index: int, result_index: int, message: dict) -> dict:
-    """记录已验证回执在会话日志中的位置及正文摘要。"""
+def _receipt_digest(text: str) -> str:
+    return hashlib.sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()
+
+
+def required_read_reference(name: str, call_index: int, result_index: int, message: dict,
+                            arguments: str) -> dict:
+    """记录已验证回执在会话日志中的位置及请求、正文摘要。"""
     return {'name': name, 'call_index': call_index, 'result_index': result_index,
-            'event_id': message['_event_id'],
-            'sha256': hashlib.sha256(message['content'].encode('utf-8', 'surrogatepass')).hexdigest()}
+            'event_id': message['_event_id'], 'sha256': _receipt_digest(message['content']),
+            'arguments_sha256': _receipt_digest(arguments)}
+
+
+def required_read_pair(messages: list[dict], identifier: str, reference: dict, limit: int,
+                       custom: set[str]) -> tuple[dict, dict] | None:
+    """只还原单个引用的真实调用与回执，不打开整个旧会话。"""
+    if not isinstance(reference, dict):
+        return None
+    name, event_id = reference.get('name'), reference.get('event_id')
+    call_index, result_index = reference.get('call_index'), reference.get('result_index')
+    if (not isinstance(name, str) or not isinstance(event_id, str) or not event_id
+            or type(call_index) is not int or type(result_index) is not int
+            or not 0 < call_index < result_index < limit <= len(messages)):
+        return None
+    request, result = messages[call_index], messages[result_index]
+    calls = request.get('tool_calls')
+    if request.get('role') != 'assistant' or not isinstance(calls, list):
+        return None
+    match = [call for call in calls if isinstance(call, dict) and call.get('id') == identifier]
+    if len(match) != 1 or match[0].get('type') != 'function':
+        return None
+    function = match[0].get('function')
+    if (not isinstance(function, dict) or function.get('name') != name
+            or not isinstance(function.get('arguments'), str)
+            or result.get('tool_call_id') != identifier or result.get('_event_id') != event_id
+            or result.get('_provenance') != 'executed' or not isinstance(result.get('content'), str)
+            or any(message.get('role') != 'tool' for message in messages[call_index + 1:result_index + 1])
+            or (name in custom and not successful_custom_result(result['content']))):
+        return None
+    actual = required_read_reference(name, call_index, result_index, result, function['arguments'])
+    if 'arguments_sha256' not in reference:
+        actual.pop('arguments_sha256')
+    if actual != reference:
+        return None
+    return function, result
 
 
 def resume_required_reads(record: dict, checkpoint: dict, required: set[str],
@@ -161,28 +200,14 @@ def resume_required_reads(record: dict, checkpoint: dict, required: set[str],
     seen = {identifier for identifier in saved['seen'] if isinstance(identifier, str) and identifier}
     verified = {}
     for identifier, reference in saved['calls'].items():
-        if identifier not in seen or not isinstance(reference, dict):
+        if (identifier not in seen or not isinstance(reference, dict)
+                or not isinstance(reference.get('name'), str) or reference['name'] not in required):
             continue
-        name, event_id = reference.get('name'), reference.get('event_id')
-        call_index, result_index = reference.get('call_index'), reference.get('result_index')
-        if (not isinstance(name, str) or name not in required or not isinstance(event_id, str) or not event_id
-                or type(call_index) is not int or type(result_index) is not int
-                or not 0 < call_index < result_index < limit):
-            continue
-        request, result = messages[call_index], messages[result_index]
-        calls = request.get('tool_calls')
-        if request.get('role') != 'assistant' or not isinstance(calls, list):
-            continue
-        match = [call for call in calls if isinstance(call, dict) and call.get('id') == identifier]
-        if (len(match) != 1 or match[0].get('type') != 'function'
-                or not isinstance(match[0].get('function'), dict) or match[0]['function'].get('name') != name
-                or result.get('tool_call_id') != identifier or result.get('_event_id') != event_id
-                or result.get('_provenance') != 'executed' or not isinstance(result.get('content'), str)
-                or any(message.get('role') != 'tool' for message in messages[call_index + 1:result_index + 1])
-                or (name in custom and not successful_custom_result(result['content']))):
-            continue
-        if required_read_reference(name, call_index, result_index, result) == reference:
-            verified[identifier] = reference
+        pair = required_read_pair(messages, identifier, reference, limit, custom)
+        if pair is not None:
+            function, result = pair
+            verified[identifier] = required_read_reference(
+                reference['name'], reference['call_index'], reference['result_index'], result, function['arguments'])
     return seen, verified
 
 
@@ -232,5 +257,6 @@ def _legacy_read_checkpoint(record: dict, turn_id: str, required: set[str],
         if ((observation is None or observation.reader_tool != name)
                 and ('[输出已截断]' in content or '已截断）' in content)):
             continue
-        verified[identifier] = required_read_reference(name, positions[0], result_index, result)
+        verified[identifier] = {'name': name, 'call_index': positions[0], 'result_index': result_index,
+                                'event_id': result['_event_id'], 'sha256': _receipt_digest(content)}
     return {'seen': list(calls), 'calls': verified}

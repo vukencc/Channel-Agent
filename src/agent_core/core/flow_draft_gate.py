@@ -34,6 +34,7 @@ class FlowDraftGate:
         self.session = session
         self.reserve_round = reserve_round
         self.receipt_index = receipt_index
+        self.restored_reads: Callable[[], dict[str, dict]] | None = None
         self.blocked = ''
         self.needs_sources = False
         self.handoff_feedback_valid = False
@@ -66,10 +67,14 @@ class FlowDraftGate:
                 environment(self.session) if environment else None,
                 copy.deepcopy(allowed(self.session)) if allowed else None)
 
+    def source_rows(self, char_limit: int) -> list[dict]:
+        restored = self.restored_reads() if self.restored_reads is not None else None
+        return review_sources(self.session.record, char_limit=char_limit, restored_reads=restored)
+
     def _whole_binding(self, sources: list[dict] | None = None) -> tuple:
         limit = session_limit('MODEL_INPUT_CHARS')
         if sources is None:
-            sources = review_sources(self.session.record, char_limit=min(24000, limit // 2))
+            sources = self.source_rows(min(24000, limit // 2))
         receipt = getattr(self, 'receipt_index', None)
         return (*self._review_authority(), copy.deepcopy(sources), getattr(receipt, 'revision', 0),
                 copy.deepcopy(receipt.review_facts()) if receipt else None,
@@ -166,7 +171,7 @@ class FlowDraftGate:
         events = run.setdefault('draft_reviews', [])
         start = len(events)
         char_limit = session_limit('MODEL_INPUT_CHARS')
-        sources = review_sources(self.session.record, char_limit=min(24000, char_limit // 2))
+        sources = self.source_rows(min(24000, char_limit // 2))
         unchanged = self._binding_guard(sources)
 
         with model_dispatch_guard(unchanged):
@@ -650,7 +655,7 @@ class FlowDraftGate:
         run.setdefault('draft_reviews', []).append(event)
         char_limit = session_limit('MODEL_INPUT_CHARS')
         sources = (sources_override if sources_override is not None else
-                   review_sources(self.session.record, char_limit=min(24000, char_limit // 2)))
+                   self.source_rows(min(24000, char_limit // 2)))
         if stage in {'tool', 'preview'} and batch_targets is None:
             from agent_core.core.flow_review_items import tool_review_sources
             sources = tool_review_sources(draft, sources)

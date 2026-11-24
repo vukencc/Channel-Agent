@@ -538,3 +538,22 @@ def test_managed_memory_entry_uses_host_path_spelling(monkeypatch):
     monkeypatch.setattr(flow_review_sources, "PurePath", PurePosixPath)
     assert not flow_review_sources._workspace_memory_entry(path)
     assert not flow_review_sources._workspace_memory_entry(".CHANNELAGENT/MEMORY.JSON")
+
+
+def test_resumed_required_read_keeps_echo_restrictions_without_old_write_source():
+    from agent_core.core.flow_required_reads import required_read_reference
+
+    data, text = echo_record()
+    original = next(row for row in review_sources(data, char_limit=4000) if row["kind"] == "read_file")
+    call = data["messages"][3]["tool_calls"][0]
+    result = data["messages"][4]
+    restored = {"read": required_read_reference("read_file", 3, 4, result, call["function"]["arguments"])}
+    data["messages"].append({"role": "user", "content": "继续"})
+    data["last_run"] = {"turn_id": "resume", "input_index": 5, "tools": []}
+
+    assert review_sources(data, char_limit=4000) == []
+    assert review_sources(data, char_limit=4000, restored_reads=restored) == [original]
+    assert review_sources(data, char_limit=len(text), restored_reads=restored) == []
+    duplicate = copy.deepcopy(call)
+    data["messages"].append({"role": "assistant", "tool_calls": [duplicate]})
+    assert review_sources(data, char_limit=4000, restored_reads=restored) == []

@@ -1304,6 +1304,37 @@ class SessionManager:
         session.record['inbox_cursor'] = page['next_seq']
         await self.save(session)
 
+    def _restored_read_scope(self, session: Session, verified: dict[str, dict]) -> Callable[[], dict[str, dict]]:
+        """只在同一恢复轮与原工作区、权限下向审查暴露指定回执。"""
+        restored_ids = frozenset(verified)
+        definitions = {name: copy.deepcopy(tool.definition)
+                       for name, tool in self._session_custom_registry(session).items()}
+
+        def authority():
+            record = session.record
+            binding = self.workspaces.owner_binding(session)
+            return (record.get('flow_id'), record.get('flow_node_id'), record.get('flow_run_id'),
+                    record['last_run'].get('turn_id'), session.flow_required_task,
+                    binding, self.workspaces.path(session), self.execution_environment(session),
+                    self.permission_override or record.get('permission_policy') or config.TOOL_PERMISSION_POLICY)
+
+        original = authority()
+
+        def sources() -> dict[str, dict]:
+            try:
+                if authority() != original:
+                    return {}
+                allowed = self._effective_session_tools(session)
+                current = self._session_custom_registry(session)
+            except (OSError, ValueError):
+                return {}
+            return {identifier: reference for identifier, reference in verified.items()
+                    if identifier in restored_ids and (allowed is None or reference['name'] in allowed)
+                    and (reference['name'] in TOOL_REGISTRY or
+                         reference['name'] in current and current[reference['name']].definition == definitions.get(reference['name']))}
+
+        return sources
+
     async def _run(self, session, handoff_contract=None):
         contexts = []
         # 仅在此运行中产生并完整交付的观察可用于后续工作窗口。
@@ -1369,6 +1400,8 @@ class SessionManager:
                     seen_read_call_ids, verified_read_calls = resume_required_reads(
                         session.record, saved, eligible, custom, require_commit=staged_actions.requires_preview)
                     completed_reads = {reference['name'] for reference in verified_read_calls.values()}
+                    if verified_read_calls:
+                        gate.restored_reads = self._restored_read_scope(session, verified_read_calls)
         if required_read_names:
             missing = required_read_names - completed_reads
             session.record['last_run']['flow_required_reads'] = {
@@ -2111,7 +2144,7 @@ class SessionManager:
                                 from agent_core.core.flow_required_reads import required_read_reference
 
                                 verified_read_calls[call_id] = required_read_reference(
-                                    name, reply_index, len(session.record['messages']) - 1, message)
+                                    name, reply_index, len(session.record['messages']) - 1, message, call['function']['arguments'])
                             completed_reads = {reference['name'] for reference in verified_read_calls.values()}
                             state = session.record['last_run']['flow_required_reads']
                             state['completed'] = sorted(completed_reads)

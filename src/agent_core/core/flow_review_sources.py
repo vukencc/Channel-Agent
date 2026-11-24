@@ -1,5 +1,6 @@
 """从本轮已执行的只读工具结果中收集可核验的原文片段。"""
 from collections import Counter
+from collections.abc import Iterator
 import hashlib
 import json
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
@@ -203,7 +204,113 @@ def _workspace_memory_entry(path: object) -> bool:
             and value == PurePath(DIR_NAME, FILE_NAME))
 
 
-def review_sources(record: dict, *, char_limit: int) -> list[dict]:
+def _message_tool_calls(message: dict) -> list[dict]:
+    calls = message.get('tool_calls') if message.get('role') == 'assistant' else None
+    return [call for call in calls if isinstance(call, dict)] if isinstance(calls, list) else []
+
+
+def _paired_tool_messages(messages: list[dict]) -> Iterator[tuple[dict, dict]]:
+    """工具调用、随后的结果与事件标识必须在这段记录中各自唯一。"""
+    calls = Counter(call['id'] for message in messages for call in _message_tool_calls(message)
+                    if isinstance(call.get('id'), str))
+    results = Counter(message['tool_call_id'] for message in messages
+                      if message.get('role') == 'tool' and isinstance(message.get('tool_call_id'), str))
+    result_events = Counter(message['_event_id'] for message in messages
+                            if message.get('role') == 'tool' and isinstance(message.get('_event_id'), str))
+    for index, message in enumerate(messages):
+        batch = _message_tool_calls(message)
+        if not batch:
+            continue
+        matching = {}
+        position = index + 1
+        while position < len(messages) and messages[position].get('role') == 'tool':
+            result = messages[position]
+            identifier = result.get('tool_call_id')
+            if isinstance(identifier, str) and results[identifier] == 1:
+                matching[identifier] = result
+            position += 1
+        for call in batch:
+            identifier, function = call.get('id'), call.get('function')
+            if (not isinstance(identifier, str) or not identifier or calls[identifier] != 1
+                    or call.get('type') != 'function' or not isinstance(function, dict)
+                    or not isinstance(function.get('name'), str)):
+                continue
+            result = matching.get(identifier)
+            if result is None:
+                continue
+            event_id = result.get('_event_id')
+            if (isinstance(event_id, str) and event_id and result_events[event_id] == 1
+                    and result.get('_provenance') == 'executed' and isinstance(result.get('content'), str)):
+                yield call, result
+
+
+def _live_source_pairs(messages: list[dict], events: list[dict], turn: str) -> Iterator[tuple[dict, dict, dict]]:
+    event_counts = Counter(event["event_id"] for event in events
+                           if isinstance(event, dict) and isinstance(event.get("event_id"), str))
+    event_call_counts = Counter(event["tool_call_id"] for event in events
+                                if isinstance(event, dict) and isinstance(event.get("tool_call_id"), str))
+    event_by_id = {event["event_id"]: event for event in events
+                   if isinstance(event, dict) and isinstance(event.get("event_id"), str)}
+    for call, result in _paired_tool_messages(messages):
+        identifier, event_id = call['id'], result['_event_id']
+        if event_call_counts[identifier] != 1 or event_counts[event_id] != 1:
+            continue
+        event = event_by_id[event_id]
+        if (event.get("source") == "executed" and event.get("name") == call['function']['name']
+                and event.get("tool_call_id") == identifier and event.get("turn_id") == turn
+                and event.get("outcome") == "completed" and event.get("execution_progress") is True):
+            yield call['function'], result, event
+
+
+def _prior_echoes(messages: list[dict], stop: int, custom_names: dict[str, dict]) -> dict | None:
+    """旧工具结果只可限制回读的证明力，不直接成为续跑来源。"""
+    start = next((idx for idx in range(stop - 1, -1, -1) if is_user_request(messages[idx])), -1)
+    if start < 0:
+        return None
+    known = {}
+    count = 0
+    for call, result in _paired_tool_messages(messages[start + 1:stop]):
+        function = call['function']
+        if function['name'] not in custom_names:
+            continue
+        echo = _receipt_echo(function.get('arguments'), result['content'])
+        if echo is not None:
+            count += 1
+            if count > 128:
+                return None
+            obj, fields = echo
+            known.setdefault(_record_key(obj), []).append((0, fields))
+    return known
+
+
+def _resumed_source_pairs(messages: list[dict], current: int, restored: dict[str, dict],
+                          custom_names: dict[str, dict]) -> Iterator[tuple[dict, dict, dict]]:
+    from agent_core.core.flow_required_reads import required_read_pair
+
+    live_ids = {call['id'] for message in messages[current + 1:] for call in _message_tool_calls(message)
+                if isinstance(call.get('id'), str)}
+    live_event_ids = {message['_event_id'] for message in messages[current + 1:]
+                      if message.get('role') == 'tool' and isinstance(message.get('_event_id'), str)}
+    restored_events = Counter(reference['event_id'] for reference in restored.values()
+                              if isinstance(reference, dict) and isinstance(reference.get('event_id'), str))
+    for identifier, reference in restored.items():
+        if not isinstance(reference, dict) or 'arguments_sha256' not in reference:
+            continue
+        event_id = reference.get('event_id')
+        if (identifier in live_ids or not isinstance(event_id, str)
+                or event_id in live_event_ids or restored_events[event_id] != 1):
+            continue
+        pair = required_read_pair(messages, identifier, reference, current, set(custom_names))
+        if pair is not None:
+            function, result = pair
+            restrictions = (_prior_echoes(messages, reference['call_index'], custom_names)
+                            if function['name'] == 'read_file' else {})
+            if restrictions is not None:
+                yield function, result, restrictions
+
+
+def review_sources(record: dict, *, char_limit: int,
+                   restored_reads: dict[str, dict] | None = None) -> list[dict]:
     """返回完整观察区间；预算按正文字符计，不表示整个文件完整。"""
     if type(char_limit) is not int or char_limit <= 0 or not isinstance(record, dict):
         return []
@@ -218,25 +325,6 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
     if (current < 0 or run.get("input_index") != current or not isinstance(turn, str)
             or not turn or not isinstance(events, list)):
         return []
-    call_counts, result_counts, result_events = Counter(), Counter(), Counter()
-    for message in messages[current + 1:]:
-        calls = message.get("tool_calls", []) if message.get("role") == "assistant" else []
-        if isinstance(calls, list):
-            for call in calls:
-                if isinstance(call, dict) and isinstance(call.get("id"), str):
-                    call_counts[call["id"]] += 1
-        if message.get("role") == "tool":
-            identifier, event_id = message.get("tool_call_id"), message.get("_event_id")
-            if isinstance(identifier, str):
-                result_counts[identifier] += 1
-            if isinstance(event_id, str):
-                result_events[event_id] += 1
-    event_counts = Counter(event.get("event_id") for event in events
-                           if isinstance(event, dict) and isinstance(event.get("event_id"), str))
-    event_call_counts = Counter(event.get("tool_call_id") for event in events
-                                if isinstance(event, dict) and isinstance(event.get("tool_call_id"), str))
-    event_by_id = {event["event_id"]: event for event in events
-                   if isinstance(event, dict) and isinstance(event.get("event_id"), str)}
     rows = []
     echoes = []
     echo_overflow = False
@@ -245,90 +333,77 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
     custom_names = _custom_names(record)
     seen_spans = set()
     remaining = char_limit
-    for index in range(current + 1, len(messages)):
-        message = messages[index]
-        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
-        if not isinstance(calls, list) or not calls:
+
+    def source_pairs():
+        for function, result, event in _live_source_pairs(messages[current + 1:], events, turn):
+            yield function, result, event, None
+        if restored_reads:
+            for function, result, restrictions in _resumed_source_pairs(messages, current, restored_reads, custom_names):
+                yield function, result, None, restrictions
+
+    for function, result, event, restrictions in source_pairs():
+        name = function["name"]
+        if name not in {"read_file", "rag_search"} and name not in custom_names:
             continue
-        results = []
-        position = index + 1
-        while position < len(messages) and messages[position].get("role") == "tool":
-            results.append(messages[position])
-            position += 1
-        for call in calls:
-            if not isinstance(call, dict):
+        content = result["content"]
+        # 已配对的 read_file 成功回执由下方观察摘要和区间核验，正文可含任意协议字样。
+        if name != "read_file" and tool_outcome(content, custom_tool=name in custom_names) != "completed":
+            continue
+        try:
+            arguments = json.loads(function.get("arguments", ""))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(arguments, dict) or (name == "rag_search" and arguments.get("source") == "history"):
+            continue
+        if name in custom_names:
+            if event is not None and event.get('action_stage') == 'commit':
+                echo = _receipt_echo(function.get('arguments'), content)
+                if echo is not None:
+                    if len(echoes) < 128:
+                        echoes.append(echo)
+                    else:
+                        echo_overflow = True
+            path_info = _custom_args(arguments, custom_names[name])
+            if path_info is not None:
+                stdout = _custom_stdout(content, require_records=path_info[1] is None)
+                if stdout is not None:
+                    custom_rows.append((name, *path_info, stdout))
+            continue
+        observation = validate_observation(content, result.get("_context_observation"))
+        if observation is None or observation.reader_tool != name:
+            continue
+        key = "path" if name == "read_file" else "item_ref"
+        value = arguments.get(key)
+        source = arguments.get("source", "") if name == "rag_search" else ""
+        identified = (isinstance(value, str) and bool(value) and len(value) <= 1024
+                      and isinstance(source, str))
+        for start, end in observation.body_spans:
+            text = content[start:end]
+            identity = (name, source, value, text) if identified else None
+            if len(text) > remaining or (identity is not None and identity in seen_spans):
                 continue
-            identifier, function = call.get("id"), call.get("function")
-            if (not isinstance(identifier, str) or not identifier or call_counts[identifier] != 1
-                    or result_counts[identifier] != 1 or event_call_counts[identifier] != 1
-                    or call.get("type") != "function" or not isinstance(function, dict)):
-                continue
-            name = function.get("name")
-            if not isinstance(name, str) or (name not in {"read_file", "rag_search"} and name not in custom_names):
-                continue
-            matches = [result for result in results if result.get("tool_call_id") == identifier]
-            if len(matches) != 1:
-                continue
-            result = matches[0]
-            event_id = result.get("_event_id")
-            if not isinstance(event_id, str) or not event_id or result_events[event_id] != 1 or event_counts[event_id] != 1:
-                continue
-            event = event_by_id[event_id]
-            content = result.get("content")
-            if (result.get("_provenance") != "executed" or event.get("source") != "executed"
-                    or event.get("name") != name or event.get("tool_call_id") != identifier
-                    or event.get("turn_id") != turn or event.get("outcome") != "completed"
-                    or event.get("execution_progress") is not True
-                    or not isinstance(content, str)):
-                continue
-            # 已配对的 read_file 成功回执由下方观察摘要和区间核验，正文可含任意协议字样。
-            if name != "read_file" and tool_outcome(content, custom_tool=name in custom_names) != "completed":
-                continue
-            try:
-                arguments = json.loads(function.get("arguments", ""))
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(arguments, dict) or (name == "rag_search" and arguments.get("source") == "history"):
-                continue
-            if name in custom_names:
-                if event.get('action_stage') == 'commit':
-                    echo = _receipt_echo(function.get('arguments'), content)
-                    if echo is not None:
-                        if len(echoes) < 128:
-                            echoes.append(echo)
-                        else:
-                            echo_overflow = True
-                path_info = _custom_args(arguments, custom_names[name])
-                if path_info is not None:
-                    stdout = _custom_stdout(content, require_records=path_info[1] is None)
-                    if stdout is not None:
-                        custom_rows.append((name, *path_info, stdout))
-                continue
-            observation = validate_observation(content, result.get("_context_observation"))
-            if observation is None or observation.reader_tool != name:
-                continue
-            key = "path" if name == "read_file" else "item_ref"
-            value = arguments.get(key)
-            source = arguments.get("source", "") if name == "rag_search" else ""
-            identified = (isinstance(value, str) and bool(value) and len(value) <= 1024
-                          and isinstance(source, str))
-            for start, end in observation.body_spans:
-                text = content[start:end]
-                identity = (name, source, value, text) if identified else None
-                if len(text) > remaining or (identity is not None and identity in seen_spans):
-                    continue
-                row = {"id": f"S{len(rows) + 1}", "kind": name, "text": text,
-                       "scope": "observed_span"}
-                if isinstance(value, str) and value and len(value) <= 1024:
-                    row[key] = value
-                if name == "read_file" and _workspace_memory_entry(value):
-                    row["workspace_memory_path"] = True
-                if name == 'read_file' and echoes:
+            row = {"id": f"S{len(rows) + 1}", "kind": name, "text": text,
+                   "scope": "observed_span"}
+            if isinstance(value, str) and value and len(value) <= 1024:
+                row[key] = value
+            if name == "read_file" and _workspace_memory_entry(value):
+                row["workspace_memory_path"] = True
+            if name == 'read_file':
+                if restrictions:
+                    markers = _echo_markers(text, restrictions, 1)
+                    if markers:
+                        cost = len(json.dumps(markers, ensure_ascii=True)) + 256
+                        if len(text) + cost > remaining:
+                            # 已知回显不能在省去溯源标记后成为独立原文。
+                            continue
+                        row['_submitted_echoes'] = markers
+                        remaining -= cost
+                if event is not None and echoes:
                     pending_echoes.append((row, len(echoes)))
-                rows.append(row)
-                if identity is not None:
-                    seen_spans.add(identity)
-                remaining -= len(text)
+            rows.append(row)
+            if identity is not None:
+                seen_spans.add(identity)
+            remaining -= len(text)
     remaining = _append_user_input(record, messages[current], turn, rows, remaining)
     # 工具报告使用剩余预算，且最多占总预算的一半。
     budget = min(remaining, char_limit // 2)

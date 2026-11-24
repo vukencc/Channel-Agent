@@ -380,7 +380,7 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
 
 
 @pytest.mark.parametrize('case', [
-    'success', 'legacy', 'twice', 'failed', 'unpaired', 'tampered', 'duplicate', 'duplicate_after_resume',
+    'success', 'legacy', 'twice', 'semantic', 'semantic_revoked', 'semantic_tampered', 'failed', 'unpaired', 'tampered', 'duplicate', 'duplicate_after_resume',
 ])
 def test_resume_requires_only_reads_without_verifiable_completion(runtime_store, monkeypatch, case):
     store, project = runtime_store
@@ -388,8 +388,12 @@ def test_resume_requires_only_reads_without_verifiable_completion(runtime_store,
     monkeypatch.setattr(config, 'MODEL_RECOVERY_LIMIT', 0)
     if case == 'twice':
         monkeypatch.setattr(config, 'RUN_HISTORY_LIMIT', 1)
-    complete = case in {'success', 'legacy', 'twice'}
-    (project / 'feedback.json').write_text('{"items":[]}', encoding='utf-8')
+    complete = case in {'success', 'legacy', 'twice', 'semantic'}
+    semantic = case.startswith('semantic')
+    feedback = {'items': [{'id': 'CF-01', 'text': '页面无法提交，请帮忙排查。'}]} if semantic else {'items': []}
+    (project / 'feedback.json').write_text(json.dumps(feedback, ensure_ascii=False), encoding='utf-8')
+    (project / 'unrelated.txt').write_text('先前的无关证据。', encoding='utf-8')
+    observed_review = []
     # 纯读但有独立变量，不匹配特殊只读代码的结构。运行结果仍能满足必做读取。
     reader = {
         'name': 'read_feedback', 'description': '只读取当前工作区反馈记录。',
@@ -425,12 +429,25 @@ def test_resume_requires_only_reads_without_verifiable_completion(runtime_store,
         if session.record['flow_node_id'] == 'next':
             return assistant('已收到交接')
         names = {row['function']['name'] for row in selected_schemas(TOOL_SCHEMAS)}
+        payload = review_payload(history)
+        if semantic and payload is not None:
+            observed_review.append(payload)
+            assert case == 'semantic', '撤销授权或篡改请求后不能交付旧回执'
+            assert len(payload['sources']) == 1
+            source = payload['sources'][0]
+            assert source['kind'] == 'custom_result' and source['scope'] == 'tool_report'
+            assert source['tool'] == 'read_feedback' and json.loads(source['text']) == feedback
+            assert '先前的无关证据' not in source['text']
+            return assistant('{"status":"pass"}')
         if not resumed:
             initial_calls += 1
-            if initial_calls == 1:
+            if semantic and initial_calls == 1:
+                return assistant(calls=[call('unrelated-read', 'read_file', path='unrelated.txt')])
+            phase = initial_calls - semantic
+            if phase == 1:
                 assert 'draft_read_feedback' in names
                 return assistant(calls=[call('initial-draft', 'draft_read_feedback')])
-            if initial_calls == 2:
+            if phase == 2:
                 assert names == {'read_feedback'}
                 return assistant(calls=[call('initial-read', 'read_feedback')])
             if case == 'duplicate' and initial_calls == 3:
@@ -444,6 +461,14 @@ def test_resume_requires_only_reads_without_verifiable_completion(runtime_store,
         if resumed_calls == 2 and case == 'success':
             assert 'draft_read_feedback' in names
             return assistant(calls=[call('unnecessary-redraft', 'draft_read_feedback')])
+        if semantic:
+            if case == 'semantic_revoked':
+                manager.permission_override = 'readonly'
+            if case == 'semantic_tampered':
+                calls = [entry for row in session.record['messages'] for entry in row.get('tool_calls', ())]
+                original = next(entry for entry in calls if entry['id'] == 'initial-read')
+                original['function']['arguments'] = '{"path":"unrelated.txt"}'
+            return assistant('{"read_checked":true,"notes":"客户明确要求排查无法提交的问题。"}')
         return assistant('{"read_checked":true}')
 
     async def run():
@@ -461,7 +486,8 @@ def test_resume_requires_only_reads_without_verifiable_completion(runtime_store,
             flow.update(nodes=[
                 {'id': 'work', 'title': '读取', 'prompt': '调用 read_feedback 读取工作区反馈。',
                  'tool_names': ['read_file', 'read_feedback'], 'custom_tools': [reader],
-                 'handoff_contract': {'fields': {'read_checked': {'type': 'boolean'}}}},
+                 'handoff_contract': {'fields': {'read_checked': {'type': 'boolean'},
+                                                 **({'notes': {'type': 'string'}} if semantic else {})}}},
                 {'id': 'next', 'title': '下游', 'prompt': '核对交接', 'tool_names': []},
             ], edges=[{'source': 'work', 'target': 'next'}])
             service.save(flow)
@@ -503,9 +529,14 @@ def test_resume_requires_only_reads_without_verifiable_completion(runtime_store,
                 assert after['status'] == 'completed', after['nodes']['work']['error']
                 assert after['nodes']['next']['session_id'] and resumed_calls == (2 if case == 'twice' else 1)
                 assert record['last_run']['flow_required_reads']['completed'] == ['read_feedback']
+                if case == 'semantic':
+                    assert len(observed_review) == 1
             else:
                 assert after['nodes']['next']['status'] == 'blocked'
-                assert record['last_run']['flow_required_reads']['completed'] == []
+                if semantic:
+                    assert not observed_review
+                else:
+                    assert record['last_run']['flow_required_reads']['completed'] == []
         finally:
             await service.shutdown()
             await manager.shutdown()
