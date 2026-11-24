@@ -162,3 +162,34 @@ def test_receipt_reader_backend_is_limited_to_linux_and_windows_sandbox():
     for platform in ("linux", "win32", "darwin"):
         assert not receipt_reader_backend(platform, "local")
     assert not receipt_reader_backend("darwin", "sandbox")
+
+
+
+def test_parameterized_readers_only_abstract_inert_bindings_and_data():
+    from agent_core.core.flow_receipt_readers import proven_receipt_reader
+
+    definition = {
+        "network": False,
+        "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}},
+                       "required": ["file_path"], "additionalProperties": False},
+        "code": chr(10).join((
+            "def main(options):",
+            "    import json as codec",
+            "    from pathlib import Path as LocalPath",
+            "    delivery = codec.loads(LocalPath(options['file_path']).read_text(encoding='utf-8'))",
+            "    return delivery",
+        )),
+    }
+    assert proven_receipt_reader(definition)
+    for old, new in (
+        ("import json as codec", "import custom_codec as codec"),
+        ("as LocalPath", "as codec"),
+        ("options['file_path']", "options.get('file_path')"),
+        ("read_text(encoding=", "write_text(encoding="),
+        ("return delivery", "return getattr(delivery, 'items')()"),
+        ("return delivery", "open('changed.json', 'w')"),
+        ("options['file_path']", "'../outside.json'"),
+    ):
+        code = definition["code"].replace(old, new)
+        assert code != definition["code"]
+        assert not proven_receipt_reader({**definition, "code": code}), new

@@ -150,6 +150,8 @@ def test_start_releases_reservation_if_run_metadata_fails(tmp_path, monkeypatch,
     ('signed_selector', 'duplicate'),
     ('signed', 'reader_verified'),
     ('signed', 'reader_wrong'),
+    ('signed', 'reader_other_data'),
+    ('signed', 'reader_other_path'),
     ('signed', 'unknown_writer'),
 ])
 def test_resume_keeps_dynamic_action_handoff_constraints(
@@ -175,17 +177,42 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
         definition['parameters']['required'] = ['customer', 'diagnosis']
     contract = {'fields': {'submitted_ticket_ids': {'type': 'array'}}}
     readers = []
-    if outcome in {'reader_verified', 'reader_wrong', 'unknown_writer'}:
+    if outcome in {'reader_verified', 'reader_wrong', 'reader_other_data', 'reader_other_path', 'unknown_writer'}:
         path = Path(__file__).resolve().parents[1] / 'scripts/cases/customer_feedback_dynamic.template.json'
         template = json.loads(path.read_text(encoding='utf-8'))
         configured_reader = next(tool for node in template['nodes'] for tool in node.get('custom_tools', ())
                                  if tool['name'] == 'read_feedback')
+        input_path = project / 'feedback.json'
+        input_data = {'items': []}
+        if outcome == 'reader_other_data':
+            input_path = project / 'deliveries.json'
+            input_data = {'deliveries': []}
+            configured_reader['code'] = chr(10).join((
+                'import json as codec, os as platform',
+                'def main(options):',
+                "    source_name = platform.path.join('.', 'deliveries.json')",
+                "    with open(source_name, 'r', encoding='utf-8') as handle:",
+                '        manifest = codec.load(handle)',
+                "    if not isinstance(manifest, dict) or not isinstance(manifest.get('deliveries'), list):",
+                "        raise ValueError('invalid delivery manifest')",
+                '    return manifest',
+            ))
+        elif outcome == 'reader_other_path':
+            input_path = project / 'inventory.json'
+            input_data = {'inventory': []}
+            configured_reader['code'] = chr(10).join((
+                'def main(options):',
+                '    import json as codec',
+                '    from pathlib import Path as LocalPath',
+                "    inventory = codec.loads(LocalPath('inventory.json').read_text(encoding='utf-8'))",
+                '    return inventory',
+            ))
         if outcome == 'unknown_writer':
             configured_reader['code'] = ('def main(arguments):' + chr(10)
                 + "    with open('read-marker.txt', 'w') as stream:" + chr(10)
                 + "        stream.write('side effect')" + chr(10) + "    return {'items': []}" + chr(10))
         readers.append(configured_reader)
-        (project / 'feedback.json').write_text('{"items":[]}', encoding='utf-8')
+        input_path.write_text(json.dumps(input_data), encoding='utf-8')
         if outcome in {'reader_verified', 'reader_wrong'}:
             (project / 'json.py').write_text("open('shadow-marker.txt', 'w').close()" + chr(10)
                                             + "raise RuntimeError('unexpected workspace import')" + chr(10),
@@ -201,8 +228,8 @@ def test_resume_keeps_dynamic_action_handoff_constraints(
                 assert tool.definition == configured_reader and arguments == '{}'
                 if outcome == 'unknown_writer':
                     (project / 'read-marker.txt').write_text('side effect', encoding='utf-8')
-                feedback = (project / 'feedback.json').read_text(encoding='utf-8')
-                return chr(10).join(('[退出码] 0', '[stdout]', feedback))
+                result = input_path.read_text(encoding='utf-8')
+                return chr(10).join(('[退出码] 0', '[stdout]', result))
 
             monkeypatch.setattr(CustomTool, 'run', controlled_native_run)
 
