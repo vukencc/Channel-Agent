@@ -15,7 +15,7 @@ from agent_core.core.flow_draft_review import (
     AmbiguousDraft, assess_review, needs_review, normalised_draft, parse_review_reply, review_messages,
 )
 from agent_core.core.flow_review_claims import (
-    INVALID_REVIEW, RECEIPT_GUIDANCE, action_review_context, claim_assessment, claim_targets, focal_targets,
+    INVALID_REVIEW, RECEIPT_GUIDANCE, _number_targets, action_review_context, claim_assessment, claim_targets, focal_targets,
     prepare_claim_request, shared_targets, with_revision_navigation,
 )
 from agent_core.core.flow_review_sources import review_sources
@@ -274,12 +274,13 @@ class FlowDraftGate:
 
     async def _check_batches(self, draft: str, sources: list[dict], selected: list[dict], *,
                              stage: str, call_id: str | None, unchanged: Callable[[], bool],
-                             action_context: dict | None = None) -> str | None:
+                             action_context: dict | None = None,
+                             revision_context: dict | None = None) -> str | None:
         if config.FLOW_REVIEW_CONCURRENCY == 2:
             try:
                 return await self._check_parallel_batches(draft, sources, selected, stage=stage,
                                                          call_id=call_id, unchanged=unchanged,
-                                                         action_context=action_context)
+                                                         action_context=action_context, revision_context=revision_context)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -301,7 +302,7 @@ class FlowDraftGate:
             try:
                 feedback = await self._check_one(draft, stage=stage, force=True, call_id=call_id,
                     sources_override=sources, recovery=recovery, action_context=action_context,
-                    batch_targets=batch, dispatch_allowed=unchanged)
+                    batch_targets=batch, dispatch_allowed=unchanged, revision_context=revision_context)
             except asyncio.CancelledError:
                 cancelled = True
             child = events.pop()
@@ -321,7 +322,8 @@ class FlowDraftGate:
 
     async def _check_parallel_batches(self, draft: str, sources: list[dict], targets: list[dict], *,
                                       stage: str, call_id: str | None, unchanged: Callable[[], bool],
-                                      action_context: dict | None) -> str | None:
+                                      action_context: dict | None,
+                                      revision_context: dict | None) -> str | None:
         """每批隔离状态及审计；只共享轮次、恢复名额和原会话的模型费用。"""
         events = self.session.record['last_run'].setdefault('draft_reviews', [])
         original_run = self.session.record['last_run']
@@ -369,7 +371,7 @@ class FlowDraftGate:
                         draft, stage=stage, force=True, call_id=call_id, sources_override=sources,
                         recovery=recovery, action_context=action_context, batch_targets=batch,
                         phase_session=self.session, dispatch_allowed=may_dispatch,
-                        observed_run=original_run)
+                        observed_run=original_run, revision_context=revision_context)
             except asyncio.CancelledError:
                 result = None
                 was_cancelled = True
@@ -490,7 +492,7 @@ class FlowDraftGate:
                          action_context: dict | None = None, revision_key: object = None,
                          revision_definition: dict | None = None, batch_targets: list[dict] | None = None,
                          phase_session=None, dispatch_allowed: Callable[[], bool] | None = None,
-                         observed_run: dict | None = None) -> str | None:
+                         observed_run: dict | None = None, revision_context: dict | None = None) -> str | None:
         if self.blocked:
             return self.blocked
         if not force and not needs_review(draft):
@@ -544,16 +546,19 @@ class FlowDraftGate:
             targets = batch_targets
         else:
             targets = shared_targets(draft) if shared else claim_targets(draft)
-        focused = None
-        if recheck and previous is not None and previous[0] == fingerprint:
-            from agent_core.core.flow_review_revision import revision_targets
-            focused = revision_targets(previous[1], previous[2], draft)
-        if focused is not None:
-            targets = focused
-        elif batch_targets is None and not shared and not recheck:
+        if batch_targets is None and not shared and not recheck:
             candidates = targets
             targets = focal_targets(candidates)
             event['background_count'] = len(candidates) - len(targets)
+        if recheck and previous is not None and previous[0] == fingerprint and targets:
+            from agent_core.core.flow_review_revision import revision_navigation, revision_targets
+
+            # 退回意见可能只列出部分错误。旧争议和改动只能补充本次范围。
+            revisions = revision_targets(previous[1], previous[2], draft) or []
+            spans = {(row['field'], row['start'], row['end']) for row in targets}
+            extra = [row for row in revisions if (row['field'], row['start'], row['end']) not in spans]
+            targets = _number_targets([*targets, *extra]) if len(targets) + len(extra) <= 64 else []
+            revision_context = revision_navigation(previous[1], previous[2], draft, targets, sources)
         if stage == 'preview' and batch_targets is None and 4 < len(targets) <= 64:
             from agent_core.core.model_settings import model_dispatch_guard
 
@@ -564,7 +569,7 @@ class FlowDraftGate:
             with model_dispatch_guard(unchanged):
                 feedback = await self._check_batches(
                     draft, sources, targets, stage=stage, call_id=call_id,
-                    unchanged=unchanged, action_context=action_context)
+                    unchanged=unchanged, action_context=action_context, revision_context=revision_context)
             if self.session.cancelled.is_set():
                 raise asyncio.CancelledError
             if not unchanged():
@@ -598,9 +603,10 @@ class FlowDraftGate:
             if (history_size(augmented) <= char_limit
                     and request_tokens(augmented) <= session_limit('MODEL_INPUT_TOKENS')):
                 history = augmented
-        if focused and previous is not None:
-            from agent_core.core.flow_review_revision import revision_navigation
-            navigation = revision_navigation(previous[1], previous[2], draft, targets, sources)
+        if revision_context:
+            fields = {target['field'] for target in targets}
+            navigation = {key: [row for row in rows if row['field'] in fields]
+                          for key, rows in revision_context.items()}
             history = with_revision_navigation(
                 history, targets, navigation, char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'))
         if dispatch_allowed is not None and not dispatch_allowed():

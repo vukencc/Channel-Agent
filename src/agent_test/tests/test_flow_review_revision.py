@@ -76,7 +76,7 @@ def test_sentence_deletion_and_condition_use_full_field():
 @pytest.mark.parametrize("stage,change", [("tool", "none"), ("preview", "none"),
                                           ("tool", "source"), ("tool", "definition"),
                                           ("preview", "model"), ("preview", "turn"), ("preview", "policy")])
-def test_gate_focused_recheck_after_verified_revise(monkeypatch, stage, change):
+def test_gate_rechecks_all_targets_and_reuses_only_verified_navigation(monkeypatch, stage, change):
     import asyncio
     from types import SimpleNamespace
     from agent_core.core.flow_draft_gate import FlowDraftGate
@@ -117,7 +117,7 @@ def test_gate_focused_recheck_after_verified_revise(monkeypatch, stage, change):
         definition = {"name": "changed"} if change == "definition" else {"name": "tool"}
         assert await gate.check(new, stage=stage, force=True, revision_key=(stage, "T1"), revision_definition=definition) is None
     asyncio.run(run())
-    expected = ["客户表示新情况。"] if change == "none" else ["客户表示背景情况。", "客户表示新情况。", "客户表示其他情况。"]
+    expected = ["客户表示背景情况。", "客户表示新情况。", "客户表示其他情况。"]
     assert [row["excerpt"] for row in histories[1]["targets"]] == expected
     assert json.loads(histories[1]["draft"]) == json.loads(new)
     assert histories[1]["sources"] == sources
@@ -129,7 +129,79 @@ def test_gate_focused_recheck_after_verified_revise(monkeypatch, stage, change):
             "field": "/text", "source_id": "S1", "start": 0, "end": len("客户表示原始情况。"),
             "quote": "客户表示原始情况。"}]
         assert current["revision_context"]["edits"][0]["field"] == "/text"
-        assert current["targets"][0]["excerpt"] == "客户表示新情况。"
+        assert current["targets"][1]["excerpt"] == "客户表示新情况。"
         assert "claim_texts" not in current
     else:
         assert "revision_context" not in histories[1]
+
+
+def test_issue_count_limit_does_not_approve_remaining_unchanged_claim(monkeypatch):
+    import asyncio
+
+    from agent_test.tests.test_flow_draft_receipt_review import make_gate
+
+    gate, _, histories = make_gate(monkeypatch)
+    unchanged = "客户表示第六项已经授权。"
+    old = dump({"detail": [f"客户表示旧情况{i}。" for i in range(1, 6)], "extra": unchanged})
+    new = dump({"detail": [f"客户表示新情况{i}。" for i in range(1, 6)], "extra": unchanged})
+    definition = {"name": "propose_tool"}
+
+    def issue(target):
+        return {"target_id": target["id"], "draft_quote": target["excerpt"], "source_id": "s1",
+                "quote": "原始证据", "reason": "原始资料不支持该断言"}
+
+    async def review(history, **kwargs):
+        histories.append(history)
+        targets = json.loads(history[1]["content"])["targets"]
+        if len(histories) == 1:
+            assert len(targets) == 6
+            issues = [issue(target) for target in targets[:5]]
+        else:
+            issues = [issue(target) for target in targets if target["excerpt"] == unchanged]
+        verdict = {"status": "revise", "issues": issues} if issues else {"status": "pass"}
+        return {"role": "assistant", "content": dump(verdict)}
+
+    gate.manager._call_model = review
+
+    async def run():
+        first = await gate.check(old, stage="tool", force=True, revision_key=("tool", "T1"),
+                                 revision_definition=definition)
+        second = await gate.check(new, stage="tool", force=True, revision_key=("tool", "T1"),
+                                  revision_definition=definition)
+        assert first and second and unchanged in second
+
+    asyncio.run(run())
+    event = gate.session.record["last_run"]["draft_reviews"][-1]
+    assert event["status"] == "revise" and event["target_count"] == 6
+
+
+def test_preview_revision_keeps_navigation_when_full_scope_requires_batches(monkeypatch):
+    import asyncio
+
+    from agent_test.tests.test_flow_review_parallel import install_reviewer, setup_gate
+    from agent_test.tests.test_flow_whole_claim_batches import rejection, reply
+
+    gate, _, histories, state = setup_gate(monkeypatch, concurrency=2)
+    old = dump({"message": "客户表示旧情况。客户表示第二项情况。客户表示第三项情况。"})
+    new = dump({"message": "客户表示新情况。客户表示第二项情况。客户表示第三项情况。",
+                "extra": "客户表示第四项情况。", "more": "客户表示第五项情况。",
+                "last": "客户表示第六项情况。"})
+    definition = {"name": "send_reply"}
+
+    async def action(payload, attempt):
+        await asyncio.sleep(0)
+        return rejection(payload) if len(histories) == 1 else reply()
+
+    install_reviewer(gate, histories, state, action)
+
+    async def run():
+        assert await gate.check(old, stage="preview", revision_key=("send_reply", "T1"),
+                                revision_definition=definition)
+        assert await gate.check(new, stage="preview", revision_key=("send_reply", "T1"),
+                                revision_definition=definition) is None
+
+    asyncio.run(run())
+    assert [len(payload["targets"]) for payload in histories] == [3, 4, 2]
+    assert histories[1]["revision_context"]["source_locations"][0]["quote"] == "原始证据"
+    assert "revision_context" not in histories[2]
+    assert state["peak"] == 2
