@@ -689,3 +689,129 @@ def test_passing_item_cannot_be_reused_after_node_authority_changes(monkeypatch)
     gate.session.record["permission_policy"] = "readonly"
     assert asyncio.run(gate.check(draft, stage="handoff")) is None
     assert len(histories) == initial * 2
+
+
+def test_free_slot_starts_next_batch_and_stops_after_rejection(monkeypatch):
+    gate, _, histories, state = setup_gate(monkeypatch)
+    draft = json.loads(draft_with_references())
+    draft["items"][1]["observations"].extend(
+        f"客户明确提出需要查证第{i}个条目。" for i in range(10, 15)
+    )
+    draft = json.dumps(draft, ensure_ascii=False)
+    assert len(focal_targets(claim_targets(draft))) > 12
+
+    async def run():
+        release_first = asyncio.Event()
+        third_rejected = asyncio.Event()
+
+        async def action(payload, attempt):
+            key = payload["targets"][0]["id"]
+            if key == "C1":
+                await release_first.wait()
+                return reply()
+            if key == "C5":
+                return reply()
+            assert key == "C9"
+            third_rejected.set()
+            return rejection(payload)
+
+        install_reviewer(gate, histories, state, action)
+        task = asyncio.create_task(gate.check(draft, stage="handoff"))
+        try:
+            await asyncio.wait_for(third_rejected.wait(), 1)
+        finally:
+            release_first.set()
+            feedback = await task
+        assert feedback
+
+    asyncio.run(run())
+    assert list(state["calls"]) == ["C1", "C5", "C9"]
+    assert state["peak"] == 2 and state["active"] == 0
+    assert [batch["status"] for batch in audit(gate)["batches"]] == ["passed", "passed", "revise"]
+
+
+def test_rolling_cancel_preserves_completed_batch_outside_dispatch_order(monkeypatch):
+    gate, _, histories, state = setup_gate(monkeypatch)
+
+    async def run():
+        third_started = asyncio.Event()
+
+        async def action(payload, attempt):
+            key = payload["targets"][0]["id"]
+            if key == "C5":
+                return reply()
+            if key == "C9":
+                third_started.set()
+            await asyncio.Event().wait()
+
+        install_reviewer(gate, histories, state, action)
+        task = asyncio.create_task(gate.check(draft_with_references(), stage="handoff"))
+        try:
+            await asyncio.wait_for(third_started.wait(), 1)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+    assert state["peak"] == 2 and state["active"] == 0
+    assert [batch["status"] for batch in audit(gate)["batches"]] == ["cancelled", "passed", "cancelled"]
+
+
+def test_whole_batch_builds_the_receipt_bound_request_once(monkeypatch):
+    from agent_core.core import flow_draft_gate
+
+    gate, index, histories, state = setup_gate(monkeypatch)
+    calls = []
+    original = flow_draft_gate.prepare_claim_request
+
+    def observe(*args, **kwargs):
+        calls.append(kwargs.get("receipt_facts"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(flow_draft_gate, "prepare_claim_request", observe)
+
+    async def action(payload, attempt):
+        await asyncio.sleep(0)
+        return reply()
+
+    install_reviewer(gate, histories, state, action)
+    assert asyncio.run(gate.check(draft_with_references(), stage="handoff")) is None
+    assert len(histories) > 1
+    assert calls == [index.facts] * len(histories)
+
+
+def test_transient_authority_change_does_not_approve_unchecked_batches(monkeypatch):
+    gate, _, histories, state = setup_gate(monkeypatch)
+    original_binding = gate._whole_binding
+    changed = False
+
+    def binding(*args):
+        nonlocal changed
+        if changed:
+            changed = False
+            return ()
+        return original_binding(*args)
+
+    monkeypatch.setattr(gate, "_whole_binding", binding)
+
+    async def run():
+        release_first = asyncio.Event()
+
+        async def action(payload, attempt):
+            nonlocal changed
+            if payload["targets"][0]["id"] == "C1":
+                await release_first.wait()
+            else:
+                changed = True
+                asyncio.get_running_loop().call_soon(release_first.set)
+            return reply()
+
+        install_reviewer(gate, histories, state, action)
+        return await gate.check(draft_with_references(), stage="handoff")
+
+    assert "上下文已改变" in asyncio.run(run())
+    event = audit(gate)
+    assert event["status"] == "context_changed"
+    assert len(histories) == len(event["batches"]) == 2 < event["batch_count"]
+    assert gate._whole_pending

@@ -149,11 +149,16 @@ class FlowDraftGate:
         sources = review_sources(self.session.record, char_limit=min(24000, char_limit // 2))
         binding = self._whole_binding(sources)
 
-        def unchanged():
-            try:
-                return binding == self._whole_binding()
-            except Exception:
-                return False
+        context_changed = False
+
+        def unchanged() -> bool:
+            nonlocal context_changed
+            if not context_changed:
+                try:
+                    context_changed = binding != self._whole_binding()
+                except Exception:
+                    context_changed = True
+            return not context_changed
 
         with model_dispatch_guard(unchanged):
             feedback = await self._check_handoff(draft, sources, force, call_id, unchanged)
@@ -373,7 +378,9 @@ class FlowDraftGate:
                 child['superseded'] = True
             if result or was_cancelled:
                 stopped[0] = True
-            return local_gate, local_run, result, was_cancelled
+            original_run['recovery_attempts'] = (
+                original_run.get('recovery_attempts', 0) + local_run.get('recovery_attempts', 0))
+            return local_gate, child, result, was_cancelled
 
         async def guarded_batch(batch):
             try:
@@ -383,63 +390,63 @@ class FlowDraftGate:
                 raise
 
         try:
-            for offset in range(0, len(batches), 2):
-                if offset:
-                    if not unchanged():
-                        feedback = '复核期间交接上下文已改变，草稿尚未批准，请重新核对。'
-                        break
-                    if self.session.cancelled.is_set():
-                        cancelled = True
-                        break
-                tasks = [asyncio.create_task(guarded_batch(batch)) for batch in batches[offset:offset + 2]]
-                group = asyncio.gather(*tasks, return_exceptions=True)
-                while True:
-                    try:
-                        results = await asyncio.shield(group)
-                        break
-                    except asyncio.CancelledError:
-                        if not cancelled:
-                            for task in tasks:
-                                task.cancel()
-                        cancelled = True
-                for index, result in enumerate(results, offset + 1):
-                    if isinstance(result, BaseException):
-                        if isinstance(result, asyncio.CancelledError):
-                            cancelled = True
-                            status = 'cancelled'
-                        else:
-                            status = type(result).__name__
-                            self.blocked = '来源复核未能完成，草稿尚未提交。'
-                            feedback = feedback or self.blocked
-                        summary.append(self._batch_summary({
-                            'status': status,
-                            'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
-                        }, index))
-                        continue
-                    local_gate, local_run, child_feedback, child_cancelled = result
-                    original_run['recovery_attempts'] = (
-                        original_run.get('recovery_attempts', 0)
-                        + local_run.get('recovery_attempts', 0))
-                    self.needs_sources = self.needs_sources or local_gate.needs_sources
-                    child = local_run['draft_reviews'][-1]
-                    if local_gate.blocked and not self.blocked and not child.get('superseded'):
-                        self.blocked = local_gate.blocked
-                    summary.append(self._batch_summary(child, index))
-                    valid_feedback = local_gate.handoff_feedback_valid
-                    if child_feedback and (feedback is None or (valid_feedback and not has_verdict_feedback)):
-                        feedback = child_feedback
-                    if valid_feedback and child_feedback and child_feedback not in verdict_feedback:
-                        verdict_feedback.append(child_feedback)
-                    has_verdict_feedback = has_verdict_feedback or valid_feedback
-                    cancelled = cancelled or child_cancelled
-                if feedback or cancelled:
+            tasks = []
+            pending = set()
+            while pending or (len(tasks) < len(batches) and not stopped[0] and not cancelled):
+                while len(pending) < 2 and len(tasks) < len(batches) and may_dispatch():
+                    task = asyncio.create_task(guarded_batch(batches[len(tasks)]))
+                    tasks.append(task)
+                    pending.add(task)
+                if not pending:
                     break
+                try:
+                    _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                except asyncio.CancelledError:
+                    # 仅取消仍在途的请求，已返回的结果仍按批次顺序记录。
+                    stopped[0] = True
+                    if not cancelled:
+                        for task in pending:
+                            if not task.done():
+                                task.cancel()
+                    cancelled = True
+            for index, task in enumerate(tasks, 1):
+                try:
+                    result = task.result()
+                except BaseException as exc:
+                    result = exc
+                if isinstance(result, BaseException):
+                    if isinstance(result, asyncio.CancelledError):
+                        cancelled = True
+                        status = 'cancelled'
+                    else:
+                        status = type(result).__name__
+                        self.blocked = '来源复核未能完成，草稿尚未提交。'
+                        feedback = feedback or self.blocked
+                    summary.append(self._batch_summary({
+                        'status': status,
+                        'draft_sha256': hashlib.sha256(draft.encode('utf-8', 'surrogatepass')).hexdigest(),
+                    }, index))
+                    continue
+                local_gate, child, child_feedback, child_cancelled = result
+                self.needs_sources = self.needs_sources or local_gate.needs_sources
+                if local_gate.blocked and not self.blocked and not child.get('superseded'):
+                    self.blocked = local_gate.blocked
+                summary.append(self._batch_summary(child, index))
+                valid_feedback = local_gate.handoff_feedback_valid
+                if child_feedback and (feedback is None or (valid_feedback and not has_verdict_feedback)):
+                    feedback = child_feedback
+                if valid_feedback and child_feedback and child_feedback not in verdict_feedback:
+                    verdict_feedback.append(child_feedback)
+                has_verdict_feedback = has_verdict_feedback or valid_feedback
+                cancelled = cancelled or child_cancelled
         finally:
             if (self.session.record.get('last_run') is original_run
                     and self.session.phase == '独立核对草稿来源'):
                 self.session.phase = previous_phase
             self.manager.notify()
         cancelled = cancelled or self.session.cancelled.is_set()
+        if not feedback and len(summary) != len(batches):
+            feedback = '来源复核尚未覆盖全部目标，草稿尚未批准。'
         if not cancelled and verdict_feedback and not self.blocked:
             self.handoff_feedback_valid = True
             if len(verdict_feedback) == 2:
@@ -536,37 +543,31 @@ class FlowDraftGate:
             event['background_count'] = len(candidates) - len(targets)
         event['target_count'] = len(targets)
         passages = []
+        include_receipts = stage == 'handoff' and unit_kind != 'item' and receipt_index is not None
+        facts = receipt_index.review_facts() if include_receipts and batch_targets is not None else None
         if targets:
             history, passages = prepare_claim_request(
                 draft, sources, targets=targets, node_task=task, per_item=unit_kind == 'item', shared=shared,
                 action_context=action_context, char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'),
-                whole_batch=batch_targets is not None)
+                whole_batch=batch_targets is not None, receipt_facts=facts)
         else:
             history = review_messages(draft, sources, node_task=task, per_item=unit_kind == 'item')
         event['passage_count'] = len(passages)
         if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
             event['status'] = 'context_budget'
-            return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
-        if stage == 'handoff' and unit_kind != 'item' and receipt_index is not None:
-            facts = receipt_index.review_facts()
             if facts and batch_targets is not None:
-                history, passages = prepare_claim_request(
-                    draft, sources, targets=targets, node_task=task, whole_batch=True, receipt_facts=facts,
-                    char_limit=char_limit, token_limit=session_limit('MODEL_INPUT_TOKENS'))
-                event['passage_count'] = len(passages)
-                if history_size(history) > char_limit or request_tokens(history) > session_limit('MODEL_INPUT_TOKENS'):
-                    event['status'] = 'context_budget'
-                    return '草稿、来源与回执超过当前复核窗口，草稿尚未批准。'
-            elif facts:
-                payload = json.loads(history[1]['content'])
-                payload['action_receipt_summary'] = facts
-                augmented = [
-                    {**history[0], 'content': history[0]['content'] + RECEIPT_GUIDANCE},
-                    {**history[1], 'content': json.dumps(payload, ensure_ascii=False, separators=(',', ':'))},
-                ]
-                if (history_size(augmented) <= char_limit
-                        and request_tokens(augmented) <= session_limit('MODEL_INPUT_TOKENS')):
-                    history = augmented
+                return '草稿、来源与回执超过当前复核窗口，草稿尚未批准。'
+            return '草稿与来源超过当前复核窗口。请缩短草稿、按单个事项提交，或保留有原文支持的必要表述。'
+        if include_receipts and batch_targets is None and (facts := receipt_index.review_facts()):
+            payload = json.loads(history[1]['content'])
+            payload['action_receipt_summary'] = facts
+            augmented = [
+                {**history[0], 'content': history[0]['content'] + RECEIPT_GUIDANCE},
+                {**history[1], 'content': json.dumps(payload, ensure_ascii=False, separators=(',', ':'))},
+            ]
+            if (history_size(augmented) <= char_limit
+                    and request_tokens(augmented) <= session_limit('MODEL_INPUT_TOKENS')):
+                history = augmented
         if focused and previous is not None:
             from agent_core.core.flow_review_revision import revision_navigation
             navigation = revision_navigation(previous[1], previous[2], draft, targets, sources)
