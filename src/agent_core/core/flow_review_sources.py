@@ -279,7 +279,10 @@ def review_sources(record: dict, *, char_limit: int) -> list[dict]:
                     or event.get("name") != name or event.get("tool_call_id") != identifier
                     or event.get("turn_id") != turn or event.get("outcome") != "completed"
                     or event.get("execution_progress") is not True
-                    or not isinstance(content, str) or tool_outcome(content) != "completed"):
+                    or not isinstance(content, str)):
+                continue
+            # 已配对的 read_file 成功回执由下方观察摘要和区间核验，正文可含任意协议字样。
+            if name != "read_file" and tool_outcome(content) != "completed":
                 continue
             try:
                 arguments = json.loads(function.get("arguments", ""))

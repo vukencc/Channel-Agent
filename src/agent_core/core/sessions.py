@@ -662,7 +662,7 @@ class SessionManager:
                     try:
                         with operation_span('tool.execute', name=name) as span:
                             result = tool.run(call['function']['arguments'])
-                            span.outcome = tool_outcome(result)
+                            span.outcome = tool_outcome(result, tool_name=name)
                     except Exception:
                         if evidence is not None:
                             evidence['worker_source'] = 'execution_error'
@@ -1996,12 +1996,10 @@ class SessionManager:
                                     result = await self._tool(session, call, evidence=evidence)
                         except Exception as exc:
                             result = f'工具执行失败: {type(exc).__name__}: {exc}'
-                    outcome = tool_outcome(result)
+                    outcome = tool_outcome(result, tool_name=name if evidence['source'] == 'executed' else None)
                     if name in required_read_names and name in TOOL_REGISTRY and evidence['source'] == 'executed':
                         from agent_core.core.flow_required_reads import successful_builtin_result
-                        if successful_builtin_result(name, result) and (outcome == 'completed' or name == 'read_file'):
-                            outcome = 'completed'
-                        elif outcome == 'completed':
+                        if outcome == 'completed' and not successful_builtin_result(name, result):
                             outcome = 'error'
                     elif name in required_read_names and evidence['source'] == 'executed' and outcome == 'completed':
                         from agent_core.core.flow_required_reads import successful_custom_result

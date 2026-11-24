@@ -461,10 +461,14 @@ def test_real_web_search_failure_protocol_cannot_satisfy_required_read(runtime_s
 
 
 def test_file_body_failure_text_is_data_not_a_tool_failure(runtime_store, monkeypatch):
+    from agent_core.core.flow_review_sources import review_sources
+
     record, run, requests, downstream, scopes = asyncio.run(required_read_scenario(
         runtime_store, monkeypatch, mode="file_prefix", task="1. 调用 read_file 读取 feedback.json。"))
     receipt = next(row for row in record["messages"] if row.get("tool_call_id") == "basic-read")
     assert receipt["_provenance"] == "executed" and "[失败] 页面故障原文" in receipt["content"]
+    assert [row["text"] for row in review_sources(record, char_limit=1000)
+            if row["kind"] == "read_file"] == [receipt["content"]]
     assert run["status"] == "completed" and downstream
     assert record["last_run"]["flow_required_reads"]["completed"] == ["read_file"]
 

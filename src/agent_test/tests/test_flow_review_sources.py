@@ -66,7 +66,8 @@ def test_read_file_path_and_handoff_are_not_evidence():
 
 
 @pytest.mark.parametrize("structured", [False, True])
-def test_real_read_file_in_persisted_session(tmp_path, monkeypatch, structured):
+@pytest.mark.parametrize("prefix", ["", "[失败] ", "[错误] ", None])
+def test_real_read_file_in_persisted_session(tmp_path, monkeypatch, structured, prefix):
     import asyncio
     from agent_core import config
     from agent_core.core.sessions import SessionManager
@@ -90,12 +91,21 @@ def test_real_read_file_in_persisted_session(tmp_path, monkeypatch, structured):
         manager = SessionManager(store, model=model)
         try:
             session = manager.create()
-            (manager.workspace(session) / "a.txt").write_text("真实原文🙂", encoding="utf-8")
+            if prefix is not None:
+                (manager.workspace(session) / "a.txt").write_text(prefix + "真实原文🙂", encoding="utf-8")
             manager.submit(session, "读取")
             await session.task
-            rows = review_sources(store.load_all()[0], char_limit=100)
+            record = store.load_all()[0]
+            rows = review_sources(record, char_limit=100)
+            if prefix is None:
+                event = record["last_run"]["tools"][0]
+                receipt = next(row for row in record["messages"] if row.get("tool_call_id") == "read")
+                assert event["outcome"] == "error" and event["execution_progress"] is False
+                assert receipt["content"].startswith("[失败] 文件不存在") and "_context_observation" not in receipt
+                assert rows == []
+                return
             assert len(rows) == 1
-            assert rows[0]["text"] == "真实原文🙂" and rows[0]["path"] == "a.txt"
+            assert rows[0]["text"] == prefix + "真实原文🙂" and rows[0]["path"] == "a.txt"
         finally:
             await manager.shutdown()
             store.close()
@@ -479,6 +489,32 @@ def test_real_memory_path_read_retains_exact_observation(sandbox_env):
     rows = review_sources(data, char_limit=100)
     assert rows[0]["text"] == body and rows[0]["workspace_memory_path"] is True
     assert MEMORY_GUIDANCE in review_messages("草稿", rows)[0]["content"]
+
+
+@pytest.mark.parametrize("mutation", ["reader", "digest", "missing", "truncated", "failed_event"])
+def test_read_file_prefix_requires_intact_observation_and_successful_event(sandbox_env, monkeypatch, mutation):
+    from agent_core import config
+    from agent_core.tools.file_crud import read_file
+    from agent_core.tools.sandbox import truncate
+
+    path = "failure.txt"
+    (sandbox_env / path).write_text("[失败] 原始资料。", encoding="utf-8")
+    observed = read_file(path)
+    data = memory_read_record(path)
+    result = data["messages"][2]
+    result.update(content=str(observed), _context_observation=extract_observation(observed))
+    if mutation == "reader":
+        result["_context_observation"]["reader_tool"] = "rag_search"
+    elif mutation == "digest":
+        result["_context_observation"]["sha256"] = "a" * 64
+    elif mutation == "missing":
+        result.pop("_context_observation")
+    elif mutation == "truncated":
+        monkeypatch.setattr(config, "TOOL_MAX_OUTPUT", 4)
+        result["content"] = truncate(result["content"])
+    elif mutation == "failed_event":
+        data["last_run"]["tools"][0].update(outcome="error", execution_progress=False)
+    assert review_sources(data, char_limit=100) == []
 
 
 def test_untrusted_marker_is_not_serialized():

@@ -6,6 +6,8 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any, ContextManager, Iterator, Protocol, runtime_checkable
 
+from agent_core.core.tool_observations import extract_observation
+
 
 class Span:
     """可由调用方标注结果的中立操作句柄。"""
@@ -82,8 +84,12 @@ def _causal_ids(fields: dict) -> dict:
     return result
 
 
-def tool_outcome(result: str) -> str:
-    """只判断现有工具协议的状态前缀，不保存返回正文。"""
+def tool_outcome(result: str, *, tool_name: str | None = None) -> str:
+    """识别可信文件正文和工具协议的状态前缀，不保存返回正文。"""
+    if tool_name == 'read_file':
+        observation = extract_observation(result)
+        if observation is not None and observation['reader_tool'] == tool_name:
+            return 'completed'
     if result.startswith(('[超时]', '[已取消]', '[取消]')):
         return 'timeout' if result.startswith('[超时]') else 'cancelled'
     if result.startswith(('[拒绝]', '[已拒绝]', '[已拦截]', '未知工具:')):
