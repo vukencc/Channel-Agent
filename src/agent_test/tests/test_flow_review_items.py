@@ -381,3 +381,69 @@ def test_other_shared_unit_cannot_cover_an_unassigned_clause():
     units = review_units(dump(context), original)
     assert units and [unit["kind"] for unit in units] == ["shared_claim"]
     assert review_units(dump({**context, "statement": "explicitly requested a refund"}), original) is None
+
+
+@pytest.mark.parametrize("placement", ["siblings", "items", "mixed"])
+@pytest.mark.parametrize("swap", [False, True])
+@pytest.mark.parametrize("with_complete", [False, True])
+def test_projection_requires_coverage_for_fragment_pairs(placement, swap, with_complete):
+    one, two = ("customer", "explicitly requested a refund")
+    if swap:
+        one, two = two, one
+    records = [{"id": "A1", "note": "蓝色标记"}, {"id": "A2", "note": "绿色标记"}]
+    metadata = {}
+    if placement == "siblings":
+        metadata = {"first": one, "second": two}
+    elif placement == "items":
+        records[0]["note"], records[1]["note"] = one, two
+    else:
+        records[0]["note"], metadata["shared"] = one, two
+    if with_complete:
+        records[1]["reason"] = "客户明确要求核对记录。"
+    draft = {"items": records, **metadata}
+    original = [source(records, "read_file", "observed_span")]
+    assert review_units(dump(draft), original) is None
+
+
+@pytest.mark.parametrize("qualifier", ["only after identity is checked", "这项说明并不成立"])
+def test_unanchored_shared_qualification_requires_original_context(qualifier):
+    records = [{"id": "A1", "value": "客户明确要求核对记录。"}, {"id": "A2", "value": "归档"}]
+    draft = {"items": records, "qualifier": qualifier}
+    assert review_units(dump(draft), [source(records)]) is None
+
+
+def test_independent_complete_claims_and_structural_metadata_still_project():
+    rows = [{"id": "A1", "text": "客户明确要求退款。"}, {"id": "A2", "text": "政策要求先核对主体。"}]
+    data = {"source_path": "feedback.json", "items": rows, "submitted": ["A1", "A2"]}
+    result = review_units(dump(data), [source(rows, "read_file", "observed_span")])
+    assert result and [row["item_id"] for row in result] == ["A1", "A2"]
+    for item, original in zip(result, rows, strict=True):
+        assert json.loads(item["draft"]) == {**data, "items": [original]}
+        assert json.loads(item["sources"][0]["text"]) == original
+
+
+def test_mixed_scope_cannot_publish_an_independently_reviewable_sibling(monkeypatch):
+    from agent_core.core import flow_draft_gate
+    from agent_test.tests.test_flow_draft_receipt_review import make_gate
+    from agent_test.tests.test_flow_whole_claim_batches import reply
+
+    items = [{"id": "A1", "note": "explicitly requested a refund"},
+             {"id": "A2", "note": "客户明确要求核对记录。"}]
+    value = {"items": items, "subject": "customer"}
+    evidence = [source(items, "read_file", "observed_span"),
+                {"id": "S1", "kind": "rag_search", "scope": "observed_span", "text": "完整规则来源"}]
+    gate, _, histories = make_gate(monkeypatch)
+    monkeypatch.setattr(flow_draft_gate, "review_sources", lambda *a, **k: evidence)
+
+    async def model(history, **kwargs):
+        assert kwargs["disable_tools"]
+        histories.append(history)
+        return reply("need_source", field="/items/0/note", needed="第一项的原文")
+
+    gate.manager._call_model = model
+    assert asyncio.run(gate.check(dump(value), stage="handoff"))
+    history, = histories
+    payload = json.loads(history[1]["content"])
+    assert json.loads(payload["draft"]) == value
+    assert payload["sources"] == evidence
+    assert {target["field"] for target in payload["targets"]} == {"/items/0/note", "/items/1/note", "/subject"}

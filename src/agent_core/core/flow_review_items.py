@@ -15,6 +15,11 @@ _ASSERTION_PAIRS = ((_CUSTOMER, _ASSERTION), (_RULE, _MANDATE))
 _CROSS = re.compile(r"同上|上述|下述|该事项|该工单|其他事项|其它事项|其余事项|另(?:一|个)事项|两者|各事项|所有事项|"
                     r"above|below|other items?|previous items?|both items?|all items?", re.I)
 
+_SENTENCES = re.compile(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?")
+_QUALIFIER = re.compile(
+    r"除非|否则|例外|除外|仅当|只有|若|如果|并非|并不|没有|不得|不能|从未|从不|未曾|"
+    r"\b(?:unless|otherwise|except|however|if|never|not|without|only\s+(?:after|before|when|once))\b", re.I)
+
 
 def _records(data: object) -> list[tuple[str | None, dict]]:
     if isinstance(data, list):
@@ -229,7 +234,7 @@ def tool_review_sources(draft: str, sources: list[dict]) -> list[dict]:
 def _dependent_shared_context(value: str, disputed: list[str]) -> bool:
     """仅允许争议句内前半句已提供先行内容的指代。"""
     pronoun = re.compile(r"这|那|此|其(?!他|它|余)|(?<!其)它|上述|以下|前述|该|\b(?:these|those|it|they|their)\b", re.I)
-    sentences = re.findall(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?", value)
+    sentences = _SENTENCES.findall(value)
     for index, sentence in enumerate(sentences):
         if sentence not in disputed:
             continue
@@ -254,7 +259,42 @@ def _assertion_terms(text: str) -> set[str]:
     return {term for pair in _ASSERTION_PAIRS for term in pair if re.search(term, text, re.I)}
 
 
-def _shared(data: object, records: list[tuple[str | None, dict]], required: frozenset[str]) -> tuple[dict, set[str], list[dict]]:
+def _scope(segments: list[str], uncovered: list[str]) -> tuple[set[str], set[str], bool]:
+    residual = " ".join(uncovered)
+    return _assertion_terms(" ".join(segments)), _assertion_terms(residual), bool(_QUALIFIER.search(residual))
+
+
+def _uncovered_scope(coverage: list[tuple[set[str], set[str], bool]], *, shared: bool = False) -> bool:
+    """不能限定在原作用域的片段，须用完整语境核验。"""
+    # 完整事项中的主体和谓词已在同一句交代；共享字段间仍须核对所有相关成分。
+    counterparts = [terms if shared else residual for terms, residual, _ in coverage]
+    counts = Counter(term for terms in counterparts for term in terms)
+    for (_, residual, qualified), terms in zip(coverage, counterparts, strict=True):
+        if qualified:
+            return True
+        for subject, predicate in _ASSERTION_PAIRS:
+            if ((subject in residual and predicate in residual)
+                    or (subject in residual and counts[predicate] > int(predicate in terms))
+                    or (predicate in residual and counts[subject] > int(subject in terms))):
+                return True
+    return False
+
+
+def _record_scope(row: dict) -> tuple[set[str], set[str], bool]:
+    names = []
+    text = []
+    for key, value in row.items():
+        if key == "id":
+            continue
+        names.append(key)
+        for part in value if isinstance(value, list) else [value]:
+            if isinstance(part, str):
+                text.extend(_SENTENCES.findall(part))
+    return _scope([*names, *text], [*names, *(sentence for sentence in text if not needs_review(sentence))])
+
+
+def _shared(data: object, records: list[tuple[str | None, dict]], required: frozenset[str],
+            coverage: list[tuple[set[str], set[str], bool]]) -> tuple[dict, set[str], list[dict]]:
     if not isinstance(data, dict):
         return {}, set(), []
     ids = [row["id"] for _, row in records]
@@ -262,16 +302,15 @@ def _shared(data: object, records: list[tuple[str | None, dict]], required: froz
     metadata = {}
     owners = set()
     claims = []
-    field_counts: Counter[str] = Counter()
-    coverage = []
     for key, value in data.items():
         if isinstance(value, list) and (not value or all(isinstance(item, dict) for item in value)):
             continue
-        uncovered = [key]
+        names = [] if key in _META else [key]
+        uncovered = names.copy()
         if isinstance(value, list):
             if value != ids:
                 raise ValueError("unmatched shared ids")
-            uncovered.extend(value)
+            # 与真实事项标识完全一致的列表只承担索引作用。
         elif isinstance(value, str):
             if len(value) > 32_000 or _CROSS.search(value):
                 raise ValueError("ambiguous shared text")
@@ -282,7 +321,7 @@ def _shared(data: object, records: list[tuple[str | None, dict]], required: froz
             if unit_id in ids:
                 raise ValueError("shared identifier collision")
             disputed = []
-            for sentence in re.findall(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?", value):
+            for sentence in _SENTENCES.findall(value):
                 if not needs_review(sentence):
                     uncovered.append(sentence)
                 else:
@@ -303,17 +342,9 @@ def _shared(data: object, records: list[tuple[str | None, dict]], required: froz
                     {"field": key, "claims": disputed or [value], "context": value, "item_ids": ids}, ensure_ascii=False)})
         else:
             raise ValueError("unknown metadata")
-        field_terms = _assertion_terms(" ".join([key, *value] if isinstance(value, list) else [key, value]))
-        field_counts.update(field_terms)
-        coverage.append((field_terms, _assertion_terms(" ".join(uncovered))))
+        text = [] if isinstance(value, list) else [value]
+        coverage.append(_scope([*names, *text], uncovered))
         metadata[key] = value
-    # 无法将组合语义全部定位到已分派的片段时，保留整稿和全部来源。
-    for field_terms, uncovered_terms in coverage:
-        for subject, predicate in _ASSERTION_PAIRS:
-            if ((subject in uncovered_terms and predicate in uncovered_terms)
-                    or (subject in uncovered_terms and field_counts[predicate] > int(predicate in field_terms))
-                    or (predicate in uncovered_terms and field_counts[subject] > int(subject in field_terms))):
-                raise ValueError("uncovered shared assertion")
     return metadata, owners, claims
 
 
@@ -329,14 +360,20 @@ def review_units(draft: str, sources: list[dict], *, required_ids: frozenset[str
             return None
         if _references([row for _, row in records]) or len(sources) > 64:
             return None
-        metadata, owners, shared_claims = _shared(data, records, required_ids)
+        coverage = [_record_scope(row) for _, row in records]
+        groups = dict.fromkeys(group for group, _ in records if group is not None)
+        coverage.extend(_scope([group], [group]) for group in groups)
+        shared_coverage = []
+        metadata, owners, shared_claims = _shared(data, records, required_ids, shared_coverage)
+        if _uncovered_scope(shared_coverage, shared=True) or _uncovered_scope(coverage + shared_coverage):
+            return None
         item_metadata = metadata.copy()
         for shared in shared_claims:
             payload = json.loads(shared["draft"])
             # 单项草稿保留其他共享内容；无主争议只由共享单元裁决。
             if needs_review("".join(payload["claims"])):
                 item_metadata[payload["field"]] = "".join(
-                    sentence for sentence in re.findall(r"[^。！？；\n.!?;]+[。！？；\n.!?;]?", payload["context"])
+                    sentence for sentence in _SENTENCES.findall(payload["context"])
                     if sentence not in payload["claims"])
         if not required_ids <= ids | {unit["item_id"] for unit in shared_claims}:
             return None
