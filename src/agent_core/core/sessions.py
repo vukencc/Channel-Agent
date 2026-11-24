@@ -849,7 +849,7 @@ class SessionManager:
 
     @traced('model.total')
     async def _call_model(self, history, *, disable_tools=False, source_reads=False, staged_actions=None,
-                          flow_confirmation=None, **kwargs):
+                          flow_confirmation=None, recovery_tools: set[str] | None = None, **kwargs):
         # 仅模型请求占槽；人工确认和工具不占用模型容量。
         async with self.slots:
             check_model_dispatch()
@@ -890,6 +890,9 @@ class SessionManager:
                         schemas = bounded_schemas([current['schema']], [current['tool_name']])
                     if not await staged_actions.flush_audit():
                         raise RuntimeError(staged_actions.gate.blocked)
+                    if recovery_tools is not None:
+                        # 排队期间重新核对权限后，再与补读轮已计入上下文的工具取交集。
+                        schemas = [row for row in schemas if row['function']['name'] in recovery_tools]
                     names = [row['function']['name'] for row in schemas]
                 if session is not None and session.cancelled.is_set():
                     raise asyncio.CancelledError
@@ -1558,6 +1561,8 @@ class SessionManager:
                 while True:
                     try:
                         model_options = {'staged_actions': staged_actions, 'flow_confirmation': offer} if staged_actions else {}
+                        if recovery_request and offer is None:
+                            model_options['recovery_tools'] = tool_names
                         if handoff_revisions:
                             model_options = {'source_reads': True} if recover_sources else {'disable_tools': True}
                         if review:

@@ -511,6 +511,7 @@ def test_frozen_equivalent_open_schema_and_pagination_use_normal_flow_gates(
         assert "CF-01" in receipt["content"]
         drafts = [event for event in record["last_run"]["tools"] if event["name"].startswith("draft_read_feedback")]
         assert len(drafts) == 1, "开放 schema 仍须由模型提出草稿，取得正式提交机会"
+        assert scopes[2][-1] == {drafts[0]["name"]}, "补读轮只向模型提供已纳入预算的读取入口"
     else:
         assert run["nodes"]["next"]["status"] == "blocked"
         assert not run["nodes"]["read"]["output_handoff"]
